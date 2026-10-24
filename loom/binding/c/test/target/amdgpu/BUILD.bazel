@@ -62,6 +62,20 @@ loom_cc_test(
 )
 
 loom_cc_test(
+    name = "fp4_decode_test",
+    srcs = ["fp4_decode_test.cc"],
+    target_compatible_with = _AMDGPU_ARTIFACTS_COMPATIBLE_WITH,
+    deps = [
+        ":target_test_util",
+        "//loom/binding/c:loomc",
+        "//loom/binding/c/target/amdgpu",
+        "//loom/binding/c/test:test_util",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+loom_cc_test(
     name = "link_test",
     srcs = ["link_test.cc"],
     target_compatible_with = _AMDGPU_ARTIFACTS_COMPATIBLE_WITH,

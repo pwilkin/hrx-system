@@ -498,24 +498,26 @@ func.def inline @decode_e8m0_scaled_e2m1(%nibble: i32, %scale: f32) -> (bf16) {
   func.return %result : bf16
 }
 
-func.def inline @decode_e8m0_mxfp4_bf16(%input_buffer: buffer, %output_buffer: buffer, %extent: index) {
-  %base = index.constant 0 : offset
-  %payload_offset = index.constant 4 : offset
+func.def inline @decode_e8m0_mxfp4_bf16(%input_buffer: buffer, %output_buffer: buffer, %extent: index, %scale_group_elements: index, %payload_offset: offset, %output_offset: offset) {
   %origin = index.constant 0 : index
   %step = index.constant 1 : index
-  %scale_group_elements = index.constant 32 : index
+  %scales_per_word = index.constant 4 : index
+  %word_bytes = index.constant 4 : offset
   %payload_elements_per_word = index.constant 8 : index
   %scale_byte_bits = index.constant 8 : index
   %payload_element_bits = index.constant 4 : index
   %byte_mask = scalar.constant 255 : i32
   %nibble_mask = scalar.constant 15 : i32
-  %scale_view = buffer.view %input_buffer[%base] : buffer -> view<1xi32>
   %payload_view = buffer.view %input_buffer[%payload_offset] : buffer -> view<8xi32>
-  %output_view = buffer.view %output_buffer[%base] : buffer -> view<64xbf16>
-  %scale_word = view.load %scale_view[%origin] : view<1xi32> -> i32
+  %output_view = buffer.view %output_buffer[%output_offset] : buffer -> view<64xbf16>
   scf.for %position = [%origin to %extent step %step] {
     %scale_group = index.div %position, %scale_group_elements : index
-    %scale_bit_position_index = index.mul %scale_group, %scale_byte_bits : index
+    %scale_word_position = index.div %scale_group, %scales_per_word : index
+    %scale_byte_position = index.rem %scale_group, %scales_per_word : index
+    %scale_offset = index.scale %scale_word_position, %word_bytes : index, offset -> offset
+    %scale_view = buffer.view %input_buffer[%scale_offset] : buffer -> view<1xi32>
+    %scale_word = view.load %scale_view[%origin] : view<1xi32> -> i32
+    %scale_bit_position_index = index.mul %scale_byte_position, %scale_byte_bits : index
     %scale_bit_position = index.cast %scale_bit_position_index : index to i32
     %shifted_scale = scalar.shrui %scale_word, %scale_bit_position : i32
     %scale_byte = scalar.andi %shifted_scale, %byte_mask : i32
@@ -535,14 +537,114 @@ func.def inline @decode_e8m0_mxfp4_bf16(%input_buffer: buffer, %output_buffer: b
 
 func.def @e8m0_mxfp4_bf16_oracle(%input_buffer: buffer, %output_buffer: buffer) {
   %extent = index.constant 32 : index
-  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent) : (buffer, buffer, index)
+  %group_elements = index.constant 32 : index
+  %payload_offset = index.constant 4 : offset
+  %output_offset = index.constant 0 : offset
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group_elements, %payload_offset, %output_offset) : (buffer, buffer, index, index, offset, offset)
   func.return
 }
 
 func.def @e8m0_mxfp4_wide_bf16_oracle(%input_buffer: buffer, %output_buffer: buffer) {
   %extent = index.constant 64 : index
-  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent) : (buffer, buffer, index)
+  %group_elements = index.constant 32 : index
+  %payload_offset = index.constant 4 : offset
+  %output_offset = index.constant 0 : offset
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group_elements, %payload_offset, %output_offset) : (buffer, buffer, index, index, offset, offset)
   func.return
+}
+
+// A lane's payload can contain smaller scale groups than the logical matrix.
+// The first eight input words hold packed scales, followed by eight payload
+// words. Each output panel decodes that payload with a different group size.
+kernel.def @e8m0_mxfp4_partitioned_bf16() {
+  %unit = index.constant 1 : index
+  kernel.launch.config workgroups(%unit, %unit, %unit) workgroup_size(%unit, %unit, %unit) : index
+} launch(%input_buffer: buffer, %output_buffer: buffer) {
+  %input, %output = buffer.assume.noalias %input_buffer, %output_buffer : buffer, buffer
+  %base = index.constant 0 : offset
+  %payload_offset = index.constant 32 : offset
+  %origin = index.constant 0 : index
+  %payload_view = buffer.view %input[%payload_offset] : buffer -> view<8xi32>
+  %payload = vector.load %payload_view[%origin] : view<8xi32> -> vector<8xi32>
+  %scale_view = buffer.view %input[%base] : buffer -> view<8xi32>
+  %scales = vector.load %scale_view[%origin] : view<8xi32> -> vector<8xi32>
+  %scales4 = vector.slice %scales[0] : vector<8xi32> -> vector<4xi32>
+  %scales2 = vector.slice %scales[0] : vector<8xi32> -> vector<2xi32>
+  %scales1 = vector.slice %scales[0] : vector<8xi32> -> vector<1xi32>
+  %output_view = buffer.view %output[%base] : buffer -> view<320xbf16>
+  %schema2 = encoding.define #encoding.f4e2m1<affine=scale_only, payload_elements=64, payload_packing=little_endian_nibbles, payload_registers=8, scale_format=e8m0, scale_group_elements=2, scale_operands=1, scale_topology=block_1d, zero_scale_fallback=true> : encoding<schema>
+  %decoded2 = vector.decode %payload using %schema2 {scale = %scales : vector<8xi32>} : vector<8xi32>, encoding<schema> -> vector<64xbf16>
+  vector.store %decoded2, %output_view[0] : vector<64xbf16>, view<320xbf16>
+  %schema4 = encoding.define #encoding.f4e2m1<affine=scale_only, payload_elements=64, payload_packing=little_endian_nibbles, payload_registers=8, scale_format=e8m0, scale_group_elements=4, scale_operands=1, scale_topology=block_1d, zero_scale_fallback=true> : encoding<schema>
+  %decoded4 = vector.decode %payload using %schema4 {scale = %scales4 : vector<4xi32>} : vector<8xi32>, encoding<schema> -> vector<64xbf16>
+  vector.store %decoded4, %output_view[64] : vector<64xbf16>, view<320xbf16>
+  %schema8 = encoding.define #encoding.f4e2m1<affine=scale_only, payload_elements=64, payload_packing=little_endian_nibbles, payload_registers=8, scale_format=e8m0, scale_group_elements=8, scale_operands=1, scale_topology=block_1d, zero_scale_fallback=true> : encoding<schema>
+  %decoded8 = vector.decode %payload using %schema8 {scale = %scales2 : vector<2xi32>} : vector<8xi32>, encoding<schema> -> vector<64xbf16>
+  vector.store %decoded8, %output_view[128] : vector<64xbf16>, view<320xbf16>
+  %schema16 = encoding.define #encoding.f4e2m1<affine=scale_only, payload_elements=64, payload_packing=little_endian_nibbles, payload_registers=8, scale_format=e8m0, scale_group_elements=16, scale_operands=1, scale_topology=block_1d, zero_scale_fallback=true> : encoding<schema>
+  %decoded16 = vector.decode %payload using %schema16 {scale = %scales1 : vector<1xi32>} : vector<8xi32>, encoding<schema> -> vector<64xbf16>
+  vector.store %decoded16, %output_view[192] : vector<64xbf16>, view<320xbf16>
+  %schema64 = encoding.define #encoding.f4e2m1<affine=scale_only, payload_elements=64, payload_packing=little_endian_nibbles, payload_registers=8, scale_format=e8m0, scale_group_elements=64, scale_operands=1, scale_topology=block_1d, zero_scale_fallback=true> : encoding<schema>
+  %decoded64 = vector.decode %payload using %schema64 {scale = %scales1 : vector<1xi32>} : vector<8xi32>, encoding<schema> -> vector<64xbf16>
+  vector.store %decoded64, %output_view[256] : vector<64xbf16>, view<320xbf16>
+  kernel.return
+}
+
+func.def @e8m0_mxfp4_partitioned_bf16_oracle(%input_buffer: buffer, %output_buffer: buffer) {
+  %extent = index.constant 64 : index
+  %payload_offset = index.constant 32 : offset
+  %group2 = index.constant 2 : index
+  %group4 = index.constant 4 : index
+  %group8 = index.constant 8 : index
+  %group16 = index.constant 16 : index
+  %group64 = index.constant 64 : index
+  %output0 = index.constant 0 : offset
+  %output1 = index.constant 128 : offset
+  %output2 = index.constant 256 : offset
+  %output3 = index.constant 384 : offset
+  %output4 = index.constant 512 : offset
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group2, %payload_offset, %output0) : (buffer, buffer, index, index, offset, offset)
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group4, %payload_offset, %output1) : (buffer, buffer, index, index, offset, offset)
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group8, %payload_offset, %output2) : (buffer, buffer, index, index, offset, offset)
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group16, %payload_offset, %output3) : (buffer, buffer, index, index, offset, offset)
+  func.call @decode_e8m0_mxfp4_bf16(%input_buffer, %output_buffer, %extent, %group64, %payload_offset, %output4) : (buffer, buffer, index, index, offset, offset)
+  func.return
+}
+
+check.scenario @e8m0_mxfp4_partitioned_bf16_values {
+  // Low scale bytes include 0, 1, 2, and 128; subsequent words advance each
+  // byte independently, making scale-register and scale-byte selection visible.
+  check.trial[1](%trial: index, %entropy: check.entropy) {
+    %input = check.generate.iota offset(-2147352320) step(16843009) period(256) : tensor<16xi32>
+    %expected_input = check.generate.iota offset(-2147352320) step(16843009) period(256) : tensor<16xi32>
+    %output = check.generate.fill value(-123.0) : tensor<320xbf16>
+    check.compare<@e8m0_mxfp4_partitioned_bf16, @e8m0_mxfp4_partitioned_bf16_oracle>(%input, %output) : (tensor<16xi32>, tensor<320xbf16>) -> () {
+      check.expect.bitwise actual(%input) expected(%expected_input) : tensor<16xi32>
+      check.expect.bitwise actual(%output) expected(%output) : tensor<320xbf16>
+    }
+  }
+  // The high boundary includes maximum-finite and NaN scale encodings.
+  check.trial[1](%trial: index, %entropy: check.entropy) {
+    %input = check.generate.iota offset(-32770) step(16702650) period(256) : tensor<16xi32>
+    %expected_input = check.generate.iota offset(-32770) step(16702650) period(256) : tensor<16xi32>
+    %output = check.generate.fill value(-123.0) : tensor<320xbf16>
+    check.compare<@e8m0_mxfp4_partitioned_bf16, @e8m0_mxfp4_partitioned_bf16_oracle>(%input, %output) : (tensor<16xi32>, tensor<320xbf16>) -> () {
+      check.expect.bitwise actual(%input) expected(%expected_input) : tensor<16xi32>
+      check.expect.approximate actual(%output) expected(%output) atol(0.0) rtol(0.0) nan(same) : tensor<320xbf16>, tensor<320xbf16>
+    }
+  }
+  check.trial[16](%trial: index, %entropy: check.entropy) {
+    %input_entropy = check.entropy.fork %entropy name("e8m0_mxfp4_partitioned_bf16_input") : check.entropy
+    %input_seed = check.entropy.read %input_entropy[%trial] : check.entropy -> i64
+    %input = check.generate.random.uniform seed(%input_seed) range(-2147483648 to 2147483647) : tensor<16xi32>
+    %expected_input = check.generate.random.uniform seed(%input_seed) range(-2147483648 to 2147483647) : tensor<16xi32>
+    %output = check.generate.fill value(-123.0) : tensor<320xbf16>
+    check.compare<@e8m0_mxfp4_partitioned_bf16, @e8m0_mxfp4_partitioned_bf16_oracle>(%input, %output) : (tensor<16xi32>, tensor<320xbf16>) -> () {
+      check.expect.bitwise actual(%input) expected(%expected_input) : tensor<16xi32>
+      check.expect.approximate actual(%output) expected(%output) atol(0.0) rtol(0.0) nan(same) : tensor<320xbf16>, tensor<320xbf16>
+    }
+  }
+  check.return
 }
 
 check.scenario @e8m0_mxfp4_bf16_subnormal_values {

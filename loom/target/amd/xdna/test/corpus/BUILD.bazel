@@ -61,6 +61,7 @@ loom_corpus_test(
             "memory/storage/load_snapshot.loom:@extract_inside_loop_values": "XDNA/051",
             "numeric/conversion/bfloat_rounding.loom:@bfloat_rounding_all_bins": "XDNA/051",
             "numeric/conversion/bfloat_rounding.loom:@finite_bfloat_product_rounding": "XDNA/051",
+            "numeric/conversion/float8_dequantization.loom:@e8m0_mxfp4_partitioned_bf16_values": "TARGET/003",
             "numeric/conversion/float8_dequantization.loom:@e8m0_mxfp8_grouped_values": "XDNA/058",
             "numeric/conversion/float8_dequantization.loom:@float8_dequantization_values": "XDNA/051",
             "numeric/integer/division.loom:@dynamic_wide_remainder_values": "XDNA/051",
