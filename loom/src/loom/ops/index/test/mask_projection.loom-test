@@ -136,11 +136,9 @@ func.def @coordinate_crosses_radix(%origin: index, %lane: index) -> (index) {
 }
 // ----
 func.def @coordinate_crosses_radix(%origin: index, %lane: index) -> (index) {
-  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
   %bounded = index.assume %lane [range(%lane, 0, 256)] : index
   %mask = index.constant 255 : index
-  %linear = index.add %aligned, %bounded : index
-  %result = index.andi %linear, %mask : index
+  %result = index.andi %bounded, %mask : index
   func.return %result : index
 }
 
@@ -157,17 +155,15 @@ func.def @negative_coordinate(%origin: index, %lane: index) -> (index) {
 }
 // ----
 func.def @negative_coordinate(%origin: index, %lane: index) -> (index) {
-  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
   %bounded = index.assume %lane [range(%lane, -1, 255)] : index
   %mask = index.constant 255 : index
-  %linear = index.add %aligned, %bounded : index
-  %result = index.andi %linear, %mask : index
+  %result = index.andi %bounded, %mask : index
   func.return %result : index
 }
 
 // ====
 
-// Without a range proof, an aligned origin alone cannot recover the addend.
+// An unbounded coordinate keeps the mask after its aligned origin is removed.
 func.def @unbounded_coordinate(%origin: index, %lane: index) -> (index) {
   %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
   %mask = index.constant 255 : index
@@ -177,10 +173,8 @@ func.def @unbounded_coordinate(%origin: index, %lane: index) -> (index) {
 }
 // ----
 func.def @unbounded_coordinate(%origin: index, %lane: index) -> (index) {
-  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
   %mask = index.constant 255 : index
-  %linear = index.add %aligned, %lane : index
-  %result = index.andi %linear, %mask : index
+  %result = index.andi %lane, %mask : index
   func.return %result : index
 }
 
@@ -231,5 +225,218 @@ func.def @signed_limit_mask(%value: index) -> (index) {
 func.def @signed_limit_mask(%value: index) -> (index) {
   %mask = index.constant 9223372036854775807 : index
   %result = index.andi %value, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// Static K strides disappear even when the remaining lane crosses the radix.
+func.def @fragment_shift(%lane: index) -> (index) {
+  %bounded = index.assume %lane [range(%lane, 0, 12), multiple_of(%lane, 4)] : index
+  %c16 = index.constant 16 : index
+  %c7 = index.constant 7 : index
+  %c4 = index.constant 4 : index
+  %coordinate = index.add %c16, %bounded : index
+  %within = index.andi %coordinate, %c7 : index
+  %shift = index.mul %within, %c4 : index
+  func.return %shift : index
+}
+// ----
+func.def @fragment_shift(%lane: index) -> (index) {
+  %bounded = index.assume %lane [range(%lane, 0, 12), multiple_of(%lane, 4)] : index
+  %c7 = index.constant 7 : index
+  %c4 = index.constant 4 : index
+  %within = index.andi %bounded, %c7 : index
+  %shift = index.mul %within, %c4 : index
+  func.return %shift : index
+}
+
+// ====
+
+// Subtraction discards an aligned subtrahend without changing signed low bits.
+func.def @aligned_subtract(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
+  %mask = index.constant 255 : index
+  %difference = index.sub %coordinate, %aligned : index
+  %result = index.andi %mask, %difference : index
+  func.return %result : index
+}
+// ----
+func.def @aligned_subtract(%origin: index, %coordinate: index) -> (index) {
+  %mask = index.constant 255 : index
+  %result = index.andi %coordinate, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// An aligned minuend does not make the subtrahend the projected coordinate.
+func.def @aligned_minuend(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
+  %mask = index.constant 255 : index
+  %difference = index.sub %aligned, %coordinate : index
+  %result = index.andi %difference, %mask : index
+  func.return %result : index
+}
+// ----
+func.def @aligned_minuend(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
+  %mask = index.constant 255 : index
+  %difference = index.sub %aligned, %coordinate : index
+  %result = index.andi %difference, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// Both factors can contribute to the product alignment. Keep the mask for
+// the arbitrary signed residual and keep the shared arithmetic producer.
+func.def @factored_alignment(%row: index, %stride: index, %coordinate: index) -> (index, index) {
+  %aligned_row = index.assume %row [multiple_of(%row, 16)] : index
+  %aligned_stride = index.assume %stride [multiple_of(%stride, 16)] : index
+  %mask = index.constant 255 : index
+  %linear = index.madd %aligned_row, %aligned_stride, %coordinate : index
+  %result = index.andi %linear, %mask : index
+  func.return %linear, %result : index, index
+}
+// ----
+func.def @factored_alignment(%row: index, %stride: index, %coordinate: index) -> (index, index) {
+  %aligned_row = index.assume %row [multiple_of(%row, 16)] : index
+  %aligned_stride = index.assume %stride [multiple_of(%stride, 16)] : index
+  %mask = index.constant 255 : index
+  %linear = index.madd %aligned_row, %aligned_stride, %coordinate : index
+  %result = index.andi %coordinate, %mask : index
+  func.return %linear, %result : index, index
+}
+
+// ====
+
+// Incomplete product alignment still contributes observed bits.
+func.def @insufficient_product_alignment(%row: index, %stride: index, %coordinate: index) -> (index) {
+  %aligned_row = index.assume %row [multiple_of(%row, 8)] : index
+  %aligned_stride = index.assume %stride [multiple_of(%stride, 16)] : index
+  %mask = index.constant 255 : index
+  %linear = index.madd %aligned_row, %aligned_stride, %coordinate : index
+  %result = index.andi %linear, %mask : index
+  func.return %result : index
+}
+// ----
+func.def @insufficient_product_alignment(%row: index, %stride: index, %coordinate: index) -> (index) {
+  %aligned_row = index.assume %row [multiple_of(%row, 8)] : index
+  %aligned_stride = index.assume %stride [multiple_of(%stride, 16)] : index
+  %mask = index.constant 255 : index
+  %linear = index.madd %aligned_row, %aligned_stride, %coordinate : index
+  %result = index.andi %linear, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// The ordinary rewrite worklist removes each aligned contribution.
+func.def @nested_projection(%origin: index, %row: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
+  %c256 = index.constant 256 : index
+  %mask = index.constant 255 : index
+  %inner = index.madd %row, %c256, %coordinate : index
+  %outer = index.add %aligned, %inner : index
+  %result = index.andi %mask, %outer : index
+  func.return %result : index
+}
+// ----
+func.def @nested_projection(%origin: index, %row: index, %coordinate: index) -> (index) {
+  %mask = index.constant 255 : index
+  %result = index.andi %coordinate, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// Projection does not narrow large radices or unbounded coordinates.
+func.def @wide_unbounded_projection(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 4611686018427387904)] : index
+  %mask = index.constant 4611686018427387903 : index
+  %linear = index.add %coordinate, %aligned : index
+  %result = index.andi %mask, %linear : index
+  func.return %result : index
+}
+// ----
+func.def @wide_unbounded_projection(%origin: index, %coordinate: index) -> (index) {
+  %mask = index.constant 4611686018427387903 : index
+  %result = index.andi %coordinate, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// Multiplying the known divisors would overflow; the low-bit proof does not.
+func.def @overflowing_alignment_product(%row: index, %stride: index, %coordinate: index) -> (index) {
+  %aligned_row = index.assume %row [multiple_of(%row, 4611686018427387904)] : index
+  %aligned_stride = index.assume %stride [multiple_of(%stride, 3)] : index
+  %mask = index.constant 255 : index
+  %linear = index.madd %aligned_row, %aligned_stride, %coordinate : index
+  %result = index.andi %linear, %mask : index
+  func.return %result : index
+}
+// ----
+func.def @overflowing_alignment_product(%row: index, %stride: index, %coordinate: index) -> (index) {
+  %mask = index.constant 255 : index
+  %result = index.andi %coordinate, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// Combining partial alignment also stays valid when the divisor product
+// exceeds the fact carrier, independent of multiplicand order.
+func.def @overflowing_factored_alignment(%row: index, %stride: index, %coordinate: index) -> (index) {
+  %aligned_row = index.assume %row [multiple_of(%row, 3221225472)] : index
+  %aligned_stride = index.assume %stride [multiple_of(%stride, 6442450944)] : index
+  %mask = index.constant 2305843009213693951 : index
+  %linear = index.madd %aligned_row, %aligned_stride, %coordinate : index
+  %result = index.andi %mask, %linear : index
+  func.return %result : index
+}
+// ----
+func.def @overflowing_factored_alignment(%row: index, %stride: index, %coordinate: index) -> (index) {
+  %mask = index.constant 2305843009213693951 : index
+  %result = index.andi %coordinate, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// A subtrahend aligned below the radix still changes the masked result.
+func.def @insufficient_subtraction_alignment(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 128)] : index
+  %mask = index.constant 255 : index
+  %difference = index.sub %coordinate, %aligned : index
+  %result = index.andi %difference, %mask : index
+  func.return %result : index
+}
+// ----
+func.def @insufficient_subtraction_alignment(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 128)] : index
+  %mask = index.constant 255 : index
+  %difference = index.sub %coordinate, %aligned : index
+  %result = index.andi %difference, %mask : index
+  func.return %result : index
+}
+
+// ====
+
+// This projection contract uses a contiguous low mask.
+func.def @noncontiguous_aligned_sum(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
+  %mask = index.constant 253 : index
+  %linear = index.add %aligned, %coordinate : index
+  %result = index.andi %linear, %mask : index
+  func.return %result : index
+}
+// ----
+func.def @noncontiguous_aligned_sum(%origin: index, %coordinate: index) -> (index) {
+  %aligned = index.assume %origin [multiple_of(%origin, 256)] : index
+  %mask = index.constant 253 : index
+  %linear = index.add %aligned, %coordinate : index
+  %result = index.andi %linear, %mask : index
   func.return %result : index
 }

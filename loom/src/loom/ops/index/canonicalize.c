@@ -1301,12 +1301,13 @@ iree_status_t loom_index_madd_canonicalize(loom_op_t* op,
 //===----------------------------------------------------------------------===//
 
 // For a mask 2^k - 1, an aligned contribution cannot affect the observed low
-// bits. The remaining addend is the result when its range fits [0, mask].
+// bits. Return the remaining coordinate; the mask still applies when its
+// range does not fit [0, mask].
 // Inspect only the immediate arithmetic producer and consume its operand facts;
 // the existing worklist handles simplification of other operations.
-static loom_value_id_t loom_index_low_mask_identity(loom_rewriter_t* rewriter,
-                                                    loom_value_id_t value,
-                                                    int64_t mask) {
+static loom_value_id_t loom_index_low_mask_coordinate(loom_rewriter_t* rewriter,
+                                                      loom_value_id_t value,
+                                                      int64_t mask) {
   int64_t radix = 0;
   if (!loom_index_exact_positive_power_of_two_plus_one(mask, &radix)) {
     return LOOM_VALUE_ID_INVALID;
@@ -1330,23 +1331,40 @@ static loom_value_id_t loom_index_low_mask_identity(loom_rewriter_t* rewriter,
                    loom_rewriter_value_facts(rewriter, rhs), radix)) {
       candidate = lhs;
     }
-  } else if (loom_index_madd_isa(producer)) {
+  } else if (loom_index_sub_isa(producer)) {
     if (loom_value_facts_divisible_by(
-            loom_rewriter_value_facts(rewriter, loom_index_madd_a(producer)),
-            radix) ||
-        loom_value_facts_divisible_by(
-            loom_rewriter_value_facts(rewriter, loom_index_madd_b(producer)),
+            loom_rewriter_value_facts(rewriter, loom_index_sub_rhs(producer)),
             radix)) {
+      candidate = loom_index_sub_lhs(producer);
+    }
+  } else if (loom_index_madd_isa(producer)) {
+    const loom_value_facts_t a_facts =
+        loom_rewriter_value_facts(rewriter, loom_index_madd_a(producer));
+    const loom_value_facts_t b_facts =
+        loom_rewriter_value_facts(rewriter, loom_index_madd_b(producer));
+    // Divide the required alignment instead of multiplying known divisors:
+    // their product may overflow even though its low bits are proven zero.
+    const int64_t remaining_radix =
+        radix / iree_math_gcd_i64(a_facts.known_divisor, radix);
+    if (loom_value_facts_divisible_by(a_facts, radix) ||
+        loom_value_facts_divisible_by(b_facts, remaining_radix)) {
       candidate = loom_index_madd_c(producer);
     }
   }
-  if (candidate == LOOM_VALUE_ID_INVALID) {
-    return LOOM_VALUE_ID_INVALID;
+  return candidate;
+}
+
+static iree_status_t loom_index_replace_low_mask_coordinate(
+    loom_op_t* op, loom_rewriter_t* rewriter, loom_value_id_t coordinate,
+    loom_value_id_t mask_value, int64_t mask) {
+  const loom_value_facts_t facts =
+      loom_rewriter_value_facts(rewriter, coordinate);
+  if (loom_value_facts_is_non_negative(facts) && facts.range_hi <= mask) {
+    return loom_index_replace_single_result_with_value(op, rewriter,
+                                                       coordinate);
   }
-  facts = loom_rewriter_value_facts(rewriter, candidate);
-  return loom_value_facts_is_non_negative(facts) && facts.range_hi <= mask
-             ? candidate
-             : LOOM_VALUE_ID_INVALID;
+  return loom_index_replace_single_result_with_binary_op(
+      op, rewriter, LOOM_OP_INDEX_ANDI, coordinate, mask_value);
 }
 
 iree_status_t loom_index_andi_canonicalize(loom_op_t* op,
@@ -1369,10 +1387,10 @@ iree_status_t loom_index_andi_canonicalize(loom_op_t* op,
       return loom_index_replace_single_result_with_value(op, rewriter, rhs);
     }
     const loom_value_id_t replacement =
-        loom_index_low_mask_identity(rewriter, rhs, lhs_value);
+        loom_index_low_mask_coordinate(rewriter, rhs, lhs_value);
     if (replacement != LOOM_VALUE_ID_INVALID) {
-      return loom_index_replace_single_result_with_value(op, rewriter,
-                                                         replacement);
+      return loom_index_replace_low_mask_coordinate(op, rewriter, replacement,
+                                                    lhs, lhs_value);
     }
   }
   int64_t rhs_value = 0;
@@ -1381,10 +1399,10 @@ iree_status_t loom_index_andi_canonicalize(loom_op_t* op,
       return loom_index_replace_single_result_with_value(op, rewriter, lhs);
     }
     const loom_value_id_t replacement =
-        loom_index_low_mask_identity(rewriter, lhs, rhs_value);
+        loom_index_low_mask_coordinate(rewriter, lhs, rhs_value);
     if (replacement != LOOM_VALUE_ID_INVALID) {
-      return loom_index_replace_single_result_with_value(op, rewriter,
-                                                         replacement);
+      return loom_index_replace_low_mask_coordinate(op, rewriter, replacement,
+                                                    rhs, rhs_value);
     }
   }
   return iree_ok_status();

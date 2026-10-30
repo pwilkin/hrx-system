@@ -158,21 +158,21 @@ low.kernel.def target<amdgpu.rdna3_5.core> abi_layout({constant_count = 0, direc
   %capacity = s_mov_b32 73
   %linear = v_lshl_add_u32_shift_imm %block, %lane, 6
   %row = v_lshrrev_b32_src0_inline %linear, 5
-  %39 = s_mov_b32 31
-  %group = v_and_b32 %39, %linear
+  %40 = s_mov_b32 31
+  %group = v_and_b32 %40, %lane
   %column = v_lshlrev_b32_src0_inline %group, 4
   %inside = v_cmp_lt_u32 %row, %capacity
-  %43, %44 = s_and_saveexec_b64 %inside
-  low.cond_br %44, ^_bb1, ^_bb2 : reg<amdgpu.scc>
+  %44, %45 = s_and_saveexec_b64 %inside
+  low.cond_br %45, ^_bb1, ^_bb2 : reg<amdgpu.scc>
 ^_bb1:
-  %45 = v_lshl_add_u32_shift_imm %row, %column, 9
-  %46 = v_lshlrev_b32_src0_inline %45, 1
-  %47 = global_load_b128_saddr %46, %inputs
-  %48 = global_load_b128_saddr %46, %inputs {offset = 16}
-  global_store_b128_saddr %46, %47, %outputs
-  global_store_b128_saddr %46, %48, %outputs {offset = 16}
+  %46 = v_lshl_add_u32_shift_imm %row, %column, 9
+  %47 = v_lshlrev_b32_src0_inline %46, 1
+  %48 = global_load_b128_saddr %47, %inputs
+  %49 = global_load_b128_saddr %47, %inputs {offset = 16}
+  global_store_b128_saddr %47, %48, %outputs
+  global_store_b128_saddr %47, %49, %outputs {offset = 16}
   low.br ^_bb2
 ^_bb2:
-  s_mov_b64_exec %43
+  s_mov_b64_exec %44
   return
 }
