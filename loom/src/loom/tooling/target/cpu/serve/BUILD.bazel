@@ -1648,6 +1648,7 @@ loom_cc_test(
         "//loom/src/loom/runtime/parameter:bank_test.cc",
         "//loom/src/loom/runtime/parameter:residency_pressure_test.cc",
         "//loom/src/loom/runtime/parameter:weights_packing_test.cc",
+        "//loom/src/loom/runtime/parameter:weights_placement_test.cc",
         "//loom/src/loom/runtime/parameter:weights_streaming_test.cc",
         "//loom/src/loom/runtime/parameter:weights_test.cc",
         "//loom/src/loom/runtime/parameter:weights_test_base.h",

@@ -95,6 +95,35 @@ command.def public @direct_incomplete() launch(%weights: buffer, %output: buffer
   command.return
 }
 
+command.def @parameter_block(%begin: index) launch(%weights: buffer, %output: buffer) {
+  %count = index.constant 17 : index
+  %end = index.add %begin, %count : index
+  %step = index.constant 1 : index
+  scf.for %i = [%begin to %end step %step] unroll {
+    %data = command.parameter %weights, "tensor.{}"[%i] : view<8xi32>
+    kernel.launch @copy_raw_kernel(%data, %output) : (view<8xi32>, buffer)
+  }
+  command.return
+}
+
+command.def public @first_parameter_block() launch(%weights: buffer, %output: buffer) {
+  %begin = index.constant 0 : index
+  command.launch @parameter_block[%begin](%weights, %output) : [index](buffer, buffer)
+  command.return
+}
+
+command.def public @second_parameter_block() launch(%weights: buffer, %output: buffer) {
+  %begin = index.constant 17 : index
+  command.launch @parameter_block[%begin](%weights, %output) : [index](buffer, buffer)
+  command.return
+}
+
+command.def public @overlapping_parameter_block() launch(%weights: buffer, %output: buffer) {
+  %begin = index.constant 8 : index
+  command.launch @parameter_block[%begin](%weights, %output) : [index](buffer, buffer)
+  command.return
+}
+
 command.def public @domains() launch(%base: buffer, %adapter: buffer, %output: buffer) {
   %left = command.parameter %base, "raw" : view<8xi32>
   %right = command.parameter %adapter, "raw" : view<8xi32>

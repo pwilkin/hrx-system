@@ -106,15 +106,83 @@ struct loom_runtime_weights_t {
   iree_status_t activation_status;
 };
 
-static const loom_runtime_weight_span_t* loom_runtime_weight_find(
-    iree_host_size_t count, const loom_runtime_weight_span_t* spans,
+typedef struct loom_runtime_weight_key_slot_t {
+  // Hash of the complete length-delimited parameter key.
+  uint64_t hash;
+  // First matching span ordinal plus one; zero denotes an empty slot.
+  iree_host_size_t span;
+} loom_runtime_weight_key_slot_t;
+
+// Temporary placement lookup. Ordinals survive growth of the plan's spans;
+// both the index and unused span capacity scale with unique parameters.
+typedef struct loom_runtime_weight_index_t {
+  // Allocated plan span capacity, retained only while constructing placement.
+  iree_host_size_t span_capacity;
+  // Power-of-two key table capacity with at least half its slots empty.
+  iree_host_size_t slot_capacity;
+  // Owned key table borrowing keys through the plan's current span storage.
+  loom_runtime_weight_key_slot_t* slots;
+} loom_runtime_weight_index_t;
+
+static uint64_t loom_runtime_weight_key_hash(iree_string_view_t key) {
+  uint64_t hash = UINT64_C(14695981039346656037);
+  for (iree_host_size_t i = 0; i < key.size; ++i) {
+    hash ^= (uint8_t)key.data[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
+
+static loom_runtime_weight_key_slot_t* loom_runtime_weight_index_slot(
+    const loom_runtime_weight_index_t* index,
+    const loom_runtime_weight_span_t* spans, uint64_t hash,
     iree_string_view_t key) {
-  for (iree_host_size_t i = 0; i < count; ++i) {
-    if (iree_string_view_equal(spans[i].parameter.key, key)) {
-      return &spans[i];
+  iree_host_size_t position =
+      (iree_host_size_t)hash & (index->slot_capacity - 1);
+  while (index->slots[position].span &&
+         (index->slots[position].hash != hash ||
+          !iree_string_view_equal(
+              spans[index->slots[position].span - 1].parameter.key, key))) {
+    position = (position + 1) & (index->slot_capacity - 1);
+  }
+  return &index->slots[position];
+}
+
+static iree_status_t loom_runtime_weight_index_reserve(
+    loom_runtime_weight_index_t* index, iree_host_size_t count,
+    loom_runtime_weights_t* weights) {
+  iree_host_size_t capacity = iree_max(index->slot_capacity, 32);
+  iree_status_t status = iree_ok_status();
+  while (iree_status_is_ok(status) && count > capacity / 2) {
+    if (!iree_host_size_checked_mul(capacity, 2, &capacity)) {
+      status = iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                                "parameter placement capacity overflow");
     }
   }
-  return NULL;
+  IREE_RETURN_IF_ERROR(status);
+  if (count > index->span_capacity) {
+    IREE_RETURN_IF_ERROR(iree_allocator_grow_array(
+        weights->host_allocator, count, sizeof(*weights->spans),
+        &index->span_capacity, (void**)&weights->spans));
+  }
+  if (capacity > index->slot_capacity) {
+    loom_runtime_weight_index_t replacement = {.slot_capacity = capacity};
+    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
+        weights->host_allocator, capacity, sizeof(*replacement.slots),
+        (void**)&replacement.slots));
+    for (iree_host_size_t i = 0; i < index->slot_capacity; ++i) {
+      const loom_runtime_weight_key_slot_t slot = index->slots[i];
+      if (slot.span) {
+        *loom_runtime_weight_index_slot(
+            &replacement, weights->spans, slot.hash,
+            weights->spans[slot.span - 1].parameter.key) = slot;
+      }
+    }
+    iree_allocator_free(weights->host_allocator, index->slots);
+    index->slots = replacement.slots;
+    index->slot_capacity = capacity;
+  }
+  return iree_ok_status();
 }
 
 typedef struct loom_runtime_weight_root_binding_t {
@@ -129,11 +197,9 @@ typedef struct loom_runtime_weight_root_binding_t {
 // exactly once.
 static iree_status_t loom_runtime_weight_resolve_root(
     loom_runtime_weights_t* weights, const loom_cmd_program_t* program,
-    loom_cmd_program_parameter_root_t root, iree_host_size_t* span_count,
-    loom_runtime_weight_span_t* spans,
+    loom_cmd_program_parameter_root_t root, loom_runtime_weight_index_t* index,
     iree_hal_pool_reservation_request_t* requests,
     loom_runtime_weight_root_binding_t* out_binding) {
-  const iree_host_size_t prior_count = *span_count;
   const loom_runtime_weight_span_t* shared = NULL;
   iree_device_size_t origin = 0;
   iree_host_size_t count = 0;
@@ -143,8 +209,14 @@ static iree_status_t loom_runtime_weight_resolve_root(
     if (parameter.fixed_buffer_index != root.fixed_buffer_index) {
       continue;
     }
+    const loom_runtime_weight_key_slot_t* slot =
+        index->slot_capacity
+            ? loom_runtime_weight_index_slot(
+                  index, weights->spans,
+                  loom_runtime_weight_key_hash(parameter.key), parameter.key)
+            : NULL;
     const loom_runtime_weight_span_t* existing =
-        loom_runtime_weight_find(prior_count, spans, parameter.key);
+        slot && slot->span ? &weights->spans[slot->span - 1] : NULL;
     if (!count++) {
       shared = existing;
       if (shared) {
@@ -174,6 +246,13 @@ static iree_status_t loom_runtime_weight_resolve_root(
         shared->storage_index, {origin, root.required_byte_length}};
     return iree_ok_status();
   }
+  iree_host_size_t capacity = 0;
+  if (!iree_host_size_checked_add(weights->span_count, count, &capacity)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "parameter placement count overflow");
+  }
+  IREE_RETURN_IF_ERROR(
+      loom_runtime_weight_index_reserve(index, capacity, weights));
   const iree_host_size_t storage_index = weights->storage_count++;
   requests[storage_index] = iree_hal_make_pool_reservation_request(
       root.required_byte_length, root.minimum_alignment);
@@ -185,10 +264,16 @@ static iree_status_t loom_runtime_weight_resolve_root(
     if (parameter.fixed_buffer_index != root.fixed_buffer_index) {
       continue;
     }
-    spans[(*span_count)++] = (loom_runtime_weight_span_t){
+    const uint64_t hash = loom_runtime_weight_key_hash(parameter.key);
+    loom_runtime_weight_key_slot_t* slot = loom_runtime_weight_index_slot(
+        index, weights->spans, hash, parameter.key);
+    weights->spans[weights->span_count++] = (loom_runtime_weight_span_t){
         .parameter = parameter,
         .storage_index = storage_index,
     };
+    if (!slot->span) {
+      *slot = (loom_runtime_weight_key_slot_t){hash, weights->span_count};
+    }
   }
   return iree_ok_status();
 }
@@ -1419,19 +1504,10 @@ iree_status_t loom_runtime_weights_allocate(
                                        weights);
   *out_weights = weights;
   IREE_TRACE_ZONE_BEGIN(z0);
-  iree_host_size_t capacity =
-      shared_root_count ? roots[0].program->parameters.count : 0;
-  for (iree_host_size_t i = shared_root_count; i < root_count; ++i) {
-    capacity += roots[i].program->parameters.count;
-  }
-  iree_status_t status = iree_allocator_malloc_array(host_allocator, capacity,
-                                                     sizeof(*weights->spans),
-                                                     (void**)&weights->spans);
-  if (iree_status_is_ok(status)) {
-    status = iree_allocator_malloc_array(host_allocator, root_count,
-                                         sizeof(*weights->storages),
-                                         (void**)&weights->storages);
-  }
+  loom_runtime_weight_index_t index = {0};
+  iree_status_t status = iree_allocator_malloc_array(
+      host_allocator, root_count, sizeof(*weights->storages),
+      (void**)&weights->storages);
   loom_runtime_weight_root_binding_t* bindings = NULL;
   if (iree_status_is_ok(status)) {
     status = iree_allocator_malloc_array(
@@ -1454,16 +1530,16 @@ iree_status_t loom_runtime_weights_allocate(
       root.minimum_alignment =
           iree_max(root.minimum_alignment, other.minimum_alignment);
     }
-    status = loom_runtime_weight_resolve_root(
-        weights, roots[0].program, root, &weights->span_count, weights->spans,
-        requests, &bindings[0]);
+    status = loom_runtime_weight_resolve_root(weights, roots[0].program, root,
+                                              &index, requests, &bindings[0]);
   }
   for (iree_host_size_t i = shared_root_count;
        i < root_count && iree_status_is_ok(status); ++i) {
-    status = loom_runtime_weight_resolve_root(
-        weights, roots[i].program, roots[i].root, &weights->span_count,
-        weights->spans, requests, &bindings[i]);
+    status = loom_runtime_weight_resolve_root(weights, roots[i].program,
+                                              roots[i].root, &index, requests,
+                                              &bindings[i]);
   }
+  iree_allocator_free(host_allocator, index.slots);
   if (iree_status_is_ok(status) && !pool && weights->storage_count) {
     status = iree_hal_semaphore_create(
         device, IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY, 0,

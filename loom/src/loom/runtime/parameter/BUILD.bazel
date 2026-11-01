@@ -19,6 +19,7 @@ exports_files(
         "weights_test.cc",
         "weights_test_base.h",
         "weights_packing_test.cc",
+        "weights_placement_test.cc",
         "weights_streaming_test.cc",
     ],
     visibility = ["//visibility:public"],
