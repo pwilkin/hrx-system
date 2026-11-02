@@ -194,6 +194,7 @@ _SCHEDULE_TRANS = "amdgpu.trans"
 _SCHEDULE_PACKED_DOT = "amdgpu.dot.packed"
 _SCHEDULE_SMEM_LOAD = "amdgpu.smem.load"
 _SCHEDULE_SMEM_STORE = "amdgpu.smem.store"
+_SCHEDULE_SMEM_ATOMIC = "amdgpu.smem.atomic"
 _SCHEDULE_VMEM_LOAD = "amdgpu.vmem.load"
 _SCHEDULE_VMEM_LOAD_LDS = "amdgpu.vmem.load.lds"
 _SCHEDULE_VMEM_STORE = "amdgpu.vmem.store"
@@ -3677,6 +3678,7 @@ __all__ = (
     "_SCHEDULE_PACKED_DOT",
     "_SCHEDULE_SALU",
     "_SCHEDULE_SALU_COMPARE",
+    "_SCHEDULE_SMEM_ATOMIC",
     "_SCHEDULE_SMEM_CACHE_CONTROL",
     "_SCHEDULE_SMEM_LOAD",
     "_SCHEDULE_SMEM_STORE",

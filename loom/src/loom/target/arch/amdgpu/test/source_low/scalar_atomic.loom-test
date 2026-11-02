@@ -1,0 +1,106 @@
+// Each wave publishes its coherent partial before updating a uniform arrival
+// counter. The returned scalar ticket completes through LGKM before its use.
+// RUN: emit amdgpu-assembly @publish_arrival
+
+amdgpu.target<gfx942> @target
+
+low.func.def target<amdgpu.cdna3.core>(@target) @publish_arrival(%partial: reg<amdgpu.sgpr x2>, %counter: reg<amdgpu.sgpr x2>, %offset: reg<amdgpu.vgpr>, %value: reg<amdgpu.vgpr x2>, %limit: reg<amdgpu.sgpr>) -> (reg<amdgpu.sgpr>) asm {
+  global_store_dwordx2_saddr %offset, %value, %partial {sc0 = 1, sc1 = 1}
+  s_waitcnt {vmcnt = 0, lgkmcnt = 0}
+  %ticket = s_atomic_dec_rtn_offset_only %limit, %counter : reg<amdgpu.sgpr>
+  %next = s_add_u32_rhs_inline %ticket, 1
+  return %next
+}
+
+// ----
+  global_store_dwordx2 v0, v[2:3], s[0:1] offset:0 sc0 sc1
+  s_waitcnt vmcnt(0) lgkmcnt(0)
+  s_atomic_dec s2, s[4:5], 0 glc
+  s_waitcnt vmcnt(63) lgkmcnt(0)
+  s_add_u32 s0, s2, 1
+  s_endpgm
+
+// ====
+// RUN: emit amdgpu-assembly @scalar_atomic_payloads
+
+amdgpu.target<gfx90a> @target
+
+low.func.def target<amdgpu.cdna2.core>(@target) @scalar_atomic_payloads(%base: reg<amdgpu.sgpr x2>, %resource: reg<amdgpu.sgpr x4>, %offset: reg<amdgpu.sgpr>, %pair: reg<amdgpu.sgpr x4>, %limit: reg<amdgpu.sgpr x2>) -> (reg<amdgpu.sgpr x4>) asm {
+  s_atomic_inc_x2 %limit, %base, %offset {offset = -1048576}
+  %old = s_buffer_atomic_cmpswap_x2_rtn %pair, %resource, %offset {offset = 1048568} : reg<amdgpu.sgpr x4>
+  return %old
+}
+
+// ----
+  s_atomic_inc_x2 s[2:3], s[0:1], s12 offset:-1048576
+  s_waitcnt vmcnt(63) lgkmcnt(0)
+  s_buffer_atomic_cmpswap_x2 s[4:7], s[8:11], s12 offset:1048568 glc
+  s_waitcnt vmcnt(63) lgkmcnt(0)
+  s_endpgm
+
+// ====
+// RUN: emit amdgpu-native-words @scalar_atomic_packets
+
+amdgpu.target<gfx950> @target
+
+low.func.def target<amdgpu.cdna4.core>(@target) @scalar_atomic_packets(%base: reg<amdgpu.sgpr x2>, %resource: reg<amdgpu.sgpr x4>, %offset: reg<amdgpu.sgpr>, %value: reg<amdgpu.sgpr>, %pair: reg<amdgpu.sgpr x2>) asm {
+  s_atomic_xor %value, %base, %offset {offset = -16}
+  s_buffer_atomic_inc_offset_only %value, %resource {offset = 12}
+  %old = s_atomic_cmpswap_rtn_offset_only %pair, %base {offset = 4} : reg<amdgpu.sgpr x2>
+  return
+}
+
+// ----
+0xC22A4044
+0x001FFFF0
+0xBF8CC07F
+0xC12E0042
+0x0000000C
+0xBF8CC07F
+0xC2070084
+0x00000004
+0xBF810000
+
+// ====
+// The subgroup coordinate enters Low in a VGPR. Scalar capture addresses one
+// counter per wave without a lane-leader branch.
+// RUN: emit source-low target=amdgpu:gfx942 output=low
+
+low.func.def target<amdgpu.cdna3.core> @arrive(%counters: reg<amdgpu.sgpr x2>, %wave: reg<amdgpu.vgpr>, %limit: reg<amdgpu.sgpr>) -> (reg<amdgpu.sgpr>) asm {
+  %wave_number = v_readfirstlane_b32 %wave
+  %offset = s_lshl_b32_rhs_inline %wave_number, 2
+  %ticket = s_atomic_dec_rtn %limit, %counters, %offset : reg<amdgpu.sgpr>
+  return %ticket
+}
+
+kernel.def @wave_arrivals() {
+  %unit = index.constant 1 : index
+  %threads = index.constant 256 : index
+  kernel.launch.config workgroups(%unit, %unit, %unit) workgroup_size(%threads, %unit, %unit) : index
+} launch(%counters: buffer, %output: buffer) {
+  %wave = kernel.subgroup.id : index
+  %wave_number = index.cast %wave : index to i32
+  %limit = scalar.constant 5 : i32
+  %ticket = low.invoke @arrive(%counters, %wave_number, %limit) : (buffer, i32, i32) -> (i32)
+  %origin = index.constant 0 : offset
+  %thread = kernel.workitem.id<x> : index
+  %destination = buffer.view %output[%origin] : buffer -> view<256xi32>
+  view.store %ticket, %destination[%thread] : i32, view<256xi32>
+  kernel.return
+}
+
+// ----
+low.kernel.def target<amdgpu.cdna3.core> abi_layout({constant_count = 0, direct_arg_count = 0, direct_arg_names = {}, direct_arg_offsets = [], direct_arg_parameter_indices = [], direct_arg_sizes = [], parameter_count = 2, resource_count = 2, resource_offsets = [0, 8], resource_parameter_indices = [0, 1], uses_kernarg_segment_ptr = true}) workgroup_size(256, 1, 1) workgroup_count(1, 1, 1) @wave_arrivals() asm {
+  %thread = live_in<amdgpu.workitem_id.x> : reg<amdgpu.vgpr>
+  %counters = resource<hal_binding> {index = 0, source_type = hal.buffer} : reg<amdgpu.sgpr x2>
+  %destination = resource<hal_binding> {extent = 1024, index = 1, source_type = hal.buffer} : reg<amdgpu.sgpr x2>
+  %wave_number$21 = v_lshrrev_b32_src0_inline %thread, 6
+  %limit = s_mov_b32 5
+  %wave_number$4 = v_readfirstlane_b32 %wave_number$21
+  %offset = s_lshl_b32_rhs_inline %wave_number$4, 2
+  %ticket = s_atomic_dec_rtn %limit, %counters, %offset : reg<amdgpu.sgpr>
+  %24 = v_mov_b32_copy %ticket
+  %25 = v_lshlrev_b32_src0_inline %thread, 2
+  global_store_dword_saddr %25, %24, %destination
+  return
+}

@@ -142,6 +142,16 @@ _AMDGPU_CDNA4_CORE_DESCRIPTOR_SET_BASE = _amdgpu_core_descriptor_set(
             lds_crosslane_hazards=_LDS_WAIT_HAZARDS,
         ),
         ScheduleClass(
+            _SCHEDULE_SMEM_ATOMIC,
+            latency_kind=LatencyKind.VARIABLE,
+            latency_cycles=8,
+            minimum_issue_separation_cycles=8,
+            issue_uses=(IssueUse(_RESOURCE_SMEM, cycles=1, units=1),),
+            hazards=_SMEM_WAIT_HAZARDS,
+            flags=(ScheduleClassFlag.MAY_LOAD, ScheduleClassFlag.MAY_STORE),
+            model_quality=ModelQuality.FALLBACK,
+        ),
+        ScheduleClass(
             _SCHEDULE_VMEM_LOAD_LDS,
             latency_kind=LatencyKind.VARIABLE,
             latency_cycles=16,

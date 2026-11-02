@@ -50,6 +50,7 @@ from .rdna4 import *
 from .rdna4m import *
 from .rdna35 import *
 from .register_moves import _cdna_register_move_overlays
+from .scalar_atomic import _cdna_scalar_atomic_overlays
 from .scalar_carry import *
 from .scalar_float import *
 from .workgroup import *
@@ -541,6 +542,7 @@ def _cdna_core_overlays(
         *_cdna_s_buffer_load_width_overlays(
             fixed_encoding_fields=_CDNA_SMEM_SGPR_IMM_FIXED_FIELDS
         ),
+        *_cdna_scalar_atomic_overlays(),
         *_s_store_dword_width_overlays(
             fixed_encoding_fields=_CDNA_SMEM_SGPR_IMM_FIXED_FIELDS
         ),
