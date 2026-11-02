@@ -11,10 +11,12 @@
 // expanded across the connected constraint/use closure, and committed through
 // the rewriter only if the whole transaction is consistent. The propagator
 // consumes verified IR and retained analysis facts; contradictory candidate
-// closures leave the module unchanged. Callable inputs, call results, and
-// returned values retain their verified boundary types unless a whole-module
-// owner explicitly permits refinement and reconciles the signature. Local
-// refinement can also proceed after inlining removes that boundary.
+// closures leave the module unchanged. Shared callable inputs, call results,
+// and returned values retain their verified boundary types unless a
+// whole-module owner explicitly permits refinement and reconciles the
+// signature. Semantic-to-Low invocation adapters own their source types
+// locally; refining them does not change the callee's register signature.
+// Local refinement can also proceed after inlining removes a shared boundary.
 
 #ifndef LOOM_REWRITE_TYPE_PROPAGATION_H_
 #define LOOM_REWRITE_TYPE_PROPAGATION_H_

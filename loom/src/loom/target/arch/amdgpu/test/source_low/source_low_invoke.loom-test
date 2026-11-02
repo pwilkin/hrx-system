@@ -306,3 +306,54 @@ low.func.def target<amdgpu.rdna3_5.core>(@target) abi(hal_kernel) @tied_buffer_c
   %value = global_load_b32_saddr %13, %input_global
   return %value
 }
+
+// ====
+
+// Source dimensions refine on both sides of the native invocation. Its Low
+// register signature remains fixed while the semantic packet becomes static.
+amdgpu.target<gfx942> @target
+
+low.func.def target<amdgpu.cdna3.core>(@target) @double_packet(%value: reg<amdgpu.vgpr x2>) -> (reg<amdgpu.vgpr x2>) asm {
+  %first = slice %value[0] : reg<amdgpu.vgpr x2> -> reg<amdgpu.vgpr>
+  %second = slice %value[1] : reg<amdgpu.vgpr x2> -> reg<amdgpu.vgpr>
+  %first_sum = v_add_f32 %first, %first
+  %second_sum = v_add_f32 %second, %second
+  %result = concat(%first_sum, %second_sum) : (reg<amdgpu.vgpr>, reg<amdgpu.vgpr>) -> reg<amdgpu.vgpr x2>
+  return %result
+}
+
+func.def inline @source_packet(%width: index, %input_buffer: buffer, %output_buffer: buffer) {
+  %origin = index.constant 0 : offset
+  %input = buffer.view %input_buffer[%origin] : buffer -> view<[%width]xf32>
+  %output = buffer.view %output_buffer[%origin] : buffer -> view<[%width]xf32>
+  %value = vector.load %input[0] : view<[%width]xf32> -> vector<[%width]xf32>
+  %result = low.invoke @double_packet(%value) : (vector<[%width]xf32>) -> (vector<[%width]xf32>)
+  vector.store %result, %output[0] : vector<[%width]xf32>, view<[%width]xf32>
+  func.return
+}
+
+kernel.def target(@target) @source_extent_caller() {
+  %unit = index.constant 1 : index
+  kernel.launch.config workgroups(%unit, %unit, %unit) workgroup_size(%unit, %unit, %unit) : index
+} launch(%input: buffer, %output: buffer) {
+  %tile = index.constant 32 : index
+  %fragment = index.constant 16 : index
+  %width = index.div %tile, %fragment : index
+  func.call @source_packet(%width, %input, %output) : (index, buffer, buffer)
+  kernel.return
+}
+
+// ----
+low.kernel.def target<amdgpu.cdna3.core>(@target) abi_layout({constant_count = 0, direct_arg_count = 0, direct_arg_names = {}, direct_arg_offsets = [], direct_arg_parameter_indices = [], direct_arg_sizes = [], parameter_count = 2, resource_count = 2, resource_offsets = [0, 8], resource_parameter_indices = [0, 1], uses_kernarg_segment_ptr = true}) workgroup_size(1, 1, 1) workgroup_count(1, 1, 1) @source_extent_caller() asm {
+  %input = resource<hal_binding> {extent = 8, index = 0, source_type = hal.buffer} : reg<amdgpu.sgpr x2>
+  %output = resource<hal_binding> {extent = 8, index = 1, source_type = hal.buffer} : reg<amdgpu.sgpr x2>
+  %24 = v_mov_b32 0
+  %value = global_load_dwordx2_saddr %24, %input : reg<amdgpu.vgpr x2>
+  %first = slice %value[0] : reg<amdgpu.vgpr x2> -> reg<amdgpu.vgpr>
+  %second = slice %value[1] : reg<amdgpu.vgpr x2> -> reg<amdgpu.vgpr>
+  %first_sum = v_add_f32 %first, %first
+  %second_sum = v_add_f32 %second, %second
+  %result = concat(%first_sum, %second_sum) : (reg<amdgpu.vgpr>, reg<amdgpu.vgpr>) -> reg<amdgpu.vgpr x2>
+  global_store_dwordx2_saddr %24, %result, %output
+  return
+}

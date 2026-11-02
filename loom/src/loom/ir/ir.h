@@ -894,11 +894,12 @@ enum loom_trait_bits_e {
   // interchangeable. Motion and CSE preserve the context until expansion;
   // runtime effects and erasure of unused pure results remain independent.
   LOOM_TRAIT_CONTEXTUAL = 1u << 30,
-  // Op participates in a callable signature shared with other operations.
-  // Refining its operand/result types requires an owner that reconciles the
-  // signature and its callers together. This property is independent of the
-  // callable effect contract and does not imply an exact callee. Derived for
-  // FuncLike/CallLike interfaces; unresolved callable applications declare it
+  // Op participates in a callable definition or invocation. Shared signature
+  // refinement requires an owner reconciling the callee and callers together;
+  // semantic-to-Low adapters instead own source types mapped to fixed register
+  // signatures. The callable interface identifies that distinction. This
+  // property is independent of effects and does not imply an exact callee.
+  // Derived for FuncLike/CallLike; unresolved applications declare it
   // explicitly.
   LOOM_TRAIT_CALLABLE_BOUNDARY = 1u << 31,
 };
@@ -1209,7 +1210,8 @@ enum loom_call_like_kind_e {
   LOOM_CALL_LIKE_KIND_SEMANTIC = 1,
   // Direct target-low function body to target-low function body call.
   LOOM_CALL_LIKE_KIND_LOW_INTERNAL = 2,
-  // Explicit semantic-to-target-low invocation of a selected low function.
+  // Semantic-to-target-low adapter with local source operand/result types.
+  // Lowering maps those types to the selected function's register signature.
   LOOM_CALL_LIKE_KIND_LOW_INVOKE = 3,
   // Command-program composition with specialization and storage bindings.
   LOOM_CALL_LIKE_KIND_COMMAND_PROGRAM = 4,

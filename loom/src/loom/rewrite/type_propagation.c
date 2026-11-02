@@ -1650,6 +1650,12 @@ static iree_status_t loom_type_propagator_process_def_constraints(
 
 static bool loom_type_propagator_boundary_is_fixed(
     const loom_type_propagator_t* propagator, loom_op_t* op) {
+  const loom_call_like_t call = loom_call_like_cast(propagator->module, op);
+  if (loom_call_like_kind(call) == LOOM_CALL_LIKE_KIND_LOW_INVOKE) {
+    // Source types are local to the adapter. Lowering maps their refined
+    // representation to the callee's fixed register signature.
+    return false;
+  }
   return !propagator->refine_boundary.fn ||
          !propagator->refine_boundary.fn(propagator->refine_boundary.user_data,
                                          op);
