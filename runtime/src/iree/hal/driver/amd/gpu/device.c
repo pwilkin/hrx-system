@@ -240,7 +240,9 @@ void iree_hal_amd_gpu_device_options_initialize(
       .queue = {.ring_byte_length = 0,
                 .retirement_capacity = 256,
                 .argument_capacity = 65536,
-                .capture_block_size = 1024,
+                // Keep multi-device wait lists and binding tables in reusable
+                // storage, including optional profiling metadata.
+                .capture_block_size = 4096,
                 .capture_block_count = 64},
   };
   iree_hal_amd_fabric_asan_options_initialize(&out_options->asan.memory);
