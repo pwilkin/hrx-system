@@ -239,6 +239,52 @@ class WorkspaceTest : public ::testing::TestWithParam<uint32_t> {
   std::array<uint32_t, 16> input_ = {};
 };
 
+TEST_P(WorkspaceTest, BarrierFanInReusesScratchAfterQueueCapture) {
+  loom_runtime_execution_release(producer_.execution);
+  producer_.execution = nullptr;
+  IREE_ASSERT_OK(loom_runtime_execution_create(execution_queues_[0], workspace_,
+                                               {this, AllocateExecution},
+                                               &producer_.execution));
+  std::array<iree_hal_semaphore_t*, 32> semaphores;
+  std::array<uint64_t, 32> values;
+  semaphores.fill(gate_);
+  values.fill(1);
+  const iree_hal_semaphore_list_t waits = {16, semaphores.data(),
+                                           values.data()};
+  remaining_allocations_ = 0;
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_RESOURCE_EXHAUSTED,
+      loom_runtime_execution_barrier(producer_.execution, waits));
+  EXPECT_EQ(loom_runtime_execution_frontier(producer_.execution).values[0], 0u);
+
+  // The first large frontier grows scratch once. All following submissions
+  // must capture their dependencies without another execution allocation.
+  remaining_allocations_ = 1;
+  IREE_ASSERT_OK(loom_runtime_execution_barrier(producer_.execution, waits));
+  EXPECT_EQ(remaining_allocations_, 0u);
+  values.fill(2);
+  IREE_ASSERT_OK(loom_runtime_execution_barrier(producer_.execution, waits));
+  IREE_ASSERT_OK(loom_runtime_execution_barrier(
+      producer_.execution, {3, semaphores.data(), values.data()}));
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_RESOURCE_EXHAUSTED,
+      loom_runtime_execution_barrier(producer_.execution,
+                                     {32, semaphores.data(), values.data()}));
+  EXPECT_EQ(loom_runtime_execution_frontier(producer_.execution).values[0], 3u);
+  // Failed growth preserves both the earlier storage and accepted timelines.
+  IREE_ASSERT_OK(loom_runtime_execution_barrier(producer_.execution, waits));
+  IREE_ASSERT_OK(iree_hal_semaphore_signal(gate_, 1, nullptr));
+  IREE_ASSERT_OK(loom_runtime_execution_wait(producer_.execution, 1));
+  const auto frontier = loom_runtime_execution_frontier(producer_.execution);
+  uint64_t observed = 0;
+  IREE_ASSERT_OK(iree_hal_semaphore_query(frontier.semaphores[0], &observed));
+  EXPECT_EQ(observed, 1u);
+  IREE_ASSERT_OK(iree_hal_semaphore_signal(gate_, 2, nullptr));
+  IREE_ASSERT_OK(loom_runtime_execution_drain(producer_.execution));
+  EXPECT_EQ(frontier.values[0], 4u);
+  remaining_allocations_ = SIZE_MAX;
+}
+
 TEST_P(WorkspaceTest, RejectedBatchPublishesNoPrefixOrTimelineEdge) {
   const iree_hal_pool_reservation_request_t requests[] = {
       iree_hal_make_pool_reservation_request(64, 16),

@@ -31,6 +31,10 @@ struct loom_runtime_execution_t {
   loom_runtime_execution_timeline_t feedback;
   // Protects timeline reservation through queue acceptance, never device waits.
   iree_slim_mutex_t mutex;
+  // Overflow semaphore/value arrays reused only while the mutex is held.
+  void* barrier_storage;
+  // Number of semaphore/value pairs fitting in barrier_storage.
+  iree_host_size_t barrier_capacity;
   // Transient allocation/pool captures governing workspace activity.
   loom_runtime_workspace_scope_t* scope;
   // Persistent allocation/pool captures, independent of workspace activity.
@@ -55,6 +59,7 @@ void loom_runtime_execution_release(loom_runtime_execution_t* execution) {
     iree_hal_semaphore_release(execution->feedback.semaphore);
     iree_hal_semaphore_release(execution->work.semaphore);
     loom_runtime_execution_binding_release(execution->binding);
+    iree_allocator_free(execution->host_allocator, execution->barrier_storage);
     iree_allocator_free(execution->host_allocator, execution);
   }
 }
@@ -252,37 +257,42 @@ iree_status_t loom_runtime_execution_barrier(
   iree_hal_semaphore_t** semaphores = inline_semaphores;
   uint64_t* values = inline_values;
   const iree_host_size_t count = waits.count + 1;
-  void* storage = NULL;
+  iree_slim_mutex_lock(&execution->mutex);
+  iree_status_t status = iree_ok_status();
   if (count > IREE_ARRAYSIZE(inline_semaphores)) {
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        execution->host_allocator, count, sizeof(*semaphores) + sizeof(*values),
-        &storage));
-    semaphores = storage;
-    values = (uint64_t*)(semaphores + count);
+    if (count > execution->barrier_capacity) {
+      status = iree_allocator_grow_array(execution->host_allocator, count,
+                                         sizeof(*semaphores) + sizeof(*values),
+                                         &execution->barrier_capacity,
+                                         &execution->barrier_storage);
+    }
+    if (!iree_status_is_ok(status)) {
+      iree_slim_mutex_unlock(&execution->mutex);
+      return status;
+    }
+    semaphores = execution->barrier_storage;
+    values = (uint64_t*)(semaphores + execution->barrier_capacity);
   }
   for (iree_host_size_t i = 0; i < waits.count; ++i) {
     semaphores[i] = waits.semaphores[i];
     values[i] = waits.payload_values[i];
   }
-  iree_slim_mutex_lock(&execution->mutex);
   semaphores[waits.count] = execution->work.semaphore;
   values[waits.count] = execution->work.submitted_value;
   uint64_t next_value = execution->work.submitted_value + 1;
   const iree_hal_semaphore_list_t dependencies = {count, semaphores, values};
   const iree_hal_semaphore_list_t signals = {1, &execution->work.semaphore,
                                              &next_value};
-  iree_status_t status =
-      execution->work.submitted_value == IREE_HAL_SEMAPHORE_MAX_VALUE
-          ? iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                             "execution timeline is exhausted")
-          : iree_hal_queue_barrier(execution->binding.dispatch, dependencies,
-                                   signals, NULL,
-                                   IREE_HAL_QUEUE_BARRIER_FLAG_NONE);
+  status = execution->work.submitted_value == IREE_HAL_SEMAPHORE_MAX_VALUE
+               ? iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                                  "execution timeline is exhausted")
+               : iree_hal_queue_barrier(execution->binding.dispatch,
+                                        dependencies, signals, NULL,
+                                        IREE_HAL_QUEUE_BARRIER_FLAG_NONE);
   if (iree_status_is_ok(status)) {
     execution->work.submitted_value = next_value;
   }
   iree_slim_mutex_unlock(&execution->mutex);
-  iree_allocator_free(execution->host_allocator, storage);
   return status;
 }
 
