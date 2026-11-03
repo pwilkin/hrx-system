@@ -17,6 +17,8 @@ extern "C" {
 typedef struct loom_runtime_weight_span_t {
   // Final placement with a key borrowed from the plan's owned key storage.
   loom_cmd_program_parameter_t parameter;
+  // Resolved source-zero identity for an implicit canonical read.
+  const iree_io_parameter_t* source_parameter;
   // Unique final storage index, resolved once before any queue work.
   iree_host_size_t storage_index;
   // Owned cached preparation command, or null for unchanged bytes.
@@ -26,8 +28,8 @@ typedef struct loom_runtime_weight_span_t {
 } loom_runtime_weight_span_t;
 
 typedef struct loom_runtime_weight_fragment_t {
-  // Borrowed checkpoint identity from the retained parameter plan.
-  iree_string_view_t key;
+  // Resolved checkpoint identity borrowed from the retained source provider.
+  const iree_io_parameter_t* parameter;
   // File and target byte extents, possibly only part of a tensor.
   iree_io_parameter_span_t range;
   // Resolved checkpoint or captured-host source owning the identity.

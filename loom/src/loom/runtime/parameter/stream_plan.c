@@ -29,15 +29,17 @@ static iree_host_size_t loom_runtime_weight_plan_fragments(
     }
     for (uint32_t p = 0; p < iree_max(1, span->inputs.count); ++p) {
       loom_runtime_weight_fragment_t fragment = {
-          .key = span->parameter.key,
+          .parameter = span->source_parameter,
           .range = {.buffer_offset = span->parameter.byte_offset,
                     .length = span->parameter.byte_length}};
       if (span->inputs.count) {
         const loom_runtime_weight_input_t* input =
             loom_runtime_weight_inputs_at(inputs, span->inputs.first + p);
-        fragment = (loom_runtime_weight_fragment_t){.key = input->entry->key,
-                                                    .range = input->span,
-                                                    .source = input->source};
+        fragment = (loom_runtime_weight_fragment_t){
+            .parameter = input->parameter,
+            .range = input->span,
+            .source = input->source,
+        };
         fragment.range.buffer_offset += span->parameter.byte_offset;
       }
       iree_host_size_t begin = plan->spans[i].begin;

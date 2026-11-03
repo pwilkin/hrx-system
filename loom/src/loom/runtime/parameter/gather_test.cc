@@ -33,6 +33,8 @@ struct GatedProvider : iree_io_parameter_provider_t {
   std::promise<iree_status_code_t>* submitted;
   // Published only after the gather callback releases its provider claim.
   std::promise<void>* released;
+  // Calls across all descriptor spans; one source identity resolves once.
+  uint32_t resolutions = 0;
 
   GatedProvider(iree_io_parameter_provider_t* provider,
                 iree_hal_semaphore_t* gate,
@@ -55,18 +57,28 @@ struct GatedProvider : iree_io_parameter_provider_t {
               delete self;
               released->set_value();
             },
+        .resolve =
+            [](iree_io_parameter_provider_t* base, iree_string_view_t scope,
+               iree_string_view_t key,
+               const iree_io_parameter_t** out_parameter) {
+              auto* self = static_cast<GatedProvider*>(base);
+              ++self->resolutions;
+              return iree_io_parameter_provider_resolve(self->provider, scope,
+                                                        key, out_parameter);
+            },
         .gather =
             [](iree_io_parameter_provider_t* base, iree_hal_device_t* device,
                iree_hal_queue_t* queue, iree_hal_semaphore_list_t waits,
-               iree_hal_semaphore_list_t signals, iree_string_view_t scope,
-               iree_hal_buffer_t* target, iree_host_size_t count,
+               iree_hal_semaphore_list_t signals, iree_hal_buffer_t* target,
+               iree_host_size_t count,
                iree_io_parameter_enumerator_t enumerator) {
               auto* self = static_cast<GatedProvider*>(base);
               EXPECT_EQ(waits.count, 0u);
+              EXPECT_EQ(self->resolutions, 1u);
               uint64_t value = 1;
               auto status = iree_io_parameter_provider_gather(
                   self->provider, device, queue, {1, &self->gate, &value},
-                  signals, scope, target, count, enumerator);
+                  signals, target, count, enumerator);
               self->submitted->set_value(iree_status_code(status));
               return status;
             },

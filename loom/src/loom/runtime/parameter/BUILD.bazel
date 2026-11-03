@@ -256,7 +256,7 @@ loom_cc_test(
         "//loom/src/loom/runtime/program:sources",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/tooling:flags",
-        "//runtime/src/iree/io:file_handle",
+        "//runtime/src/iree/io:parameter_provider",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
         "//runtime/src/iree/testing:temp_file",

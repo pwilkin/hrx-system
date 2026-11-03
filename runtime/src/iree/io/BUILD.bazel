@@ -107,7 +107,11 @@ if(TARGET iree::hal::driver::task::registration)
 
 iree_runtime_cc_test(
     name = "parameter_index_provider_test",
-    srcs = ["parameter_index_provider_test.cc"],
+    srcs = [
+        "parameter_index_provider_identity_test.cc",
+        "parameter_index_provider_test.cc",
+        "parameter_index_provider_test_base.h",
+    ],
     deps = [
         ":file_handle",
         ":parameter_index",

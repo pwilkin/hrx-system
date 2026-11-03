@@ -7,7 +7,6 @@
 #ifndef LOOM_RUNTIME_PARAMETER_INPUTS_H_
 #define LOOM_RUNTIME_PARAMETER_INPUTS_H_
 
-#include "iree/io/parameter_index.h"
 #include "iree/io/parameter_provider.h"
 #include "loom/runtime/parameter/sources.h"
 #include "loom/runtime/program/preparation.h"
@@ -16,11 +15,11 @@
 extern "C" {
 #endif
 
-// Immutable source-selected read ranges. Keys and metadata borrow retained
-// indexes; captured host buffers own snapshots independent of the policy VM.
+// Immutable source-selected read ranges. Parameter identities and metadata
+// borrow retained providers; host snapshots are independent of the policy VM.
 typedef struct loom_runtime_weight_inputs_t loom_runtime_weight_inputs_t;
 
-// Retains the selected indexes and providers in policy-local input order.
+// Retains the selected providers in policy-local input order.
 // Input ordinals were checked at the source declaration boundary. The catalog
 // and declaration may retire independently after this call; unused peers are
 // not retained by the plan.
@@ -37,17 +36,17 @@ iree_io_parameter_provider_t* loom_runtime_weight_inputs_provider(
 uint32_t loom_runtime_weight_inputs_source_count(
     const loom_runtime_weight_inputs_t* inputs);
 
-// Checks an implicit source-zero read against the external checkpoint index
+// Resolves an implicit source-zero read against the external checkpoint
 // during preparation. A larger entry is valid; only the requested prefix is
 // read. Empty input recipes use this for unchanged or in-place prepared bytes.
-iree_status_t loom_runtime_weight_inputs_validate_direct(
+iree_status_t loom_runtime_weight_inputs_resolve_direct(
     const loom_runtime_weight_inputs_t* inputs, iree_string_view_t key,
-    iree_device_size_t byte_length);
+    iree_device_size_t byte_length, const iree_io_parameter_t** out_parameter);
 
 // One validated source range for a final tensor or a preparation command.
 typedef struct loom_runtime_weight_input_t {
-  // Canonical source key and metadata, borrowed from its immutable index.
-  const iree_io_parameter_index_entry_t* entry;
+  // Resolved identity borrowed from the retained source provider.
+  const iree_io_parameter_t* parameter;
   // Byte placement relative to the tensor or its command's input staging.
   iree_io_parameter_span_t span;
   // Independent checkpoint ordinal; identical keys in peers remain distinct.
@@ -95,8 +94,8 @@ iree_device_size_t loom_runtime_weight_inputs_staging_alignment(
 //   input(i32 source, buffer key, i64 key_offset, i64 key_length,
 //         i64 offset, i64 length, i64 alignment) -> i64
 //   input_buffer(buffer data, i64 alignment) -> i64
-// Key ranges are readable byte spans borrowed only during the call. Lookup
-// retains the canonical index entry, so callers can immediately reuse key
+// Key ranges are readable byte spans borrowed only during the call. Resolution
+// captures the provider-owned identity, so callers can immediately reuse key
 // storage. Invalid source ordinals and key ranges fail before capture.
 // parameter exposes the index format's opaque metadata; interpretation belongs
 // to the model policy. input captures a nonempty, in-bounds range and returns

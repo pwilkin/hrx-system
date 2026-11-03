@@ -368,7 +368,7 @@ static iree_status_t loom_runtime_weight_prepare_policy(
                                          sizeof(*job->span_preparers),
                                          (void**)&job->span_preparers);
   }
-  IREE_TRACE_ZONE_BEGIN_NAMED(z_queries, "loom_serve_weight_query_preparers");
+  IREE_TRACE_ZONE_BEGIN_NAMED(z_queries, "loom_runtime_weight_query_preparers");
   IREE_TRACE_ZONE_APPEND_VALUE_I64(z_queries, weights->span_count);
   for (iree_host_size_t i = 0;
        i < weights->span_count && iree_status_is_ok(status); ++i) {
@@ -379,9 +379,10 @@ static iree_status_t loom_runtime_weight_prepare_policy(
         &weights->spans[i].inputs);
     job->span_preparers[i] = SIZE_MAX;
     if (iree_status_is_ok(status) && !weights->spans[i].inputs.count) {
-      status = loom_runtime_weight_inputs_validate_direct(
+      status = loom_runtime_weight_inputs_resolve_direct(
           weights->inputs, weights->spans[i].parameter.key,
-          weights->spans[i].parameter.byte_length);
+          weights->spans[i].parameter.byte_length,
+          &weights->spans[i].source_parameter);
     }
     if (iree_status_is_ok(status) && declaration) {
       status = loom_runtime_weight_inputs_reserve_staging(
@@ -408,7 +409,7 @@ static iree_status_t loom_runtime_weight_prepare_policy(
     loom_runtime_preparation_module_recycle(libraries[0], declaration);
   }
   IREE_TRACE_ZONE_END(z_queries);
-  IREE_TRACE_ZONE_BEGIN_NAMED(z_release, "loom_serve_weight_release_policy");
+  IREE_TRACE_ZONE_BEGIN_NAMED(z_release, "loom_runtime_weight_release_policy");
   loom_runtime_program_free(program);
   for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(libraries); ++i) {
     iree_vm_module_release(libraries[i]);
@@ -645,20 +646,22 @@ iree_status_t loom_runtime_weights_prepare(
 }
 
 static iree_status_t loom_runtime_weight_enumerate(
-    void* user_data, iree_host_size_t i, iree_string_view_t* out_key,
+    void* user_data, iree_host_size_t i,
+    const iree_io_parameter_t** out_parameter,
     iree_io_parameter_span_t* out_span) {
   const loom_runtime_weight_direct_read_t* read = user_data;
-  *out_key = read->fragments[i].key;
+  *out_parameter = read->fragments[i].parameter;
   *out_span = read->fragments[i].range;
   out_span->buffer_offset -= read->target_offset;
   return iree_ok_status();
 }
 
 static iree_status_t loom_runtime_weight_input_enumerate(
-    void* user_data, iree_host_size_t i, iree_string_view_t* out_key,
+    void* user_data, iree_host_size_t i,
+    const iree_io_parameter_t** out_parameter,
     iree_io_parameter_span_t* out_span) {
   const loom_runtime_weight_read_t* read = user_data;
-  *out_key = read->input->entry->key;
+  *out_parameter = read->input->parameter;
   *out_span = read->input->span;
   out_span->buffer_offset += read->staging_offset;
   return iree_ok_status();

@@ -120,6 +120,31 @@ static bool iree_io_parameter_index_provider_query_support(
   return iree_string_view_equal(scope, provider->scope);
 }
 
+static iree_status_t iree_io_parameter_index_provider_resolve(
+    iree_io_parameter_provider_t* base_provider, iree_string_view_t scope,
+    iree_string_view_t key, const iree_io_parameter_t** out_parameter) {
+  iree_io_parameter_index_provider_t* provider =
+      iree_io_parameter_index_provider_cast(base_provider);
+  if (!iree_string_view_equal(scope, provider->scope)) {
+    return iree_make_status(IREE_STATUS_NOT_FOUND,
+                            "parameter scope '%.*s' is not provided",
+                            (int)scope.size, scope.data);
+  }
+  const iree_io_parameter_index_entry_t* entry = NULL;
+  IREE_RETURN_IF_ERROR(
+      iree_io_parameter_index_lookup(provider->index, key, &entry));
+  *out_parameter = (const iree_io_parameter_t*)entry;
+  return iree_ok_status();
+}
+
+static iree_io_parameter_info_t iree_io_parameter_index_provider_query(
+    iree_io_parameter_provider_t* base_provider,
+    const iree_io_parameter_t* parameter) {
+  const iree_io_parameter_index_entry_t* entry =
+      (const iree_io_parameter_index_entry_t*)parameter;
+  return (iree_io_parameter_info_t){entry->key, entry->metadata, entry->length};
+}
+
 // Returns the singleton family affinity containing |queue|.
 static iree_hal_queue_family_affinity_t iree_io_parameter_queue_family_affinity(
     iree_hal_queue_t* queue) {
@@ -138,28 +163,16 @@ typedef struct iree_io_parameter_file_binding_t {
   iree_hal_file_t* file;
 } iree_io_parameter_file_binding_t;
 
-// Resolves a parameter with |key| for use on the given |device|.
-// Returns the entry containing the parameter metadata and a retained
-// HAL file that stores it (must be released by the caller).
-// If the parameter is synthetic and not backed by a file then the returned
-// file will be NULL.
-static iree_status_t iree_io_parameter_index_provider_resolve(
+// Imports a resolved parameter's backing file for the selected device/family.
+// The caller releases the returned file. Synthetic parameters return NULL.
+static iree_status_t iree_io_parameter_index_provider_import_file(
     iree_io_parameter_index_provider_t* provider, iree_hal_device_t* device,
     iree_hal_queue_t* queue, iree_io_parameter_file_binding_t* binding,
-    iree_string_view_t scope, iree_string_view_t key,
-    iree_hal_memory_access_t access,
-    const iree_io_parameter_index_entry_t** out_entry,
-    iree_hal_file_t** out_file) {
-  IREE_ASSERT_ARGUMENT(out_entry);
+    const iree_io_parameter_index_entry_t* entry,
+    iree_hal_memory_access_t access, iree_hal_file_t** out_file) {
   IREE_ASSERT_ARGUMENT(out_file);
-  *out_entry = NULL;
   *out_file = NULL;
   IREE_TRACE_ZONE_BEGIN(z0);
-
-  // Lookup the parameter in the index.
-  const iree_io_parameter_index_entry_t* entry = NULL;
-  IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_io_parameter_index_lookup(provider->index, key, &entry));
 
   // Get (or import) the HAL file backing the entry.
   // NOTE: file is retained!
@@ -184,7 +197,6 @@ static iree_status_t iree_io_parameter_index_provider_resolve(
     iree_hal_file_retain(file);
   }
 
-  *out_entry = entry;
   *out_file = file;
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -361,49 +373,26 @@ static iree_status_t iree_io_parameter_op_batch_begin(
   return iree_ok_status();
 }
 
-// Resolves the parameter entry from |enumerator| at index |i|.
-// |access| indicates the required access permissions to the parameter storage.
-// Returns the entry, the span indicating source/target ranges, and optionally
-// a file (NULL if a splat). |out_file| is retained and must be released by the
-// caller if set.
-static iree_status_t iree_io_parameter_index_provider_resolve_entry(
-    iree_io_parameter_index_provider_t* provider, iree_hal_device_t* device,
-    iree_hal_queue_t* queue, iree_io_parameter_file_binding_t* binding,
-    iree_string_view_t scope, iree_io_parameter_enumerator_t enumerator,
-    iree_host_size_t i, iree_hal_memory_access_t access,
-    const iree_io_parameter_index_entry_t** IREE_RESTRICT out_entry,
-    iree_io_parameter_span_t* IREE_RESTRICT out_span,
-    iree_hal_file_t** IREE_RESTRICT out_file) {
-  IREE_ASSERT_ARGUMENT(out_entry);
-  IREE_ASSERT_ARGUMENT(out_span);
-  IREE_ASSERT_ARGUMENT(out_file);
+// Enumerates an already-resolved identity and validates its requested range.
+// Name resolution belongs to the caller's capture, not transfer submission.
+static iree_status_t iree_io_parameter_index_provider_enumerate(
+    iree_io_parameter_enumerator_t enumerator, iree_host_size_t i,
+    iree_hal_memory_access_t access,
+    const iree_io_parameter_index_entry_t** out_entry,
+    iree_io_parameter_span_t* out_span) {
   *out_entry = NULL;
-  memset(out_span, 0, sizeof(*out_span));
-  *out_file = NULL;
-
-  // Fetch the next parameter to copy and its buffer range.
-  iree_string_view_t key = iree_string_view_empty();
+  *out_span = (iree_io_parameter_span_t){0};
+  const iree_io_parameter_t* parameter = NULL;
   iree_io_parameter_span_t span = {0};
-  IREE_RETURN_IF_ERROR(enumerator.fn(enumerator.user_data, i, &key, &span));
-
-  // Lookup the parameter metadata and get its backing file.
-  const iree_io_parameter_index_entry_t* entry = NULL;
-  iree_hal_file_t* file = NULL;  // retained, NULL if splat
-  IREE_RETURN_IF_ERROR(iree_io_parameter_index_provider_resolve(
-      provider, device, queue, binding, scope, key, access, &entry, &file));
-
-  // Validate the parameter range is in-bounds.
-  iree_status_t status = iree_io_validate_parameter_range(
-      access, entry, span.parameter_offset, span.length);
-
-  if (iree_status_is_ok(status)) {
-    *out_entry = entry;
-    *out_span = span;
-    *out_file = file;
-  } else {
-    iree_hal_file_release(file);
-  }
-  return status;
+  IREE_RETURN_IF_ERROR(
+      enumerator.fn(enumerator.user_data, i, &parameter, &span));
+  const iree_io_parameter_index_entry_t* entry =
+      (const iree_io_parameter_index_entry_t*)parameter;
+  IREE_RETURN_IF_ERROR(iree_io_validate_parameter_range(
+      access, entry, span.parameter_offset, span.length));
+  *out_entry = entry;
+  *out_span = span;
+  return iree_ok_status();
 }
 
 typedef enum iree_io_parameter_transfer_type_e {
@@ -783,8 +772,8 @@ static iree_status_t iree_io_parameter_index_provider_load(
     iree_hal_queue_t* queue, iree_hal_pool_t* pool,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_string_view_t source_scope, iree_device_size_t target_min_alignment,
-    iree_host_size_t count, iree_io_parameter_enumerator_t enumerator,
+    iree_device_size_t target_min_alignment, iree_host_size_t count,
+    iree_io_parameter_enumerator_t enumerator,
     iree_io_parameter_emitter_t emitter) {
   iree_io_parameter_index_provider_t* provider =
       iree_io_parameter_index_provider_cast(base_provider);
@@ -808,9 +797,8 @@ static iree_status_t iree_io_parameter_index_provider_load(
     const iree_io_parameter_index_entry_t* source_entry = NULL;
     iree_io_parameter_span_t span;
     iree_hal_file_t* source_file = NULL;  // retained, NULL if splat
-    status = iree_io_parameter_index_provider_resolve_entry(
-        provider, device, queue, &binding, source_scope, enumerator, i,
-        IREE_HAL_MEMORY_ACCESS_READ, &source_entry, &span, &source_file);
+    status = iree_io_parameter_index_provider_enumerate(
+        enumerator, i, IREE_HAL_MEMORY_ACCESS_READ, &source_entry, &span);
     if (iree_status_is_ok(status)) {
       IREE_TRACE_ZONE_APPEND_TEXT(z_entry, source_entry->key.data,
                                   source_entry->key.size);
@@ -829,22 +817,8 @@ static iree_status_t iree_io_parameter_index_provider_load(
           "loaded parameter buffer range exceeds the device address space");
     }
 
-    // TODO(benvanik): refactor iree_io_parameter_index_provider_resolve so that
-    // it doesn't resolve the HAL file. Today if we hit the perfect case where
-    // all loads are able to be imported directly then we don't end up using the
-    // file we get back and instead have just wasted time/resources managing it.
-    // On CPU it's relatively cheap (a few mallocs) but on GPU it may require
-    // extremely expensive driver handling. Startup paths with parameters aren't
-    // usually critical, though, so it's (probably) fine today as-is.
-
-    // Try first to reuse the file backing store directly as a buffer. This only
-    // works with specific file types and with specific target usage. The most
-    // common cases for this are when using parameters as staging sources (so
-    // host memory is ok) or on unified memory systems (where host memory is
-    // device memory) and the file was originally mapped. We could extend the
-    // conditions in which we use this with some better file handle helpers that
-    // allow us to map files that we already have open via other mechanisms
-    // (FILE, fd, etc).
+    // Import admitted host storage directly before requesting a HAL file.
+    // Only the allocation-and-copy route needs the imported-file cache.
     iree_hal_buffer_t* target_buffer = NULL;
     if (iree_status_is_ok(status) && target_min_alignment <= 1 &&
         span.buffer_offset == 0 &&
@@ -900,6 +874,11 @@ static iree_status_t iree_io_parameter_index_provider_load(
     // the queue. A selected import route that fails is propagated: hiding a
     // malformed handle or native attachment failure behind a copy would make
     // the pool contract nondeterministic.
+    if (iree_status_is_ok(status) && !target_buffer) {
+      status = iree_io_parameter_index_provider_import_file(
+          provider, device, queue, &binding, source_entry,
+          IREE_HAL_MEMORY_ACCESS_READ, &source_file);
+    }
     if (iree_status_is_ok(status) && !target_buffer) {
       // Enqueue an allocation of the target buffer on a timeline.
       // The next operation we enqueue will go on the same timeline.
@@ -977,8 +956,8 @@ static iree_status_t iree_io_parameter_index_provider_gather_group(
     iree_hal_queue_t* queue, iree_io_parameter_file_binding_t* binding,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_string_view_t source_scope, iree_hal_buffer_t* target_buffer,
-    iree_host_size_t count, iree_io_parameter_enumerator_t enumerator) {
+    iree_hal_buffer_t* target_buffer, iree_host_size_t count,
+    iree_io_parameter_enumerator_t enumerator) {
   iree_io_parameter_index_provider_t* provider =
       iree_io_parameter_index_provider_cast(base_provider);
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -1001,16 +980,21 @@ static iree_status_t iree_io_parameter_index_provider_gather_group(
     const iree_io_parameter_index_entry_t* source_entry = NULL;
     iree_io_parameter_span_t span;
     iree_hal_file_t* source_file = NULL;  // retained, NULL if splat
-    status = iree_io_parameter_index_provider_resolve_entry(
-        provider, device, queue, binding, source_scope, enumerator, i,
-        IREE_HAL_MEMORY_ACCESS_READ, &source_entry, &span, &source_file);
+    status = iree_io_parameter_index_provider_enumerate(
+        enumerator, i, IREE_HAL_MEMORY_ACCESS_READ, &source_entry, &span);
     if (iree_status_is_ok(status)) {
       IREE_TRACE_ZONE_APPEND_TEXT(z_entry, source_entry->key.data,
                                   source_entry->key.size);
       IREE_TRACE_ZONE_APPEND_VALUE_I64(z_entry, span.length);
     }
 
-    // Empty spans still resolve and validate above, but have no transfer or
+    if (iree_status_is_ok(status) && span.length) {
+      status = iree_io_parameter_index_provider_import_file(
+          provider, device, queue, binding, source_entry,
+          IREE_HAL_MEMORY_ACCESS_READ, &source_file);
+    }
+
+    // Empty spans still validate above, but have no file import, transfer, or
     // per-entry dependency. The batch flush preserves the caller's timeline.
     if (iree_status_is_ok(status) && span.length) {
       switch (source_entry->type) {
@@ -1103,8 +1087,8 @@ static iree_status_t iree_io_parameter_index_provider_gather_batch(
     const iree_io_parameter_gather_t* group = &gathers[submitted_count];
     status = iree_io_parameter_index_provider_gather_group(
         provider, device, queue, &binding, group->wait_semaphore_list,
-        group->signal_semaphore_list, group->source_scope, group->target_buffer,
-        group->count, group->enumerator);
+        group->signal_semaphore_list, group->target_buffer, group->count,
+        group->enumerator);
   }
   // The failing group has already failed its signals; accepted earlier
   // groups keep their independent completion and HAL-owned captures.
@@ -1124,10 +1108,9 @@ static iree_status_t iree_io_parameter_index_provider_gather(
     iree_hal_queue_t* queue,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_string_view_t source_scope, iree_hal_buffer_t* target_buffer,
-    iree_host_size_t count, iree_io_parameter_enumerator_t enumerator) {
+    iree_hal_buffer_t* target_buffer, iree_host_size_t count,
+    iree_io_parameter_enumerator_t enumerator) {
   const iree_io_parameter_gather_t gather = {
-      .source_scope = source_scope,
       .target_buffer = target_buffer,
       .count = count,
       .enumerator = enumerator,
@@ -1143,8 +1126,8 @@ static iree_status_t iree_io_parameter_index_provider_scatter_group(
     iree_hal_queue_t* queue, iree_io_parameter_file_binding_t* binding,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_hal_buffer_t* source_buffer, iree_string_view_t target_scope,
-    iree_host_size_t count, iree_io_parameter_enumerator_t enumerator) {
+    iree_hal_buffer_t* source_buffer, iree_host_size_t count,
+    iree_io_parameter_enumerator_t enumerator) {
   iree_io_parameter_index_provider_t* provider =
       iree_io_parameter_index_provider_cast(base_provider);
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -1167,13 +1150,18 @@ static iree_status_t iree_io_parameter_index_provider_scatter_group(
     const iree_io_parameter_index_entry_t* target_entry = NULL;
     iree_io_parameter_span_t span;
     iree_hal_file_t* target_file = NULL;  // retained, NULL if splat
-    status = iree_io_parameter_index_provider_resolve_entry(
-        provider, device, queue, binding, target_scope, enumerator, i,
-        IREE_HAL_MEMORY_ACCESS_WRITE, &target_entry, &span, &target_file);
+    status = iree_io_parameter_index_provider_enumerate(
+        enumerator, i, IREE_HAL_MEMORY_ACCESS_WRITE, &target_entry, &span);
     if (iree_status_is_ok(status)) {
       IREE_TRACE_ZONE_APPEND_TEXT(z_entry, target_entry->key.data,
                                   target_entry->key.size);
       IREE_TRACE_ZONE_APPEND_VALUE_I64(z_entry, span.length);
+    }
+
+    if (iree_status_is_ok(status) && span.length) {
+      status = iree_io_parameter_index_provider_import_file(
+          provider, device, queue, binding, target_entry,
+          IREE_HAL_MEMORY_ACCESS_WRITE, &target_file);
     }
 
     // Empty spans neither advance a timeline nor split a pending transfer.
@@ -1249,8 +1237,8 @@ static iree_status_t iree_io_parameter_index_provider_scatter_batch(
     const iree_io_parameter_scatter_t* group = &scatters[submitted_count];
     status = iree_io_parameter_index_provider_scatter_group(
         provider, device, queue, &binding, group->wait_semaphore_list,
-        group->signal_semaphore_list, group->source_buffer, group->target_scope,
-        group->count, group->enumerator);
+        group->signal_semaphore_list, group->source_buffer, group->count,
+        group->enumerator);
   }
   // The failing group has already failed its signals; accepted earlier
   // groups keep their independent completion and HAL-owned captures.
@@ -1270,11 +1258,10 @@ static iree_status_t iree_io_parameter_index_provider_scatter(
     iree_hal_queue_t* queue,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_hal_buffer_t* source_buffer, iree_string_view_t target_scope,
-    iree_host_size_t count, iree_io_parameter_enumerator_t enumerator) {
+    iree_hal_buffer_t* source_buffer, iree_host_size_t count,
+    iree_io_parameter_enumerator_t enumerator) {
   const iree_io_parameter_scatter_t scatter = {
       .source_buffer = source_buffer,
-      .target_scope = target_scope,
       .count = count,
       .enumerator = enumerator,
       .wait_semaphore_list = wait_semaphore_list,
@@ -1289,6 +1276,8 @@ static const iree_io_parameter_provider_vtable_t
         .destroy = iree_io_parameter_index_provider_destroy,
         .notify = iree_io_parameter_index_provider_notify,
         .query_support = iree_io_parameter_index_provider_query_support,
+        .resolve = iree_io_parameter_index_provider_resolve,
+        .query = iree_io_parameter_index_provider_query,
         .load = iree_io_parameter_index_provider_load,
         .gather = iree_io_parameter_index_provider_gather,
         .gather_batch = iree_io_parameter_index_provider_gather_batch,

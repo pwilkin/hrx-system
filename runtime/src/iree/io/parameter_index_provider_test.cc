@@ -4,8 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/io/parameter_index_provider.h"
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -17,213 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include "iree/async/frontier_tracker.h"
-#include "iree/async/util/proactor_pool.h"
-#include "iree/hal/api.h"
-#include "iree/hal/driver/task/registration/driver_module.h"
-#include "iree/io/file_handle.h"
-#include "iree/io/parameter_index.h"
-#include "iree/io/parameter_provider.h"
-#include "iree/testing/gtest.h"
-#include "iree/testing/status_matchers.h"
+#include "iree/io/parameter_index_provider_test_base.h"
 
-namespace {
-
-template <typename T, void (*Release)(T*)>
-class Ref {
- public:
-  Ref() = default;
-  Ref(const Ref&) = delete;
-  Ref& operator=(const Ref&) = delete;
-
-  ~Ref() { reset(); }
-
-  T* get() const { return value_; }
-
-  T** out() {
-    reset();
-    return &value_;
-  }
-
-  void reset(T* value = nullptr) {
-    if (value_) {
-      Release(value_);
-    }
-    value_ = value;
-  }
-
- private:
-  T* value_ = nullptr;
-};
-
-static iree_hal_device_group_t* CreateTaskDeviceGroup() {
-  Ref<iree_async_proactor_pool_t, iree_async_proactor_pool_release>
-      proactor_pool;
-  IREE_CHECK_OK(iree_async_proactor_pool_create(
-      /*node_count=*/1, /*node_ids=*/nullptr,
-      iree_async_proactor_pool_options_default(), iree_allocator_system(),
-      proactor_pool.out()));
-
-  iree_hal_driver_registry_t* registry = nullptr;
-  IREE_CHECK_OK(
-      iree_hal_driver_registry_allocate(iree_allocator_system(), &registry));
-  IREE_CHECK_OK(iree_hal_task_driver_module_register(registry));
-
-  iree_hal_device_create_params_t create_params =
-      iree_hal_device_create_params_default();
-  create_params.proactor_pool = proactor_pool.get();
-
-  iree_hal_device_t* device = nullptr;
-  iree_status_t status =
-      iree_hal_create_device(registry, IREE_SV("task"), &create_params,
-                             iree_allocator_system(), &device);
-  iree_hal_driver_registry_free(registry);
-  IREE_CHECK_OK(status);
-
-  Ref<iree_async_frontier_tracker_t, iree_async_frontier_tracker_release>
-      frontier_tracker;
-  IREE_CHECK_OK(iree_async_frontier_tracker_create(
-      iree_async_frontier_tracker_options_default(), iree_allocator_system(),
-      frontier_tracker.out()));
-
-  iree_hal_device_group_t* device_group = nullptr;
-  IREE_CHECK_OK(iree_hal_device_group_create_from_device(
-      device, frontier_tracker.get(), iree_allocator_system(), &device_group));
-  iree_hal_device_release(device);
-  return device_group;
-}
-
-static iree_status_t AddSplatEntry(iree_io_parameter_index_t* index,
-                                   iree_string_view_t key, uint64_t length,
-                                   uint8_t pattern) {
-  iree_io_parameter_index_entry_t entry;
-  std::memset(&entry, 0, sizeof(entry));
-  entry.key = key;
-  entry.length = length;
-  entry.type = IREE_IO_PARAMETER_INDEX_ENTRY_STORAGE_TYPE_SPLAT;
-  entry.storage.splat.pattern_length = 1;
-  entry.storage.splat.pattern[0] = pattern;
-  return iree_io_parameter_index_add(index, &entry);
-}
-
-static iree_status_t AddFileEntry(iree_io_parameter_index_t* index,
-                                  iree_string_view_t key, uint64_t offset,
-                                  uint64_t length,
-                                  iree_io_file_handle_t* handle) {
-  iree_io_parameter_index_entry_t entry;
-  std::memset(&entry, 0, sizeof(entry));
-  entry.key = key;
-  entry.length = length;
-  entry.type = IREE_IO_PARAMETER_INDEX_ENTRY_STORAGE_TYPE_FILE;
-  entry.storage.file.handle = handle;
-  entry.storage.file.offset = offset;
-  return iree_io_parameter_index_add(index, &entry);
-}
-
-typedef struct ParameterRequest {
-  // Parameter key.
-  iree_string_view_t key;
-  // Parameter and buffer span.
-  iree_io_parameter_span_t span;
-} ParameterRequest;
-
-static iree_status_t EnumerateParameterRequest(
-    void* user_data, iree_host_size_t i, iree_string_view_t* out_key,
-    iree_io_parameter_span_t* out_span) {
-  const ParameterRequest* requests =
-      static_cast<const ParameterRequest*>(user_data);
-  *out_key = requests[i].key;
-  *out_span = requests[i].span;
-  return iree_ok_status();
-}
-
-static iree_hal_buffer_t* AllocateTransferBuffer(
-    iree_hal_pool_t* pool, iree_device_size_t byte_length) {
-  iree_hal_buffer_t* buffer = nullptr;
-  IREE_CHECK_OK(iree_hal_pool_allocate_buffer(
-      pool, iree_hal_make_pool_reservation_request(byte_length, 1),
-      iree_infinite_timeout(), &buffer));
-  return buffer;
-}
-
-static void WriteBufferBytes(iree_hal_buffer_t* buffer,
-                             iree_const_byte_span_t source) {
-  iree_hal_buffer_mapping_t mapping;
-  IREE_ASSERT_OK(iree_hal_buffer_map_range(
-      buffer, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_WRITE,
-      IREE_HAL_BUFFER_MAP_FLAG_DISCARD, 0, source.data_length, &mapping));
-  iree_byte_span_t span;
-  IREE_ASSERT_OK(iree_hal_buffer_mapping_subspan(
-      &mapping, IREE_HAL_MEMORY_ACCESS_WRITE, 0, source.data_length, &span));
-  std::memcpy(span.data, source.data, source.data_length);
-  IREE_ASSERT_OK(iree_hal_buffer_unmap_range(&mapping));
-}
-
-static void ExpectBufferBytes(iree_hal_buffer_t* buffer,
-                              iree_device_size_t byte_length,
-                              uint8_t expected_value) {
-  iree_hal_buffer_mapping_t mapping;
-  IREE_ASSERT_OK(iree_hal_buffer_map_range(
-      buffer, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
-      IREE_HAL_BUFFER_MAP_FLAG_NONE, 0, byte_length, &mapping));
-  iree_byte_span_t span;
-  IREE_ASSERT_OK(iree_hal_buffer_mapping_subspan(
-      &mapping, IREE_HAL_MEMORY_ACCESS_READ, 0, byte_length, &span));
-  for (iree_host_size_t i = 0; i < byte_length; ++i) {
-    EXPECT_EQ(span.data[i], expected_value);
-  }
-  IREE_ASSERT_OK(iree_hal_buffer_unmap_range(&mapping));
-}
-
-static void ExpectBufferBytesEqual(iree_hal_buffer_t* buffer,
-                                   iree_const_byte_span_t expected) {
-  iree_hal_buffer_mapping_t mapping;
-  IREE_ASSERT_OK(iree_hal_buffer_map_range(
-      buffer, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
-      IREE_HAL_BUFFER_MAP_FLAG_NONE, 0, expected.data_length, &mapping));
-  iree_byte_span_t span;
-  IREE_ASSERT_OK(iree_hal_buffer_mapping_subspan(
-      &mapping, IREE_HAL_MEMORY_ACCESS_READ, 0, expected.data_length, &span));
-  EXPECT_EQ(span.data_length, expected.data_length);
-  EXPECT_EQ(0, std::memcmp(span.data, expected.data, expected.data_length));
-  IREE_ASSERT_OK(iree_hal_buffer_unmap_range(&mapping));
-}
-
-static iree_status_t CreateTransferPool(iree_hal_device_group_t* device_group,
-                                        bool admit_host_imports,
-                                        iree_hal_pool_t** out_pool) {
-  iree_hal_device_t* device = iree_hal_device_group_device_at(device_group, 0);
-  iree_hal_pool_family_access_t family = {
-      .family = iree_hal_device_queue_family(device, 0),
-      .usage = IREE_HAL_BUFFER_USAGE_TRANSFER,
-  };
-  iree_hal_pool_scope_t scope = {
-      .family_count = 1,
-      .families = &family,
-      .host =
-          {
-              .access = IREE_HAL_MEMORY_ACCESS_ALL,
-              .modes = IREE_HAL_MAPPING_MODE_SCOPED,
-              .properties = (IREE_HAL_HOST_MEMORY_PROPERTY_READ_CACHED |
-                             IREE_HAL_HOST_MEMORY_PROPERTY_WRITE_BACK),
-          },
-  };
-  const iree_hal_external_storage_class_t host_pointer_class =
-      iree_hal_make_external_storage_class(
-          IREE_HAL_EXTERNAL_STORAGE_TYPE_HOST_POINTER);
-  const iree_hal_pool_import_class_t import_class = {
-      .storage_class = host_pointer_class,
-  };
-  iree_hal_slab_pool_options_t options;
-  iree_hal_slab_pool_options_initialize(&options);
-  if (admit_host_imports) {
-    options.imports.class_count = 1;
-    options.imports.classes = &import_class;
-  }
-  options.preferences.host = scope.host;
-  return iree_hal_slab_pool_create(device_group, scope, &options,
-                                   iree_allocator_system(), out_pool);
-}
+namespace iree::io::testing {
 
 // Observes the provider's real submissions while forwarding all execution to
 // the task HAL. Tests hold the producer gate while inspecting the captured
@@ -339,43 +133,6 @@ class SubmissionTrace {
   std::vector<Submission> submissions_;
 };
 
-class ParameterIndexProviderTest : public ::testing::Test {
- protected:
-  static void SetUpTestSuite() {
-    device_group_ = CreateTaskDeviceGroup();
-    IREE_ASSERT_OK(CreateTransferPool(device_group_,
-                                      /*admit_host_imports=*/false,
-                                      &transfer_pool_));
-  }
-
-  static void TearDownTestSuite() {
-    iree_hal_pool_release(transfer_pool_);
-    transfer_pool_ = nullptr;
-    iree_hal_device_group_release(device_group_);
-    device_group_ = nullptr;
-  }
-
-  static iree_hal_device_t* device() {
-    return iree_hal_device_group_device_at(device_group_, 0);
-  }
-
-  static iree_hal_queue_t* queue() {
-    return iree_hal_device_queue(device(), /*family_ordinal=*/0,
-                                 /*queue_ordinal=*/0);
-  }
-
-  static iree_hal_device_group_t* device_group() { return device_group_; }
-
-  static iree_hal_pool_t* transfer_pool() { return transfer_pool_; }
-
- private:
-  static iree_hal_device_group_t* device_group_;
-  static iree_hal_pool_t* transfer_pool_;
-};
-
-iree_hal_device_group_t* ParameterIndexProviderTest::device_group_ = nullptr;
-iree_hal_pool_t* ParameterIndexProviderTest::transfer_pool_ = nullptr;
-
 static iree_status_t CaptureLoadedBuffer(void* user_data, iree_host_size_t i,
                                          iree_hal_buffer_t* buffer) {
   if (i != 0) {
@@ -419,7 +176,7 @@ TEST_F(ParameterIndexProviderTest, LoadImportsExactParameterRange) {
       IREE_HAL_SEMAPHORE_FLAG_DEFAULT, signal.out()));
 
   ParameterRequest request = {
-      .key = IREE_SV("weights"),
+      .parameter = Resolve(provider.get(), IREE_SV("weights")),
       .span = {.parameter_offset = 3, .buffer_offset = 0, .length = 4},
   };
   uint64_t signal_value = 1;
@@ -436,7 +193,7 @@ TEST_F(ParameterIndexProviderTest, LoadImportsExactParameterRange) {
   };
   IREE_ASSERT_OK(iree_io_parameter_provider_load(
       provider.get(), device(), queue(), pool.get(),
-      iree_hal_semaphore_list_empty(), signal_list, IREE_SV("model"),
+      iree_hal_semaphore_list_empty(), signal_list,
       /*target_min_alignment=*/1, /*count=*/1,
       {.fn = EnumerateParameterRequest, .user_data = &request}, emitter));
   IREE_ASSERT_OK(iree_hal_semaphore_wait(signal.get(), signal_value,
@@ -476,7 +233,7 @@ TEST_F(ParameterIndexProviderTest, LoadAllocatesFullTargetSpan) {
       IREE_HAL_SEMAPHORE_FLAG_DEFAULT, signal.out()));
 
   ParameterRequest request = {
-      .key = IREE_SV("padding"),
+      .parameter = Resolve(provider.get(), IREE_SV("padding")),
       .span = {.parameter_offset = 0, .buffer_offset = 3, .length = 4},
   };
   uint64_t signal_value = 1;
@@ -489,7 +246,7 @@ TEST_F(ParameterIndexProviderTest, LoadAllocatesFullTargetSpan) {
   Ref<iree_hal_buffer_t, iree_hal_buffer_release> loaded_buffer;
   IREE_ASSERT_OK(iree_io_parameter_provider_load(
       provider.get(), device(), queue(), pool.get(),
-      iree_hal_semaphore_list_empty(), signal_list, IREE_SV("model"),
+      iree_hal_semaphore_list_empty(), signal_list,
       /*target_min_alignment=*/16, /*count=*/1,
       {.fn = EnumerateParameterRequest, .user_data = &request},
       {.fn = CaptureLoadedBuffer, .user_data = loaded_buffer.out()}));
@@ -541,11 +298,11 @@ TEST_F(ParameterIndexProviderTest, GatherBatchPreservesGroupSignals) {
       IREE_HAL_SEMAPHORE_FLAG_DEFAULT, second_signal.out()));
 
   ParameterRequest first_request = {
-      .key = IREE_SV("first"),
+      .parameter = Resolve(provider.get(), IREE_SV("first")),
       .span = {.parameter_offset = 0, .buffer_offset = 0, .length = 4},
   };
   ParameterRequest second_request = {
-      .key = IREE_SV("second"),
+      .parameter = Resolve(provider.get(), IREE_SV("second")),
       .span = {.parameter_offset = 0, .buffer_offset = 0, .length = 4},
   };
 
@@ -555,7 +312,6 @@ TEST_F(ParameterIndexProviderTest, GatherBatchPreservesGroupSignals) {
   iree_hal_semaphore_t* second_signal_ptr = second_signal.get();
   iree_io_parameter_gather_t gathers[2] = {
       {
-          .source_scope = IREE_SV("model"),
           .target_buffer = first_buffer.get(),
           .count = 1,
           .enumerator =
@@ -572,7 +328,6 @@ TEST_F(ParameterIndexProviderTest, GatherBatchPreservesGroupSignals) {
               },
       },
       {
-          .source_scope = IREE_SV("model"),
           .target_buffer = second_buffer.get(),
           .count = 1,
           .enumerator =
@@ -644,15 +399,15 @@ TEST_F(ParameterIndexProviderTest, GatherBatchReadsAdjacentFileSpans) {
 
   ParameterRequest requests[3] = {
       {
-          .key = IREE_SV("first"),
+          .parameter = Resolve(provider.get(), IREE_SV("first")),
           .span = {.parameter_offset = 0, .buffer_offset = 0, .length = 4},
       },
       {
-          .key = IREE_SV("second"),
+          .parameter = Resolve(provider.get(), IREE_SV("second")),
           .span = {.parameter_offset = 0, .buffer_offset = 4, .length = 4},
       },
       {
-          .key = IREE_SV("third"),
+          .parameter = Resolve(provider.get(), IREE_SV("third")),
           .span = {.parameter_offset = 0, .buffer_offset = 8, .length = 4},
       },
   };
@@ -660,7 +415,6 @@ TEST_F(ParameterIndexProviderTest, GatherBatchReadsAdjacentFileSpans) {
   uint64_t signal_value = 1;
   iree_hal_semaphore_t* signal_ptr = signal.get();
   iree_io_parameter_gather_t gather = {
-      .source_scope = IREE_SV("model"),
       .target_buffer = target_buffer.get(),
       .count = IREE_ARRAYSIZE(requests),
       .enumerator =
@@ -737,11 +491,11 @@ TEST_F(ParameterIndexProviderTest, ScatterBatchPreservesGroupSemaphores) {
       IREE_HAL_SEMAPHORE_FLAG_DEFAULT, second_signal.out()));
 
   ParameterRequest first_request = {
-      .key = IREE_SV("first"),
+      .parameter = Resolve(provider.get(), IREE_SV("first")),
       .span = {.parameter_offset = 0, .buffer_offset = 0, .length = 4},
   };
   ParameterRequest second_request = {
-      .key = IREE_SV("second"),
+      .parameter = Resolve(provider.get(), IREE_SV("second")),
       .span = {.parameter_offset = 0, .buffer_offset = 0, .length = 4},
   };
 
@@ -755,7 +509,6 @@ TEST_F(ParameterIndexProviderTest, ScatterBatchPreservesGroupSemaphores) {
   iree_hal_semaphore_t* second_signal_ptr = second_signal.get();
   iree_io_parameter_scatter_t scatters[2] = {
       {
-          .target_scope = IREE_SV("model"),
           .source_buffer = first_buffer.get(),
           .count = 1,
           .enumerator =
@@ -777,7 +530,6 @@ TEST_F(ParameterIndexProviderTest, ScatterBatchPreservesGroupSemaphores) {
               },
       },
       {
-          .target_scope = IREE_SV("model"),
           .source_buffer = second_buffer.get(),
           .count = 1,
           .enumerator =
@@ -878,15 +630,15 @@ TEST_F(ParameterIndexProviderTest, ScatterBatchWritesAdjacentFileSpans) {
 
   ParameterRequest requests[3] = {
       {
-          .key = IREE_SV("first"),
+          .parameter = Resolve(provider.get(), IREE_SV("first")),
           .span = {.parameter_offset = 0, .buffer_offset = 0, .length = 4},
       },
       {
-          .key = IREE_SV("second"),
+          .parameter = Resolve(provider.get(), IREE_SV("second")),
           .span = {.parameter_offset = 0, .buffer_offset = 4, .length = 4},
       },
       {
-          .key = IREE_SV("third"),
+          .parameter = Resolve(provider.get(), IREE_SV("third")),
           .span = {.parameter_offset = 0, .buffer_offset = 8, .length = 4},
       },
   };
@@ -894,7 +646,6 @@ TEST_F(ParameterIndexProviderTest, ScatterBatchWritesAdjacentFileSpans) {
   uint64_t signal_value = 1;
   iree_hal_semaphore_t* signal_ptr = signal.get();
   iree_io_parameter_scatter_t scatter = {
-      .target_scope = IREE_SV("model"),
       .source_buffer = source_buffer.get(),
       .count = IREE_ARRAYSIZE(requests),
       .enumerator =
@@ -968,9 +719,10 @@ TEST_F(ParameterIndexProviderTest, SingleTransferUsesCallerDependencies) {
       }
       iree_hal_semaphore_t* gate_handles[] = {gates[0].get(), gates[1].get()};
       iree_hal_semaphore_t* done_handles[] = {done[0].get(), done[1].get()};
-      ParameterRequest requests[] = {{IREE_SV("value"), {8, 8, 0}},
-                                     {IREE_SV("value"), {0, 0, 8}},
-                                     {IREE_SV("value"), {8, 8, 0}}};
+      ParameterRequest requests[] = {
+          {Resolve(provider.get(), IREE_SV("value")), {8, 8, 0}},
+          {Resolve(provider.get(), IREE_SV("value")), {0, 0, 8}},
+          {Resolve(provider.get(), IREE_SV("value")), {8, 8, 0}}};
       const iree_io_parameter_enumerator_t enumerator = {
           EnumerateParameterRequest,
           surrounding_empty_spans ? requests : requests + 1};
@@ -992,11 +744,11 @@ TEST_F(ParameterIndexProviderTest, SingleTransferUsesCallerDependencies) {
         if (operation == Operation::kWrite) {
           IREE_EXPECT_OK(iree_io_parameter_provider_scatter(
               provider.get(), device(), trace.queue(), waits, signals,
-              buffer.get(), IREE_SV("model"), count, enumerator));
+              buffer.get(), count, enumerator));
         } else {
           IREE_EXPECT_OK(iree_io_parameter_provider_gather(
               provider.get(), device(), trace.queue(), waits, signals,
-              IREE_SV("model"), buffer.get(), count, enumerator));
+              buffer.get(), count, enumerator));
         }
         const auto& submissions = trace.submissions();
         EXPECT_EQ(submissions.size(), 1u);
@@ -1069,7 +821,7 @@ TEST_F(ParameterIndexProviderTest, HonorsConcurrencyWithoutAnInternalCeiling) {
         const size_t source_offset = ((i * 17) % kRows) * kRowBytes * 2;
         keys[i] = "row" + std::to_string(i);
         requests[i] = {
-            iree_make_string_view(keys[i].data(), keys[i].size()),
+            nullptr,
             {0, operation == Operation::kLoad ? 0 : i * kRowBytes, kRowBytes}};
         std::memcpy(packed.data() + i * kRowBytes,
                     file_bytes.data() + source_offset, kRowBytes);
@@ -1088,14 +840,19 @@ TEST_F(ParameterIndexProviderTest, HonorsConcurrencyWithoutAnInternalCeiling) {
           iree_io_parameter_index_create(iree_allocator_system(), index.out()));
       for (size_t i = 0; i < kRows; ++i) {
         const size_t source_offset = ((i * 17) % kRows) * kRowBytes * 2;
-        IREE_ASSERT_OK(AddFileEntry(index.get(), requests[i].key, source_offset,
-                                    kRowBytes, file.get()));
+        IREE_ASSERT_OK(AddFileEntry(index.get(),
+                                    iree_make_cstring_view(keys[i].c_str()),
+                                    source_offset, kRowBytes, file.get()));
       }
       Ref<iree_io_parameter_provider_t, iree_io_parameter_provider_release>
           provider;
       IREE_ASSERT_OK(iree_io_parameter_index_provider_create(
           IREE_SV("model"), index.get(), policy, iree_allocator_system(),
           provider.out()));
+      for (size_t i = 0; i < kRows; ++i) {
+        requests[i].parameter =
+            Resolve(provider.get(), iree_make_cstring_view(keys[i].c_str()));
+      }
       Ref<iree_hal_buffer_t, iree_hal_buffer_release> buffer;
       buffer.reset(AllocateTransferBuffer(transfer_pool(), packed.size()));
       if (operation == Operation::kScatter) {
@@ -1131,18 +888,18 @@ TEST_F(ParameterIndexProviderTest, HonorsConcurrencyWithoutAnInternalCeiling) {
               &loaded};
           IREE_EXPECT_OK(iree_io_parameter_provider_load(
               provider.get(), device(), trace.queue(), transfer_pool(), waits,
-              signals, IREE_SV("model"), 1, kRows, enumerator, emitter));
+              signals, 1, kRows, enumerator, emitter));
           break;
         }
         case Operation::kGather:
           IREE_EXPECT_OK(iree_io_parameter_provider_gather(
               provider.get(), device(), trace.queue(), waits, signals,
-              IREE_SV("model"), buffer.get(), kRows, enumerator));
+              buffer.get(), kRows, enumerator));
           break;
         case Operation::kScatter:
           IREE_EXPECT_OK(iree_io_parameter_provider_scatter(
               provider.get(), device(), trace.queue(), waits, signals,
-              buffer.get(), IREE_SV("model"), kRows, enumerator));
+              buffer.get(), kRows, enumerator));
           break;
       }
       size_t independent_count = 0;
@@ -1237,15 +994,16 @@ TEST_F(ParameterIndexProviderTest, MixedTransfersKeepIndependentCompletion) {
     auto* gate_ptr = gate.get();
     auto* done_ptr = done.get();
     uint64_t value = 1;
-    ParameterRequest requests[] = {{IREE_SV("file"), {0, 0, 4}},
-                                   {IREE_SV("splat"), {0, 4, 4}}};
+    ParameterRequest requests[] = {
+        {Resolve(provider.get(), IREE_SV("file")), {0, 0, 4}},
+        {Resolve(provider.get(), IREE_SV("splat")), {0, 4, 4}}};
     if (splat_first) {
       std::swap(requests[0], requests[1]);
     }
     SubmissionTrace trace(queue());
     IREE_EXPECT_OK(iree_io_parameter_provider_gather(
         provider.get(), device(), trace.queue(), {1, &gate_ptr, &value},
-        {1, &done_ptr, &value}, IREE_SV("model"), buffer.get(), 2,
+        {1, &done_ptr, &value}, buffer.get(), 2,
         {EnumerateParameterRequest, requests}));
     const auto& submissions = trace.submissions();
     EXPECT_EQ(submissions.size(), 3u);
@@ -1321,20 +1079,22 @@ TEST_F(ParameterIndexProviderTest, EmptySpansPreserveBatchSynchronization) {
       }
       WriteBufferBytes(buffer.get(), iree_make_const_byte_span(initial.data(),
                                                                initial.size()));
-      std::vector<ParameterRequest> requests(kSpanCount,
-                                             {IREE_SV("rows"), {64, 64, 0}});
+      std::vector<ParameterRequest> requests(
+          kSpanCount, {Resolve(provider.get(), IREE_SV("rows")), {64, 64, 0}});
       for (size_t i = 0; i < requests.size(); ++i) {
         requests[i].span.parameter_offset = i % 65;
         requests[i].span.buffer_offset = (i * 3) % 65;
       }
       if (!scatter) {
         for (size_t i = 1; i < requests.size(); i += 2) {
-          requests[i].key = IREE_SV("empty");
+          requests[i].parameter = Resolve(provider.get(), IREE_SV("empty"));
         }
       }
       if (!all_empty) {
-        requests.front() = {IREE_SV("rows"), {0, 0, 32}};
-        requests[kSpanCount / 2] = {IREE_SV("rows"), {32, 32, 32}};
+        requests.front() = {Resolve(provider.get(), IREE_SV("rows")),
+                            {0, 0, 32}};
+        requests[kSpanCount / 2] = {Resolve(provider.get(), IREE_SV("rows")),
+                                    {32, 32, 32}};
       }
       Ref<iree_hal_semaphore_t, iree_hal_semaphore_release> gate;
       Ref<iree_hal_semaphore_t, iree_hal_semaphore_release> done;
@@ -1355,11 +1115,11 @@ TEST_F(ParameterIndexProviderTest, EmptySpansPreserveBatchSynchronization) {
       if (scatter) {
         IREE_EXPECT_OK(iree_io_parameter_provider_scatter(
             provider.get(), device(), trace.queue(), waits, signals,
-            buffer.get(), IREE_SV("model"), requests.size(), enumerator));
+            buffer.get(), requests.size(), enumerator));
       } else {
         IREE_EXPECT_OK(iree_io_parameter_provider_gather(
             provider.get(), device(), trace.queue(), waits, signals,
-            IREE_SV("model"), buffer.get(), requests.size(), enumerator));
+            buffer.get(), requests.size(), enumerator));
       }
       const auto& submissions = trace.submissions();
       EXPECT_EQ(submissions.size(), 1u);
@@ -1394,7 +1154,7 @@ TEST_F(ParameterIndexProviderTest, EmptySpansPreserveBatchSynchronization) {
   }
 }
 
-TEST_F(ParameterIndexProviderTest, EmptySpansStillValidateKeyAccessAndRange) {
+TEST_F(ParameterIndexProviderTest, EmptySpansStillValidateAccessAndRange) {
   std::array<uint8_t, 8> bytes = {1, 2, 3, 4, 5, 6, 7, 8};
   Ref<iree_io_file_handle_t, iree_io_file_handle_release> file;
   IREE_ASSERT_OK(iree_io_file_handle_wrap_host_allocation(
@@ -1416,11 +1176,11 @@ TEST_F(ParameterIndexProviderTest, EmptySpansStillValidateKeyAccessAndRange) {
   Ref<iree_hal_buffer_t, iree_hal_buffer_release> buffer;
   buffer.reset(AllocateTransferBuffer(transfer_pool(), bytes.size()));
   const ParameterRequest requests[] = {
-      {IREE_SV("missing"), {0, 0, 0}},
-      {IREE_SV("rows"), {9, 0, 0}},
-      {IREE_SV("readonly"), {0, 0, 0}},
+      {Resolve(provider.get(), IREE_SV("rows")), {UINT64_MAX, 0, 0}},
+      {Resolve(provider.get(), IREE_SV("rows")), {9, 0, 0}},
+      {Resolve(provider.get(), IREE_SV("readonly")), {0, 0, 0}},
   };
-  const iree_status_code_t codes[] = {IREE_STATUS_NOT_FOUND,
+  const iree_status_code_t codes[] = {IREE_STATUS_OUT_OF_RANGE,
                                       IREE_STATUS_OUT_OF_RANGE,
                                       IREE_STATUS_PERMISSION_DENIED};
   for (bool scatter : {false, true}) {
@@ -1439,18 +1199,16 @@ TEST_F(ParameterIndexProviderTest, EmptySpansStillValidateKeyAccessAndRange) {
       SubmissionTrace trace(queue());
       if (scatter) {
         IREE_EXPECT_STATUS_IS(
-            codes[i],
-            iree_io_parameter_provider_scatter(
-                provider.get(), device(), trace.queue(),
-                iree_hal_semaphore_list_empty(), {1, &done_ptr, &value},
-                buffer.get(), IREE_SV("model"), 1, enumerator));
+            codes[i], iree_io_parameter_provider_scatter(
+                          provider.get(), device(), trace.queue(),
+                          iree_hal_semaphore_list_empty(),
+                          {1, &done_ptr, &value}, buffer.get(), 1, enumerator));
       } else {
         IREE_EXPECT_STATUS_IS(
-            codes[i],
-            iree_io_parameter_provider_gather(
-                provider.get(), device(), trace.queue(),
-                iree_hal_semaphore_list_empty(), {1, &done_ptr, &value},
-                IREE_SV("model"), buffer.get(), 1, enumerator));
+            codes[i], iree_io_parameter_provider_gather(
+                          provider.get(), device(), trace.queue(),
+                          iree_hal_semaphore_list_empty(),
+                          {1, &done_ptr, &value}, buffer.get(), 1, enumerator));
       }
       EXPECT_TRUE(trace.submissions().empty());
       IREE_EXPECT_STATUS_IS(codes[i],
@@ -1506,27 +1264,28 @@ TEST_F(ParameterIndexProviderTest,
       auto* gate_ptr = gate.get();
       auto* done_ptr = done.get();
       uint64_t value = 1;
-      ParameterRequest requests[] = {{IREE_SV("value"), {0, 0, 4}},
-                                     {IREE_SV("value"), {8, 4, 4}},
-                                     {IREE_SV("missing"), {0, 0, 0}}};
+      ParameterRequest requests[] = {
+          {Resolve(provider.get(), IREE_SV("value")), {0, 0, 4}},
+          {Resolve(provider.get(), IREE_SV("value")), {8, 4, 4}},
+          {Resolve(provider.get(), IREE_SV("value")), {13, 0, 0}}};
       requests[payload_count] = requests[2];
       SubmissionTrace trace(queue());
       if (operation == Operation::kWrite) {
         IREE_EXPECT_STATUS_IS(
-            IREE_STATUS_NOT_FOUND,
+            IREE_STATUS_OUT_OF_RANGE,
             iree_io_parameter_provider_scatter(
                 provider.get(), device(), trace.queue(), {1, &gate_ptr, &value},
-                {1, &done_ptr, &value}, buffer.get(), IREE_SV("model"),
-                payload_count + 1, {EnumerateParameterRequest, requests}));
+                {1, &done_ptr, &value}, buffer.get(), payload_count + 1,
+                {EnumerateParameterRequest, requests}));
       } else {
         IREE_EXPECT_STATUS_IS(
-            IREE_STATUS_NOT_FOUND,
+            IREE_STATUS_OUT_OF_RANGE,
             iree_io_parameter_provider_gather(
                 provider.get(), device(), trace.queue(), {1, &gate_ptr, &value},
-                {1, &done_ptr, &value}, IREE_SV("model"), buffer.get(),
-                payload_count + 1, {EnumerateParameterRequest, requests}));
+                {1, &done_ptr, &value}, buffer.get(), payload_count + 1,
+                {EnumerateParameterRequest, requests}));
       }
-      IREE_EXPECT_STATUS_IS(IREE_STATUS_NOT_FOUND,
+      IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
                             iree_hal_semaphore_query(done.get(), &value));
       const auto& submissions = trace.submissions();
       EXPECT_EQ(submissions.size(), payload_count - 1);
@@ -1615,11 +1374,12 @@ TEST_F(ParameterIndexProviderTest, IndependentGroupsReuseFilesThroughTrim) {
     auto* gate_ptr = gate.get();
     iree_hal_semaphore_t* done_ptrs[] = {done[0].get(), done[1].get(),
                                          done[2].get()};
-    ParameterRequest requests[] = {{IREE_SV("first"), {0, 0, 4}},
-                                   {IREE_SV("second"), {0, 0, 4}},
-                                   {IREE_SV("third"), {0, 0, 4}}};
+    ParameterRequest requests[] = {
+        {Resolve(provider.get(), IREE_SV("first")), {0, 0, 4}},
+        {Resolve(provider.get(), IREE_SV("second")), {0, 0, 4}},
+        {Resolve(provider.get(), IREE_SV("third")), {0, 0, 4}}};
     struct Enumeration {
-      // Borrowed provider notified before resolving each group.
+      // Borrowed provider notified before enumerating each group.
       iree_io_parameter_provider_t* provider;
       // Single parameter for this independently synchronized group.
       ParameterRequest* request;
@@ -1634,19 +1394,17 @@ TEST_F(ParameterIndexProviderTest, IndependentGroupsReuseFilesThroughTrim) {
       enumerations[i] = {provider.get(), &requests[i]};
       const iree_io_parameter_enumerator_t enumerator = {
           +[](void* user_data, iree_host_size_t ordinal,
-              iree_string_view_t* key,
+              const iree_io_parameter_t** parameter,
               iree_io_parameter_span_t* span) -> iree_status_t {
             auto* state = static_cast<Enumeration*>(user_data);
             IREE_RETURN_IF_ERROR(iree_io_parameter_provider_notify(
                 state->provider, IREE_IO_PARAMETER_PROVIDER_SIGNAL_LOW_MEMORY));
-            return EnumerateParameterRequest(state->request, ordinal, key,
+            return EnumerateParameterRequest(state->request, ordinal, parameter,
                                              span);
           },
           &enumerations[i]};
-      gathers[i] = {IREE_SV("model"), buffers[i].get(), 1, enumerator, waits,
-                    signals};
-      scatters[i] = {IREE_SV("model"), buffers[i].get(), 1, enumerator, waits,
-                     signals};
+      gathers[i] = {buffers[i].get(), 1, enumerator, waits, signals};
+      scatters[i] = {buffers[i].get(), 1, enumerator, waits, signals};
     }
     SubmissionTrace trace(queue());
     if (scatter) {
@@ -1731,15 +1489,15 @@ TEST_F(ParameterIndexProviderTest,
         IREE_HAL_SEMAPHORE_FLAG_DEFAULT, done.out()));
     auto* done_ptr = done.get();
     uint64_t value = 1;
-    ParameterRequest request = {IREE_SV("rows"), {UINT64_MAX - 1, 0, 4}};
+    ParameterRequest request = {Resolve(provider.get(), IREE_SV("rows")),
+                                {UINT64_MAX - 1, 0, 4}};
     SubmissionTrace trace(queue());
     IREE_EXPECT_STATUS_IS(
         IREE_STATUS_OUT_OF_RANGE,
         iree_io_parameter_provider_gather(
             provider.get(), device(), trace.queue(),
             iree_hal_semaphore_list_empty(), {1, &done_ptr, &value},
-            IREE_SV("model"), buffer.get(),
-            batch_overflow ? IREE_HOST_SIZE_MAX : 1,
+            buffer.get(), batch_overflow ? IREE_HOST_SIZE_MAX : 1,
             {EnumerateParameterRequest, &request}));
     EXPECT_TRUE(trace.submissions().empty());
     IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
@@ -1787,9 +1545,10 @@ TEST_F(ParameterIndexProviderTest,
           device(), IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY, 0,
           IREE_HAL_SEMAPHORE_FLAG_DEFAULT, signal.out()));
     }
-    ParameterRequest requests[] = {{IREE_SV("first"), {0, 0, 4}},
-                                   {IREE_SV("missing"), {0, 4, 4}},
-                                   {IREE_SV("second"), {0, 8, 4}}};
+    ParameterRequest requests[] = {
+        {Resolve(provider.get(), IREE_SV("first")), {0, 0, 4}},
+        {Resolve(provider.get(), IREE_SV("first")), {4, 4, 4}},
+        {Resolve(provider.get(), IREE_SV("second")), {0, 8, 4}}};
     iree_io_parameter_gather_t gathers[3] = {};
     iree_io_parameter_scatter_t scatters[3] = {};
     auto* gate_ptr = gate.get();
@@ -1797,14 +1556,12 @@ TEST_F(ParameterIndexProviderTest,
                                          done[2].get()};
     uint64_t value = 1;
     for (size_t i = 0; i < 3; ++i) {
-      gathers[i] = {IREE_SV("model"),
-                    buffer.get(),
+      gathers[i] = {buffer.get(),
                     1,
                     {EnumerateParameterRequest, &requests[i]},
                     {1, &gate_ptr, &value},
                     {1, &done_ptrs[i], &value}};
-      scatters[i] = {IREE_SV("model"),
-                     buffer.get(),
+      scatters[i] = {buffer.get(),
                      1,
                      {EnumerateParameterRequest, &requests[i]},
                      {1, &gate_ptr, &value},
@@ -1812,20 +1569,20 @@ TEST_F(ParameterIndexProviderTest,
     }
     if (scatter) {
       IREE_EXPECT_STATUS_IS(
-          IREE_STATUS_NOT_FOUND,
+          IREE_STATUS_OUT_OF_RANGE,
           iree_io_parameter_provider_scatter_batch(provider.get(), device(),
                                                    queue(), 3, scatters));
     } else {
-      IREE_EXPECT_STATUS_IS(IREE_STATUS_NOT_FOUND,
+      IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
                             iree_io_parameter_provider_gather_batch(
                                 provider.get(), device(), queue(), 3, gathers));
     }
     uint64_t observed = 0;
     IREE_EXPECT_OK(iree_hal_semaphore_query(done[0].get(), &observed));
     EXPECT_EQ(observed, 0);
-    IREE_EXPECT_STATUS_IS(IREE_STATUS_NOT_FOUND,
+    IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
                           iree_hal_semaphore_query(done[1].get(), &observed));
-    IREE_EXPECT_STATUS_IS(IREE_STATUS_NOT_FOUND,
+    IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
                           iree_hal_semaphore_query(done[2].get(), &observed));
     provider.reset();
     index.reset();
@@ -1873,8 +1630,8 @@ TEST_F(ParameterIndexProviderTest, EmptyGroupsPreserveOnlyTheirOwnWaits) {
       const auto waits = i ? iree_hal_semaphore_list_empty()
                            : iree_hal_semaphore_list_t{1, &gate_ptr, &value};
       const iree_hal_semaphore_list_t signals = {1, &done_ptrs[i], &value};
-      gathers[i] = {IREE_SV("model"), nullptr, 0, {}, waits, signals};
-      scatters[i] = {IREE_SV("model"), nullptr, 0, {}, waits, signals};
+      gathers[i] = {nullptr, 0, {}, waits, signals};
+      scatters[i] = {nullptr, 0, {}, waits, signals};
     }
     if (scatter) {
       IREE_EXPECT_OK(iree_io_parameter_provider_scatter_batch(
@@ -1894,4 +1651,4 @@ TEST_F(ParameterIndexProviderTest, EmptyGroupsPreserveOnlyTheirOwnWaits) {
   }
 }
 
-}  // namespace
+}  // namespace iree::io::testing

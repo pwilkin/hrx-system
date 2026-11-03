@@ -13,13 +13,6 @@
 #include "iree/vm/buffer.h"
 #include "iree/vm/reflection.h"
 
-typedef struct loom_runtime_weight_source_t {
-  // Retained canonical keys, metadata, and backing storage.
-  iree_io_parameter_index_t* index;
-  // Retained imported-file cache shared with other users of this source.
-  iree_io_parameter_provider_t* provider;
-} loom_runtime_weight_source_t;
-
 struct loom_runtime_weight_inputs_t {
   // Allocator owning source records and the immutable captured range table.
   iree_allocator_t host_allocator;
@@ -27,9 +20,14 @@ struct loom_runtime_weight_inputs_t {
   uint32_t source_count;
   // Retained selected sources in policy-local order, following this object.
   // Unused peers in a request catalog do not stay live through this plan.
-  loom_runtime_weight_source_t* sources;
+  iree_io_parameter_provider_t** providers;
   // Private host snapshots, populated lazily and hidden from policy ordinals.
-  loom_runtime_weight_source_t generated;
+  struct {
+    // Owned insert-only storage for snapshots captured during policy execution.
+    iree_io_parameter_index_t* index;
+    // Owned provider retaining snapshot identities and imported files.
+    iree_io_parameter_provider_t* provider;
+  } generated;
   // Number of initialized ranges, addressable by the compact recipe ordinals.
   uint32_t count;
   // Allocated range capacity, grown only during cold source capture.
@@ -50,18 +48,15 @@ iree_status_t loom_runtime_weight_inputs_allocate(
   loom_runtime_weight_inputs_t* inputs = NULL;
   IREE_RETURN_IF_ERROR(iree_allocator_malloc_struct_array(
       host_allocator, sizeof(*inputs), parameter->source_count,
-      sizeof(*inputs->sources), (void**)&inputs));
+      sizeof(*inputs->providers), (void**)&inputs));
   inputs->host_allocator = host_allocator;
   inputs->staging_alignment = 1;
   inputs->source_count = parameter->source_count;
-  inputs->sources = (loom_runtime_weight_source_t*)(inputs + 1);
+  inputs->providers = (iree_io_parameter_provider_t**)(inputs + 1);
   for (uint32_t i = 0; i < parameter->source_count; ++i) {
-    inputs->sources[i].index = loom_runtime_parameter_sources_index(
+    inputs->providers[i] = loom_runtime_parameter_sources_provider(
         sources, parameter->source_ordinals[i]);
-    iree_io_parameter_index_retain(inputs->sources[i].index);
-    inputs->sources[i].provider = loom_runtime_parameter_sources_provider(
-        sources, parameter->source_ordinals[i]);
-    iree_io_parameter_provider_retain(inputs->sources[i].provider);
+    iree_io_parameter_provider_retain(inputs->providers[i]);
   }
   *out_inputs = inputs;
   return iree_ok_status();
@@ -72,8 +67,7 @@ void loom_runtime_weight_inputs_free(loom_runtime_weight_inputs_t* inputs) {
     return;
   }
   for (uint32_t i = 0; i < inputs->source_count; ++i) {
-    iree_io_parameter_provider_release(inputs->sources[i].provider);
-    iree_io_parameter_index_release(inputs->sources[i].index);
+    iree_io_parameter_provider_release(inputs->providers[i]);
   }
   iree_io_parameter_provider_release(inputs->generated.provider);
   iree_io_parameter_index_release(inputs->generated.index);
@@ -84,7 +78,7 @@ void loom_runtime_weight_inputs_free(loom_runtime_weight_inputs_t* inputs) {
 iree_io_parameter_provider_t* loom_runtime_weight_inputs_provider(
     const loom_runtime_weight_inputs_t* inputs, uint32_t source) {
   return source == inputs->source_count ? inputs->generated.provider
-                                        : inputs->sources[source].provider;
+                                        : inputs->providers[source];
 }
 
 uint32_t loom_runtime_weight_inputs_source_count(
@@ -92,19 +86,23 @@ uint32_t loom_runtime_weight_inputs_source_count(
   return inputs->source_count + (inputs->generated.provider != NULL);
 }
 
-iree_status_t loom_runtime_weight_inputs_validate_direct(
+iree_status_t loom_runtime_weight_inputs_resolve_direct(
     const loom_runtime_weight_inputs_t* inputs, iree_string_view_t key,
-    iree_device_size_t byte_length) {
-  const iree_io_parameter_index_entry_t* entry = NULL;
-  IREE_RETURN_IF_ERROR(
-      iree_io_parameter_index_lookup(inputs->sources[0].index, key, &entry));
-  if (byte_length > entry->length) {
+    iree_device_size_t byte_length, const iree_io_parameter_t** out_parameter) {
+  *out_parameter = NULL;
+  const iree_io_parameter_t* parameter = NULL;
+  IREE_RETURN_IF_ERROR(iree_io_parameter_provider_resolve(
+      inputs->providers[0], iree_string_view_empty(), key, &parameter));
+  const iree_io_parameter_info_t info =
+      iree_io_parameter_provider_query(inputs->providers[0], parameter);
+  if (byte_length > info.length) {
     return iree_make_status(
         IREE_STATUS_OUT_OF_RANGE,
         "weight '%.*s' requires %" PRIu64
         " bytes from checkpoint source zero, but its entry has %" PRIu64,
-        (int)key.size, key.data, (uint64_t)byte_length, entry->length);
+        (int)key.size, key.data, (uint64_t)byte_length, info.length);
   }
+  *out_parameter = parameter;
   return iree_ok_status();
 }
 
@@ -175,7 +173,7 @@ iree_status_t loom_runtime_weight_inputs_reserve_staging(
 static iree_status_t loom_runtime_weight_inputs_lookup(
     loom_runtime_weight_inputs_module_t* module,
     const iree_vm_call_packet_t* call,
-    const iree_io_parameter_index_entry_t** out_entry) {
+    const iree_io_parameter_t** out_parameter) {
   const uint32_t source = (uint32_t)iree_vm_call_value_argument_load(call, 0);
   if (source >= module->inputs->source_count) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
@@ -198,10 +196,10 @@ static iree_status_t loom_runtime_weight_inputs_lookup(
   IREE_RETURN_IF_ERROR(
       iree_vm_buffer_map_read(buffer, (iree_host_size_t)key_offset,
                               (iree_host_size_t)key_length, &bytes));
-  return iree_io_parameter_index_lookup(
-      module->inputs->sources[source].index,
+  return iree_io_parameter_provider_resolve(
+      module->inputs->providers[source], iree_string_view_empty(),
       iree_make_string_view((const char*)bytes.data, bytes.data_length),
-      out_entry);
+      out_parameter);
 }
 
 static iree_status_t loom_runtime_weight_inputs_reserve(
@@ -241,11 +239,11 @@ static iree_status_t loom_runtime_weight_inputs_reserve(
 // Commits a range after reserve has established its extent and storage.
 static void loom_runtime_weight_inputs_append(
     loom_runtime_weight_inputs_module_t* module, uint32_t source,
-    const iree_io_parameter_index_entry_t* entry, uint64_t offset,
-    uint64_t length, iree_device_size_t target, uint64_t alignment) {
+    const iree_io_parameter_t* parameter, uint64_t offset, uint64_t length,
+    iree_device_size_t target, uint64_t alignment) {
   loom_runtime_weight_inputs_t* inputs = module->inputs;
   inputs->values[inputs->count++] = (loom_runtime_weight_input_t){
-      .entry = entry,
+      .parameter = parameter,
       .span = {.parameter_offset = offset,
                .buffer_offset = target,
                .length = length},
@@ -259,24 +257,24 @@ static void loom_runtime_weight_inputs_append(
 
 static iree_status_t loom_runtime_weight_inputs_capture(
     loom_runtime_weight_inputs_module_t* module,
-    const iree_vm_call_packet_t* call,
-    const iree_io_parameter_index_entry_t* entry) {
+    const iree_vm_call_packet_t* call, const iree_io_parameter_t* parameter,
+    iree_io_parameter_info_t info) {
   const int64_t offset = (int64_t)iree_vm_call_value_argument_load(call, 3);
   const int64_t length = (int64_t)iree_vm_call_value_argument_load(call, 4);
   const int64_t alignment = (int64_t)iree_vm_call_value_argument_load(call, 5);
-  if (offset < 0 || length <= 0 || (uint64_t)offset > entry->length ||
-      (uint64_t)length > entry->length - (uint64_t)offset) {
+  if (offset < 0 || length <= 0 || (uint64_t)offset > info.length ||
+      (uint64_t)length > info.length - (uint64_t)offset) {
     return iree_make_status(
         IREE_STATUS_OUT_OF_RANGE,
         "weight '%.*s' input range offset %" PRId64 " length %" PRId64
         " exceeds checkpoint tensor length %" PRIu64,
-        (int)entry->key.size, entry->key.data, offset, length, entry->length);
+        (int)info.key.size, info.key.data, offset, length, info.length);
   }
   iree_device_size_t target = 0;
   IREE_RETURN_IF_ERROR(
       loom_runtime_weight_inputs_reserve(module, length, alignment, &target));
   loom_runtime_weight_inputs_append(
-      module, (uint32_t)iree_vm_call_value_argument_load(call, 0), entry,
+      module, (uint32_t)iree_vm_call_value_argument_load(call, 0), parameter,
       offset, length, target, alignment);
   iree_vm_call_value_result_store(call, 0, target);
   return iree_ok_status();
@@ -341,10 +339,11 @@ static iree_status_t loom_runtime_weight_inputs_capture_buffer(
       .storage.file = {.handle = handle},
   };
   status = iree_io_parameter_index_add(inputs->generated.index, &entry);
-  const iree_io_parameter_index_entry_t* stored = NULL;
+  const iree_io_parameter_t* stored = NULL;
   if (iree_status_is_ok(status)) {
-    status = iree_io_parameter_index_lookup(inputs->generated.index, entry.key,
-                                            &stored);
+    status = iree_io_parameter_provider_resolve(inputs->generated.provider,
+                                                iree_string_view_empty(),
+                                                entry.key, &stored);
   }
   iree_io_file_handle_release(handle);
   if (iree_status_is_ok(status)) {
@@ -372,11 +371,14 @@ static iree_status_t loom_runtime_weight_inputs_module_start(
     IREE_RETURN_IF_ERROR(
         loom_runtime_weight_inputs_capture_buffer(module, call));
   } else {
-    const iree_io_parameter_index_entry_t* entry = NULL;
+    const iree_io_parameter_t* parameter = NULL;
     IREE_RETURN_IF_ERROR(
-        loom_runtime_weight_inputs_lookup(module, call, &entry));
+        loom_runtime_weight_inputs_lookup(module, call, &parameter));
+    const uint32_t source = (uint32_t)iree_vm_call_value_argument_load(call, 0);
+    const iree_io_parameter_info_t info = iree_io_parameter_provider_query(
+        module->inputs->providers[source], parameter);
     if (params->function_ordinal == 1) {
-      if (entry->length > INT64_MAX) {
+      if (info.length > INT64_MAX) {
         return iree_make_status(
             IREE_STATUS_OUT_OF_RANGE,
             "weight input tensor length is not addressable");
@@ -384,17 +386,17 @@ static iree_status_t loom_runtime_weight_inputs_module_start(
       iree_vm_buffer_t* metadata = NULL;
       IREE_RETURN_IF_ERROR(
           iree_vm_buffer_wrap(IREE_VM_BUFFER_ACCESS_FLAG_READ,
-                              iree_make_byte_span((void*)entry->metadata.data,
-                                                  entry->metadata.data_length),
+                              iree_make_byte_span((void*)info.metadata.data,
+                                                  info.metadata.data_length),
                               iree_vm_buffer_release_callback_null(),
                               module->host_allocator, &metadata));
       iree_vm_ref_t result =
           iree_vm_buffer_ref_from_ptr_move(&module->types, &metadata);
       iree_vm_call_ref_result_store_move(call, 0, &result);
-      iree_vm_call_value_result_store(call, 0, entry->length);
+      iree_vm_call_value_result_store(call, 0, info.length);
     } else {
       IREE_RETURN_IF_ERROR(
-          loom_runtime_weight_inputs_capture(module, call, entry));
+          loom_runtime_weight_inputs_capture(module, call, parameter, info));
     }
   }
   *out_outcome = IREE_VM_EXECUTION_OUTCOME_COMPLETED;
