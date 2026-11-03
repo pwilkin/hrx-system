@@ -29,6 +29,8 @@ IREE_FLAG(string, binding_source, "", "Source-defined host binding contracts.");
 namespace {
 
 using iree::testing::status::StatusIs;
+using iree::vm::testing::TableModule;
+using iree::vm::testing::TableModuleDefinition;
 
 void ExpectInvalidContract(iree_status_t raw_status, const char* message,
                            const char* detail = nullptr) {
@@ -54,6 +56,40 @@ iree_vm_signature_type_t Reference(iree_vm_ref_type_t type) {
   };
 }
 
+const iree_vm_module_signature_type_t kCounterResult[] = {
+    {IREE_VM_SCALAR_TYPE_I32, 0},
+};
+
+const iree_vm_module_callable_type_declaration_t kCounterCallables[] = {
+    {{{nullptr, 0, 0, 0, 0},
+      {kCounterResult, IREE_ARRAYSIZE(kCounterResult), 1, 0, 0}},
+     IREE_VM_CALLABLE_TYPE_FLAG_NONE,
+     0,
+     0},
+};
+
+const iree_vm_module_export_declaration_t kCounterExports[] = {
+    {IREE_SVL("next"), 0, 0, 0},
+};
+
+iree_status_t CounterModuleFunctionStart(
+    iree_vm_module_t* module,
+    const iree_vm_module_function_start_params_t* params,
+    iree_vm_execution_outcome_t* out_outcome) {
+  (void)module;
+  int32_t* value = static_cast<int32_t*>(params->execution.process_storage);
+  iree_vm_call_value_result_store(&params->call, 0, ++*value);
+  *out_outcome = IREE_VM_EXECUTION_OUTCOME_COMPLETED;
+  return iree_ok_status();
+}
+
+iree_status_t CounterModuleInitialize(TableModule* module) {
+  TableModuleDefinition definition(IREE_SV("state"), 1, sizeof(int32_t));
+  definition.WithCallableTypes(kCounterCallables).WithExports(kCounterExports);
+  module->vtable().function_start = CounterModuleFunctionStart;
+  return module->Publish(definition);
+}
+
 class ProgramTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -69,14 +105,17 @@ class ProgramTest : public ::testing::Test {
     IREE_ASSERT_OK(iree_hal_vm_types_resolve(table, &hal_types_));
     IREE_ASSERT_OK(loom_runtime_input_module_create(environment_, nullptr,
                                                     host_allocator_, &input_));
+    IREE_ASSERT_OK(CounterModuleInitialize(&counter_));
     const iree_string_view_t roots[] = {
         IREE_SVL("scalars"), IREE_SVL("references"), IREE_SVL("empty"),
-        IREE_SVL("uppercase")};
+        IREE_SVL("uppercase"), IREE_SVL("next")};
     const loom_runtime_sources_t sources = {.base_directory = IREE_SV(".")};
+    iree_vm_module_t* libraries[] = {input_, counter_.module()};
     IREE_ASSERT_OK(loom_runtime_program_allocate(
         target_environment_, environment_, &sources,
         iree_make_cstring_view(FLAG_binding_source), IREE_ARRAYSIZE(roots),
-        roots, {&input_, 1}, &compilation_, host_allocator_, &program_));
+        roots, iree_vm_module_span_from_array(libraries), &compilation_,
+        host_allocator_, &program_));
   }
 
   void TearDown() override {
@@ -106,6 +145,8 @@ class ProgramTest : public ::testing::Test {
   iree_hal_vm_types_t hal_types_ = {};
   // Real native assertion capability proving binding does not execute exports.
   iree_vm_module_t* input_ = nullptr;
+  // Real process-local native state used to prove execution isolation.
+  TableModule counter_;
   // JIT diagnostics owned independently from the program.
   loom_runtime_compilation_report_t compilation_ = {};
   // Source-defined bytecode and invocation under test.
@@ -258,6 +299,27 @@ TEST_F(ProgramTest, ComponentAbiSurvivesCompileLinkLookupAndBinding) {
                                   function_, iree_vm_variant_span_empty(),
                                   {&result, 1}));
     int32_t value = 0;
+    IREE_ASSERT_OK(iree_vm_i32_from_variant(result, &value));
+    EXPECT_EQ(value, 7);
+
+    iree_vm_function_ref_t function_ref = iree_vm_function_ref_null();
+    const loom_runtime_program_export_binding_t export_binding = {
+        role, {}, {&result_type, 1}, &function_ref};
+    IREE_ASSERT_OK(loom_runtime_program_resolve_service_exports(
+        program_, 1, &export_binding));
+    loom_runtime_program_execution_t* execution = nullptr;
+    IREE_ASSERT_OK(
+        loom_runtime_program_execution_allocate(program_, &execution));
+    std::unique_ptr<loom_runtime_program_execution_t,
+                    decltype(&loom_runtime_program_execution_free)>
+        execution_owner(execution, loom_runtime_program_execution_free);
+    iree_vm_function_t rebound = {};
+    IREE_ASSERT_OK(
+        loom_runtime_program_execution_bind(execution, function_ref, &rebound));
+    result = {};
+    IREE_ASSERT_OK(
+        iree_vm_invoke(loom_runtime_program_execution_invocation(execution),
+                       rebound, {}, {&result, 1}));
     IREE_ASSERT_OK(iree_vm_i32_from_variant(result, &value));
     EXPECT_EQ(value, 7);
   }
@@ -415,6 +477,48 @@ TEST_F(ProgramTest, StringCodepointImportsUseSharedRuntimeCapability) {
     IREE_ASSERT_OK(iree_vm_i32_from_variant(results[i], &actual));
     EXPECT_EQ(actual, expected[i]);
   }
+}
+
+TEST_F(ProgramTest, ProgramFunctionsRebindToIsolatedExecutions) {
+  const auto result_type = Scalar(IREE_VM_SCALAR_TYPE_I32);
+  iree_vm_function_ref_t function_ref = iree_vm_function_ref_null();
+  const loom_runtime_program_export_binding_t binding = {
+      IREE_SV("next"), {}, {&result_type, 1}, &function_ref};
+  IREE_ASSERT_OK(loom_runtime_program_resolve_exports(program_, 1, &binding));
+
+  loom_runtime_program_execution_t* first_execution = nullptr;
+  loom_runtime_program_execution_t* second_execution = nullptr;
+  IREE_ASSERT_OK(
+      loom_runtime_program_execution_allocate(program_, &first_execution));
+  IREE_ASSERT_OK(
+      loom_runtime_program_execution_allocate(program_, &second_execution));
+  std::unique_ptr<loom_runtime_program_execution_t,
+                  decltype(&loom_runtime_program_execution_free)>
+      first_owner(first_execution, loom_runtime_program_execution_free);
+  std::unique_ptr<loom_runtime_program_execution_t,
+                  decltype(&loom_runtime_program_execution_free)>
+      second_owner(second_execution, loom_runtime_program_execution_free);
+  iree_vm_function_t first_function = {};
+  iree_vm_function_t second_function = {};
+  IREE_ASSERT_OK(loom_runtime_program_execution_bind(
+      first_execution, function_ref, &first_function));
+  IREE_ASSERT_OK(loom_runtime_program_execution_bind(
+      second_execution, function_ref, &second_function));
+
+  const auto invoke_next = [](loom_runtime_program_execution_t* execution,
+                              iree_vm_function_t function) {
+    iree_vm_variant_t result = {};
+    IREE_EXPECT_OK(
+        iree_vm_invoke(loom_runtime_program_execution_invocation(execution),
+                       function, {}, {&result, 1}));
+    int32_t value = 0;
+    IREE_EXPECT_OK(iree_vm_i32_from_variant(result, &value));
+    return value;
+  };
+  EXPECT_EQ(invoke_next(first_execution, first_function), 1);
+  EXPECT_EQ(invoke_next(first_execution, first_function), 2);
+  EXPECT_EQ(invoke_next(second_execution, second_function), 1);
+  EXPECT_EQ(invoke_next(first_execution, first_function), 3);
 }
 
 }  // namespace

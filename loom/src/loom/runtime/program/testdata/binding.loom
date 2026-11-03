@@ -10,9 +10,16 @@ func.decl import("input") @require(%condition: i32, %diagnostic: buffer)
 
 func.decl import("string", "codepoint.to_upper") @unicode.to_upper(%codepoint: i32) -> (i32, i32, i32, i32)
 
+func.decl import("state", "next") @state.next() -> (i32)
+
 func.def public @uppercase(%codepoint: i32) -> (i32, i32, i32, i32) {
   %count, %first, %second, %third = func.call @unicode.to_upper(%codepoint) : (i32) -> (i32, i32, i32, i32)
   func.return %count, %first, %second, %third : i32, i32, i32, i32
+}
+
+func.def public @next() -> (i32) {
+  %next = func.call @state.next() : () -> (i32)
+  func.return %next : i32
 }
 
 func.def public @empty() {

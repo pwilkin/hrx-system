@@ -13,6 +13,20 @@
 #include "iree/vm/sync.h"
 #include "loom/runtime/program/jit.h"
 
+enum { LOOM_RUNTIME_PROGRAM_INVOCATION_STORAGE_SIZE = 16384 };
+
+struct loom_runtime_program_execution_t {
+  // Host allocation policy for this owner and its VM process.
+  iree_allocator_t host_allocator;
+  // Owned process retaining the immutable linked program.
+  iree_vm_process_t* process;
+  // Fixed invocation backing, independent of request and token counts.
+  iree_alignas(iree_max_align_t)
+      uint8_t storage[LOOM_RUNTIME_PROGRAM_INVOCATION_STORAGE_SIZE];
+  // Invocation borrowing storage; calls are serialized by this owner.
+  iree_vm_invocation_t* invocation;
+};
+
 struct loom_runtime_program_t {
   // Host allocation policy for the owner and all VM storage.
   iree_allocator_t host_allocator;
@@ -25,12 +39,8 @@ struct loom_runtime_program_t {
   // Borrowed component contract owned by card; NULL selects its primary
   // service.
   const loom_model_component_t* component;
-  // Owned process borrowing no session state.
-  iree_vm_process_t* process;
-  // Fixed invocation backing, independent of request and token counts.
-  iree_alignas(iree_max_align_t) uint8_t storage[16384];
-  // Invocation borrowing storage; calls are serialized by the model owner.
-  iree_vm_invocation_t* invocation;
+  // Default mutable execution for program-level lookup and invoke APIs.
+  loom_runtime_program_execution_t* default_execution;
 };
 
 void loom_runtime_program_free(loom_runtime_program_t* program) {
@@ -38,14 +48,59 @@ void loom_runtime_program_free(loom_runtime_program_t* program) {
     return;
   }
   IREE_TRACE_ZONE_BEGIN(z0);
-  iree_vm_process_release(program->process);
-  if (program->invocation) {
-    iree_vm_invocation_deinitialize(program->invocation);
-  }
+  loom_runtime_program_execution_free(program->default_execution);
   iree_vm_program_release(program->program);
   loom_model_card_release(program->card);
   iree_allocator_free(program->host_allocator, program);
   IREE_TRACE_ZONE_END(z0);
+}
+
+iree_status_t loom_runtime_program_execution_allocate(
+    loom_runtime_program_t* program,
+    loom_runtime_program_execution_t** out_execution) {
+  *out_execution = NULL;
+  loom_runtime_program_execution_t* execution = NULL;
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      program->host_allocator, sizeof(*execution), (void**)&execution));
+  execution->host_allocator = program->host_allocator;
+  iree_status_t status = iree_vm_invocation_initialize(
+      iree_make_byte_span(execution->storage, sizeof(execution->storage)),
+      &execution->invocation);
+  if (iree_status_is_ok(status)) {
+    status = iree_vm_process_create(
+        program->program, execution->invocation, iree_vm_variant_span_empty(),
+        program->host_allocator, &execution->process);
+  }
+  if (iree_status_is_ok(status)) {
+    *out_execution = execution;
+  } else {
+    loom_runtime_program_execution_free(execution);
+  }
+  return status;
+}
+
+void loom_runtime_program_execution_free(
+    loom_runtime_program_execution_t* execution) {
+  if (!execution) {
+    return;
+  }
+  iree_vm_process_release(execution->process);
+  if (execution->invocation) {
+    iree_vm_invocation_deinitialize(execution->invocation);
+  }
+  iree_allocator_free(execution->host_allocator, execution);
+}
+
+iree_status_t loom_runtime_program_execution_bind(
+    loom_runtime_program_execution_t* execution,
+    iree_vm_function_ref_t function_ref, iree_vm_function_t* out_function) {
+  return iree_vm_function_from_function_ref(execution->process, function_ref,
+                                            out_function);
+}
+
+iree_vm_invocation_t* loom_runtime_program_execution_invocation(
+    loom_runtime_program_execution_t* execution) {
+  return execution->invocation;
 }
 
 static iree_status_t loom_runtime_program_module_create(
@@ -249,8 +304,8 @@ iree_status_t loom_runtime_program_allocate_service(
 iree_status_t loom_runtime_program_lookup(loom_runtime_program_t* program,
                                           iree_string_view_t name,
                                           iree_vm_function_t* out_function) {
-  return iree_vm_process_lookup_function(program->process, IREE_SV("model"),
-                                         name, out_function);
+  return iree_vm_process_lookup_function(program->default_execution->process,
+                                         IREE_SV("model"), name, out_function);
 }
 
 iree_status_t loom_runtime_program_lookup_service(
@@ -302,14 +357,8 @@ iree_status_t loom_runtime_program_link(iree_vm_module_t* module,
   iree_vm_module_release(string_module);
   if (iree_status_is_ok(status)) {
     program->module = module;
-    status = iree_vm_invocation_initialize(
-        iree_make_byte_span(program->storage, sizeof(program->storage)),
-        &program->invocation);
-  }
-  if (iree_status_is_ok(status)) {
-    status = iree_vm_process_create(program->program, program->invocation,
-                                    iree_vm_variant_span_empty(),
-                                    host_allocator, &program->process);
+    status = loom_runtime_program_execution_allocate(
+        program, &program->default_execution);
   }
   if (iree_status_is_ok(status)) {
     *out_program = program;
@@ -427,6 +476,35 @@ static iree_status_t loom_runtime_program_check_fields(
   return iree_ok_status();
 }
 
+static iree_status_t loom_runtime_program_resolve_export(
+    loom_runtime_program_t* program, iree_string_view_t name,
+    iree_vm_signature_type_span_t arguments,
+    iree_vm_signature_type_span_t results,
+    iree_vm_function_ref_t* out_function_ref) {
+  iree_vm_export_t export_value = {0};
+  IREE_RETURN_IF_ERROR(
+      iree_vm_module_lookup_export(program->module, name, &export_value));
+  iree_vm_module_export_declaration_t declaration = {0};
+  IREE_RETURN_IF_ERROR(iree_vm_module_query_export(
+      program->module, export_value.ordinal, &declaration));
+  iree_vm_module_callable_type_declaration_t callable = {0};
+  IREE_RETURN_IF_ERROR(iree_vm_module_query_callable_type(
+      program->module, declaration.callable_type_ordinal, &callable));
+  if (iree_any_bit_set(callable.flags, IREE_VM_CALLABLE_TYPE_FLAG_MAY_YIELD)) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "model export '%.*s' must be synchronous; source "
+                            "declares a yielding function",
+                            (int)name.size, name.data);
+  }
+  IREE_RETURN_IF_ERROR(loom_runtime_program_check_fields(
+      program->module, name, "argument", arguments,
+      callable.signature.arguments));
+  IREE_RETURN_IF_ERROR(loom_runtime_program_check_fields(
+      program->module, name, "result", results, callable.signature.results));
+  return iree_vm_function_ref_from_export(program->program, export_value,
+                                          out_function_ref);
+}
+
 static iree_status_t loom_runtime_program_bind_names(
     loom_runtime_program_t* program, iree_host_size_t binding_count,
     const loom_runtime_program_binding_t* bindings,
@@ -434,32 +512,60 @@ static iree_status_t loom_runtime_program_bind_names(
   for (iree_host_size_t i = 0; i < binding_count; ++i) {
     const loom_runtime_program_binding_t* binding = &bindings[i];
     const iree_string_view_t name = names ? names[i] : binding->name;
-    iree_vm_export_t export_value = {0};
-    IREE_RETURN_IF_ERROR(
-        iree_vm_module_lookup_export(program->module, name, &export_value));
-    iree_vm_module_export_declaration_t declaration = {0};
-    IREE_RETURN_IF_ERROR(iree_vm_module_query_export(
-        program->module, export_value.ordinal, &declaration));
-    iree_vm_module_callable_type_declaration_t callable = {0};
-    IREE_RETURN_IF_ERROR(iree_vm_module_query_callable_type(
-        program->module, declaration.callable_type_ordinal, &callable));
-    if (iree_any_bit_set(callable.flags,
-                         IREE_VM_CALLABLE_TYPE_FLAG_MAY_YIELD)) {
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "model export '%.*s' must be synchronous; source "
-                              "declares a yielding function",
-                              (int)name.size, name.data);
-    }
-    IREE_RETURN_IF_ERROR(loom_runtime_program_check_fields(
-        program->module, name, "argument", binding->arguments,
-        callable.signature.arguments));
-    IREE_RETURN_IF_ERROR(loom_runtime_program_check_fields(
-        program->module, name, "result", binding->results,
-        callable.signature.results));
-    IREE_RETURN_IF_ERROR(iree_vm_function_from_export(
-        program->process, export_value, binding->function));
+    iree_vm_function_ref_t function_ref = iree_vm_function_ref_null();
+    IREE_RETURN_IF_ERROR(loom_runtime_program_resolve_export(
+        program, name, binding->arguments, binding->results, &function_ref));
+    IREE_RETURN_IF_ERROR(loom_runtime_program_execution_bind(
+        program->default_execution, function_ref, binding->function));
   }
   return iree_ok_status();
+}
+
+static iree_status_t loom_runtime_program_resolve_export_names(
+    loom_runtime_program_t* program, iree_host_size_t binding_count,
+    const loom_runtime_program_export_binding_t* bindings,
+    const iree_string_view_t* names) {
+  for (iree_host_size_t i = 0; i < binding_count; ++i) {
+    const loom_runtime_program_export_binding_t* binding = &bindings[i];
+    const iree_string_view_t name = names ? names[i] : binding->name;
+    IREE_RETURN_IF_ERROR(loom_runtime_program_resolve_export(
+        program, name, binding->arguments, binding->results,
+        binding->function_ref));
+  }
+  return iree_ok_status();
+}
+
+iree_status_t loom_runtime_program_resolve_exports(
+    loom_runtime_program_t* program, iree_host_size_t binding_count,
+    const loom_runtime_program_export_binding_t* bindings) {
+  return loom_runtime_program_resolve_export_names(program, binding_count,
+                                                   bindings, NULL);
+}
+
+iree_status_t loom_runtime_program_resolve_service_exports(
+    loom_runtime_program_t* program, iree_host_size_t binding_count,
+    const loom_runtime_program_export_binding_t* bindings) {
+  if (!program->card) {
+    return loom_runtime_program_resolve_exports(program, binding_count,
+                                                bindings);
+  }
+  iree_string_view_t* roles = NULL;
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
+      program->host_allocator, binding_count, sizeof(*roles), (void**)&roles));
+  for (iree_host_size_t i = 0; i < binding_count; ++i) {
+    roles[i] = bindings[i].name;
+  }
+  iree_string_view_t* names = NULL;
+  iree_status_t status = loom_runtime_program_service_names(
+      loom_model_card_selection(program->card), program->component,
+      binding_count, roles, program->host_allocator, &names);
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_resolve_export_names(program, binding_count,
+                                                       bindings, names);
+  }
+  iree_allocator_free(program->host_allocator, names);
+  iree_allocator_free(program->host_allocator, roles);
+  return status;
 }
 
 iree_status_t loom_runtime_program_bind(
@@ -496,10 +602,10 @@ iree_status_t loom_runtime_program_bind_service(
 
 iree_vm_process_t* loom_runtime_program_process(
     loom_runtime_program_t* program) {
-  return program->process;
+  return program->default_execution->process;
 }
 
 iree_vm_invocation_t* loom_runtime_program_invocation(
     loom_runtime_program_t* program) {
-  return program->invocation;
+  return program->default_execution->invocation;
 }

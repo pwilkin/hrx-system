@@ -19,10 +19,15 @@
 extern "C" {
 #endif
 
-// One source-JIT host program and serialized invocation, shared across
-// requests. Native modules own any asynchronous resources submitted by the
+// One immutable linked source-JIT host program, shared across execution
+// contexts. Native modules own any asynchronous resources submitted by the
 // program.
 typedef struct loom_runtime_program_t loom_runtime_program_t;
+// One mutable VM process and invocation for a linked program. Calls using one
+// execution are externally serialized by its owner; separate executions may
+// run concurrently.
+typedef struct loom_runtime_program_execution_t
+    loom_runtime_program_execution_t;
 typedef struct loom_runtime_jit_t loom_runtime_jit_t;
 
 // One synchronous host call into a source-defined model program. Scalar fields
@@ -39,6 +44,21 @@ typedef struct loom_runtime_program_binding_t {
   // Borrowed destination for the process-bound function on successful binding.
   iree_vm_function_t* function;
 } loom_runtime_program_binding_t;
+
+// One validated source-defined host call retained independently of a mutable
+// execution. The function ref borrows the linked program and may be rebound to
+// any execution allocated from it.
+typedef struct loom_runtime_program_export_binding_t {
+  // Exact export name in the model module.
+  iree_string_view_t name;
+  // Source-ordered argument types supplied by the host caller.
+  iree_vm_signature_type_span_t arguments;
+  // Source-ordered result types consumed by the host caller.
+  iree_vm_signature_type_span_t results;
+  // Borrowed destination for the program-bound function on successful
+  // resolution.
+  iree_vm_function_ref_t* function_ref;
+} loom_runtime_program_export_binding_t;
 
 // Compiles source into an owned module named "model" without linking native
 // libraries or creating a process. The environment supplies reference types;
@@ -128,6 +148,46 @@ iree_status_t loom_runtime_program_lookup_service(
 // destroying the program or any host payloads that work borrows.
 void loom_runtime_program_free(loom_runtime_program_t* program);
 
+// Allocates one independent mutable process and invocation from the immutable
+// linked program. The execution retains the underlying VM program, so it and
+// previously resolved function refs may outlive |program|. Process
+// initialization is synchronous.
+iree_status_t loom_runtime_program_execution_allocate(
+    loom_runtime_program_t* program,
+    loom_runtime_program_execution_t** out_execution);
+
+// Releases one execution after its synchronous or suspended call has retired.
+void loom_runtime_program_execution_free(
+    loom_runtime_program_execution_t* execution);
+
+// Binds one previously resolved program function to |execution|. The result
+// borrows execution and is invalid after it is freed.
+iree_status_t loom_runtime_program_execution_bind(
+    loom_runtime_program_execution_t* execution,
+    iree_vm_function_ref_t function_ref, iree_vm_function_t* out_function);
+
+// Borrowed invocation for synchronous VM calls. Its owner serializes all use
+// of this execution.
+iree_vm_invocation_t* loom_runtime_program_execution_invocation(
+    loom_runtime_program_execution_t* execution);
+
+// Validates exact host exports without binding them to mutable process state.
+// Missing exports, incompatible signatures, and yielding functions fail with
+// the export name and expected contract. Earlier destinations may be set if a
+// later binding fails; none may be used until the complete call succeeds.
+// Function refs borrow program. This cold operation runs before publishing a
+// service.
+iree_status_t loom_runtime_program_resolve_exports(
+    loom_runtime_program_t* program, iree_host_size_t binding_count,
+    const loom_runtime_program_export_binding_t* bindings);
+
+// Resolves service roles using the same card contract as compile_service and
+// lookup_service. Binding names are roles; contracts and ownership are
+// otherwise identical to resolve_exports.
+iree_status_t loom_runtime_program_resolve_service_exports(
+    loom_runtime_program_t* program, iree_host_size_t binding_count,
+    const loom_runtime_program_export_binding_t* bindings);
+
 // Validates and binds exact host exports without invoking source code. Missing
 // exports, incompatible signatures, and yielding functions fail with the export
 // name and expected contract. Earlier destinations may be set if a later
@@ -146,8 +206,8 @@ iree_status_t loom_runtime_program_bind_service(
     loom_runtime_program_t* program, iree_host_size_t binding_count,
     const loom_runtime_program_binding_t* bindings);
 
-// Borrowed process and invocation for ordinary VM lookup/invoke APIs. Calls
-// using this invocation are serialized by its owner; sessions are plain data.
+// Borrowed default process and invocation for ordinary VM lookup/invoke APIs.
+// Calls using this execution are serialized by the program owner.
 iree_vm_process_t* loom_runtime_program_process(
     loom_runtime_program_t* program);
 iree_vm_invocation_t* loom_runtime_program_invocation(
