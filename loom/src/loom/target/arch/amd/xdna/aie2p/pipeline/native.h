@@ -70,6 +70,9 @@ typedef struct loom_aie2p_native_channel_t {
     // Ready/free credits exchanged at each complete batch boundary.
     uint32_t credits;
   } replay;
+  // Existing compute reader whose nth admission proves this FIFO's nth record
+  // has been transported. NULL when no exact one-to-one progress is retained.
+  const struct loom_aie2p_native_channel_t* progress;
 } loom_aie2p_native_channel_t;
 
 // One worker's admitted access to a channel's resident memory and credits.
@@ -503,6 +506,8 @@ typedef struct loom_aie2p_native_worker_t {
   uint8_t control_packet_count;
   // An external-write path already owns the core's completion stream.
   bool has_egress;
+  // Reader-driven continuation groups sharing one window counter pair.
+  struct loom_aie2p_native_refill_t* refills;
 } loom_aie2p_native_worker_t;
 
 typedef struct loom_aie2p_native_join_function_t {
@@ -683,7 +688,7 @@ iree_status_t loom_aie2p_native_bind_distribution_phases(
 iree_status_t loom_aie2p_native_select_control_route(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
-    iree_host_size_t worker_index, loom_aie2p_native_tile_t* tile, bool reply,
+    iree_host_size_t worker_index, const loom_aie2p_native_tile_t* tile, bool reply,
     uint32_t* next_source, uint8_t* next_controller, bool* out_valid);
 
 iree_status_t loom_aie2p_native_distribution_boundary(
@@ -695,9 +700,13 @@ iree_status_t loom_aie2p_native_distribution_boundary(
 uint16_t* loom_aie2p_native_descriptor_bank(loom_aie2p_native_tile_t* tile,
                                             uint8_t engine, uint16_t* out_base,
                                             uint16_t* out_count);
+// Selects startup tasks and, when required, a retained reader continuation.
+// progress_channel is NULL for queues without an equal-ordinal channel proof,
+// including queues whose admission belongs to an ordered distribution phase.
 iree_status_t loom_aie2p_native_select_sequence(
     loom_aie2p_native_context_t* context, loom_aie2p_native_tile_t* tile,
-    uint8_t engine, loom_xdna_dma_direction_t direction, uint32_t repetitions,
+    uint8_t engine, loom_xdna_dma_direction_t direction,
+    const loom_aie2p_native_channel_t* progress_channel, uint32_t repetitions,
     uint32_t capacity, uint32_t byte_offset, uint32_t byte_stride,
     uint32_t credit_interval, const uint32_t template_words[8],
     loom_aie2p_native_dma_sequence_t* out_sequence,

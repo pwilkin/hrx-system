@@ -121,11 +121,13 @@ loom_cc_library(
         "native.c",
         "phases.c",
         "programs.c",
+        "refill.c",
         "switch.c",
         "transport.c",
     ],
     hdrs = [
         "native.h",
+        "refill.h",
         "switch.h",
     ],
     deps = [
