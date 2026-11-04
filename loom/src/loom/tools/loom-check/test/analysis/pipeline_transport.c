@@ -124,6 +124,17 @@ static iree_status_t loom_check_test_pipeline_transport_print(
     IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
         output, "  sequence: sites=%" PRIhsz " repetitions=%" PRIu64 "\n",
         transport->count, transport->repetitions));
+    if (transport->input) {
+      const loom_pipeline_transport_input_t* input = transport->input;
+      IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+          output,
+          "  input: source=%s admissions=%" PRIu64 " transfers=%" PRIu64
+          " period=%" PRIu64 " source_offset=%" PRId64 " source_stride=%" PRId64
+          " destination_offset=%" PRId64 "\n",
+          input->acquisition ? "record" : "storage", input->admissions,
+          input->transfers, input->period, input->source_byte_offset,
+          input->source_byte_stride, input->destination_byte_offset));
+    }
     const loom_value_fact_cfg_region_t* structure =
         loom_value_fact_table_lookup_cfg_region(
             &worker->facts, loom_func_like_body(worker->function));

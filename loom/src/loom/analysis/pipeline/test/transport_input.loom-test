@@ -1,0 +1,279 @@
+// RUN: emit pipeline-transport @stream
+
+// Each strand specializes the same source program. Complete address periods
+// retain a compact input proof; rotated or incomplete periods keep the
+// communication order without promising autonomous repeated addressing.
+func.def @produce(%input: buffer, %records: channel<tile<1xi32>>, %begin: index, %end: index, %step: index, %divisor: index, %modulus: index) {
+  %record_bytes = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%record: index):
+  %more = index.cmp ult, %record, %end : index
+  cfg.cond_br %more, ^transfer, ^done
+^transfer:
+  %quotient = index.div %record, %divisor : index
+  %coordinate = index.rem %quotient, %modulus : index
+  %byte_index = index.mul %coordinate, %record_bytes : index
+  %offset = index.cast %byte_index : index to offset
+  %source = buffer.view %input[%offset] : buffer -> view<1xi32>
+  %write, %destination = channel.reserve %records : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  cfg.br ^copy
+^copy:
+  %copy = kernel.async.copy %source to %destination {cache_scope = workgroup, cache_temporal = regular, direction = global_to_workgroup} : view<1xi32> to view<1xi32> -> kernel.async.token
+  %group = kernel.async.group %copy : kernel.async.token -> kernel.async.group
+  kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+  cfg.br ^publish
+^publish:
+  channel.publish %write : write<tile<1xi32>>
+  %next = index.add %record, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+// Each publication has a matching consumer, so finite channel capacity does
+// not turn the analyzed address sequence into an unexecutable producer.
+func.def @consume(%records: channel<tile<1xi32>>, %count: index) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  cfg.br ^header(%begin: index)
+^header(%record: index):
+  %more = index.cmp ult, %record, %count : index
+  cfg.cond_br %more, ^consume, ^done
+^consume:
+  %read, %payload = channel.acquire %records : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  channel.release %read : read<tile<1xi32>>
+  %next = index.add %record, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def<kernel> public @stream() run(%input_arg: buffer, %local_arg: buffer) {
+  %input_unique, %local_unique = buffer.assume.noalias %input_arg, %local_arg : buffer, buffer
+  %input = buffer.assume.memory_space<global> %input_unique : buffer
+  %local = buffer.assume.memory_space<workgroup> %local_unique : buffer
+  %capacity = index.constant 2 : index
+  %complete_storage_offset = index.constant 0 : offset
+  %complete_slots = buffer.view %local[%complete_storage_offset] : buffer -> view<2x1xi32>
+  %complete_records = channel.bind<fifo> %complete_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %complete_begin = index.constant 0 : index
+  %complete_end = index.constant 16 : index
+  %complete_step = index.constant 1 : index
+  %complete_divisor = index.constant 1 : index
+  %complete_modulus = index.constant 8 : index
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @produce(%input, %complete_records, %complete_begin, %complete_end, %complete_step, %complete_divisor, %complete_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %odd_stride_storage_offset = index.constant 8 : offset
+  %odd_stride_slots = buffer.view %local[%odd_stride_storage_offset] : buffer -> view<2x1xi32>
+  %odd_stride_records = channel.bind<fifo> %odd_stride_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %odd_stride_begin = index.constant 1 : index
+  %odd_stride_end = index.constant 33 : index
+  %odd_stride_step = index.constant 2 : index
+  %odd_stride_divisor = index.constant 1 : index
+  %odd_stride_modulus = index.constant 8 : index
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @produce(%input, %odd_stride_records, %odd_stride_begin, %odd_stride_end, %odd_stride_step, %odd_stride_divisor, %odd_stride_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %quotient_storage_offset = index.constant 16 : offset
+  %quotient_slots = buffer.view %local[%quotient_storage_offset] : buffer -> view<2x1xi32>
+  %quotient_records = channel.bind<fifo> %quotient_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %quotient_begin = index.constant 16 : index
+  %quotient_end = index.constant 48 : index
+  %quotient_step = index.constant 2 : index
+  %quotient_divisor = index.constant 2 : index
+  %quotient_modulus = index.constant 8 : index
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @produce(%input, %quotient_records, %quotient_begin, %quotient_end, %quotient_step, %quotient_divisor, %quotient_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %constant_coordinate_storage_offset = index.constant 24 : offset
+  %constant_coordinate_slots = buffer.view %local[%constant_coordinate_storage_offset] : buffer -> view<2x1xi32>
+  %constant_coordinate_records = channel.bind<fifo> %constant_coordinate_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %constant_coordinate_begin = index.constant 0 : index
+  %constant_coordinate_end = index.constant 32 : index
+  %constant_coordinate_step = index.constant 8 : index
+  %constant_coordinate_divisor = index.constant 1 : index
+  %constant_coordinate_modulus = index.constant 8 : index
+  pipeline.strand workers([3], [1], [1]) {
+    func.call @produce(%input, %constant_coordinate_records, %constant_coordinate_begin, %constant_coordinate_end, %constant_coordinate_step, %constant_coordinate_divisor, %constant_coordinate_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %nonwrapping_storage_offset = index.constant 32 : offset
+  %nonwrapping_slots = buffer.view %local[%nonwrapping_storage_offset] : buffer -> view<2x1xi32>
+  %nonwrapping_records = channel.bind<fifo> %nonwrapping_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %nonwrapping_begin = index.constant 2 : index
+  %nonwrapping_end = index.constant 6 : index
+  %nonwrapping_step = index.constant 1 : index
+  %nonwrapping_divisor = index.constant 1 : index
+  %nonwrapping_modulus = index.constant 8 : index
+  pipeline.strand workers([4], [1], [1]) {
+    func.call @produce(%input, %nonwrapping_records, %nonwrapping_begin, %nonwrapping_end, %nonwrapping_step, %nonwrapping_divisor, %nonwrapping_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %rotated_storage_offset = index.constant 40 : offset
+  %rotated_slots = buffer.view %local[%rotated_storage_offset] : buffer -> view<2x1xi32>
+  %rotated_records = channel.bind<fifo> %rotated_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %rotated_begin = index.constant 3 : index
+  %rotated_end = index.constant 19 : index
+  %rotated_step = index.constant 1 : index
+  %rotated_divisor = index.constant 1 : index
+  %rotated_modulus = index.constant 8 : index
+  pipeline.strand workers([5], [1], [1]) {
+    func.call @produce(%input, %rotated_records, %rotated_begin, %rotated_end, %rotated_step, %rotated_divisor, %rotated_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %partial_storage_offset = index.constant 48 : offset
+  %partial_slots = buffer.view %local[%partial_storage_offset] : buffer -> view<2x1xi32>
+  %partial_records = channel.bind<fifo> %partial_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %partial_begin = index.constant 0 : index
+  %partial_end = index.constant 10 : index
+  %partial_step = index.constant 1 : index
+  %partial_divisor = index.constant 1 : index
+  %partial_modulus = index.constant 8 : index
+  pipeline.strand workers([6], [1], [1]) {
+    func.call @produce(%input, %partial_records, %partial_begin, %partial_end, %partial_step, %partial_divisor, %partial_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %uneven_quotient_storage_offset = index.constant 56 : offset
+  %uneven_quotient_slots = buffer.view %local[%uneven_quotient_storage_offset] : buffer -> view<2x1xi32>
+  %uneven_quotient_records = channel.bind<fifo> %uneven_quotient_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %uneven_quotient_begin = index.constant 0 : index
+  %uneven_quotient_end = index.constant 16 : index
+  %uneven_quotient_step = index.constant 1 : index
+  %uneven_quotient_divisor = index.constant 2 : index
+  %uneven_quotient_modulus = index.constant 8 : index
+  pipeline.strand workers([7], [1], [1]) {
+    func.call @produce(%input, %uneven_quotient_records, %uneven_quotient_begin, %uneven_quotient_end, %uneven_quotient_step, %uneven_quotient_divisor, %uneven_quotient_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %uneven_period_storage_offset = index.constant 64 : offset
+  %uneven_period_slots = buffer.view %local[%uneven_period_storage_offset] : buffer -> view<2x1xi32>
+  %uneven_period_records = channel.bind<fifo> %uneven_period_slots, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %uneven_period_begin = index.constant 0 : index
+  %uneven_period_end = index.constant 18 : index
+  %uneven_period_step = index.constant 3 : index
+  %uneven_period_divisor = index.constant 1 : index
+  %uneven_period_modulus = index.constant 8 : index
+  pipeline.strand workers([8], [1], [1]) {
+    func.call @produce(%input, %uneven_period_records, %uneven_period_begin, %uneven_period_end, %uneven_period_step, %uneven_period_divisor, %uneven_period_modulus) : (buffer, channel<tile<1xi32>>, index, index, index, index, index)
+  }
+  %complete_count = index.constant 16 : index
+  pipeline.strand workers([9], [1], [1]) {
+    func.call @consume(%complete_records, %complete_count) : (channel<tile<1xi32>>, index)
+  }
+  %odd_stride_count = index.constant 16 : index
+  pipeline.strand workers([10], [1], [1]) {
+    func.call @consume(%odd_stride_records, %odd_stride_count) : (channel<tile<1xi32>>, index)
+  }
+  %quotient_count = index.constant 16 : index
+  pipeline.strand workers([11], [1], [1]) {
+    func.call @consume(%quotient_records, %quotient_count) : (channel<tile<1xi32>>, index)
+  }
+  %constant_coordinate_count = index.constant 4 : index
+  pipeline.strand workers([12], [1], [1]) {
+    func.call @consume(%constant_coordinate_records, %constant_coordinate_count) : (channel<tile<1xi32>>, index)
+  }
+  %nonwrapping_count = index.constant 4 : index
+  pipeline.strand workers([13], [1], [1]) {
+    func.call @consume(%nonwrapping_records, %nonwrapping_count) : (channel<tile<1xi32>>, index)
+  }
+  %rotated_count = index.constant 16 : index
+  pipeline.strand workers([14], [1], [1]) {
+    func.call @consume(%rotated_records, %rotated_count) : (channel<tile<1xi32>>, index)
+  }
+  %partial_count = index.constant 10 : index
+  pipeline.strand workers([15], [1], [1]) {
+    func.call @consume(%partial_records, %partial_count) : (channel<tile<1xi32>>, index)
+  }
+  %uneven_quotient_count = index.constant 16 : index
+  pipeline.strand workers([16], [1], [1]) {
+    func.call @consume(%uneven_quotient_records, %uneven_quotient_count) : (channel<tile<1xi32>>, index)
+  }
+  %uneven_period_count = index.constant 6 : index
+  pipeline.strand workers([17], [1], [1]) {
+    func.call @consume(%uneven_period_records, %uneven_period_count) : (channel<tile<1xi32>>, index)
+  }
+}
+
+// ----
+worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=16 sources_stable=yes
+  sequence: sites=4 repetitions=16
+  input: source=storage admissions=1 transfers=16 period=8 source_offset=0 source_stride=4 destination_offset=0
+    loop 0: iterations=16 parent=none
+    channel.reserve: executions=16 scope=0
+    kernel.async.copy: executions=16 scope=0
+    kernel.async.wait: executions=16 scope=0
+    channel.publish: executions=16 scope=0
+worker 1: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=16 sources_stable=yes
+  sequence: sites=4 repetitions=16
+  input: source=storage admissions=1 transfers=16 period=4 source_offset=4 source_stride=8 destination_offset=0
+    loop 0: iterations=16 parent=none
+    channel.reserve: executions=16 scope=0
+    kernel.async.copy: executions=16 scope=0
+    kernel.async.wait: executions=16 scope=0
+    channel.publish: executions=16 scope=0
+worker 2: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=16 sources_stable=yes
+  sequence: sites=4 repetitions=16
+  input: source=storage admissions=1 transfers=16 period=8 source_offset=0 source_stride=4 destination_offset=0
+    loop 0: iterations=16 parent=none
+    channel.reserve: executions=16 scope=0
+    kernel.async.copy: executions=16 scope=0
+    kernel.async.wait: executions=16 scope=0
+    channel.publish: executions=16 scope=0
+worker 3: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=4 sources_stable=yes
+  sequence: sites=4 repetitions=4
+  input: source=storage admissions=1 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
+worker 4: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=4 sources_stable=yes
+  sequence: sites=4 repetitions=4
+  input: source=storage admissions=1 transfers=4 period=4 source_offset=8 source_stride=4 destination_offset=0
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
+worker 5: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=16 sources_stable=yes
+  sequence: sites=4 repetitions=16
+    loop 0: iterations=16 parent=none
+    channel.reserve: executions=16 scope=0
+    kernel.async.copy: executions=16 scope=0
+    kernel.async.wait: executions=16 scope=0
+    channel.publish: executions=16 scope=0
+worker 6: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=10 sources_stable=yes
+  sequence: sites=4 repetitions=10
+    loop 0: iterations=10 parent=none
+    channel.reserve: executions=10 scope=0
+    kernel.async.copy: executions=10 scope=0
+    kernel.async.wait: executions=10 scope=0
+    channel.publish: executions=10 scope=0
+worker 7: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=16 sources_stable=yes
+  sequence: sites=4 repetitions=16
+    loop 0: iterations=16 parent=none
+    channel.reserve: executions=16 scope=0
+    kernel.async.copy: executions=16 scope=0
+    kernel.async.wait: executions=16 scope=0
+    channel.publish: executions=16 scope=0
+worker 8: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  repetitions=6 sources_stable=yes
+  sequence: sites=4 repetitions=6
+    loop 0: iterations=6 parent=none
+    channel.reserve: executions=6 scope=0
+    kernel.async.copy: executions=6 scope=0
+    kernel.async.wait: executions=6 scope=0
+    channel.publish: executions=6 scope=0
+worker 9: transport=unproven execution_counts=exact batches=0 streams=0
+worker 10: transport=unproven execution_counts=exact batches=0 streams=0
+worker 11: transport=unproven execution_counts=exact batches=0 streams=0
+worker 12: transport=unproven execution_counts=exact batches=0 streams=0
+worker 13: transport=unproven execution_counts=exact batches=0 streams=0
+worker 14: transport=unproven execution_counts=exact batches=0 streams=0
+worker 15: transport=unproven execution_counts=exact batches=0 streams=0
+worker 16: transport=unproven execution_counts=exact batches=0 streams=0
+worker 17: transport=unproven execution_counts=exact batches=0 streams=0
