@@ -55,6 +55,23 @@ typedef struct loom_pipeline_resource_pool_binding_t {
   uint32_t pool_index;
 } loom_pipeline_resource_pool_binding_t;
 
+// Resource inventory supplied by a physical execution owner. Storage packing
+// and all occurrence analysis remain owned by the common realization lifecycle.
+typedef struct loom_pipeline_resource_inventory_t {
+  // Backing stores selected for this execution occurrence.
+  const loom_pipeline_resource_pool_t* pools;
+  // Number of distinct backing stores.
+  iree_host_size_t pool_count;
+  // Selectable memories in the admitted worker geometry.
+  const loom_pipeline_resource_memory_t* memories;
+  // Number of selectable memories.
+  iree_host_size_t memory_count;
+  // Caller-supplied pool arguments, if this execution imports storage.
+  const loom_pipeline_resource_pool_binding_t* bindings;
+  // Number of imported pool arguments.
+  iree_host_size_t binding_count;
+} loom_pipeline_resource_inventory_t;
+
 typedef struct loom_pipeline_resource_allocation_t {
   // Fresh source allocation identity, independent of pool and channel identity.
   loom_value_id_t root_value_id;

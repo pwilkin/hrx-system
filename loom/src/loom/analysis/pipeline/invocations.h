@@ -115,9 +115,22 @@ typedef struct loom_pipeline_invocations_t {
 
 typedef struct loom_pipeline_invocation_environment_t {
   // Returns the already selected function environment. A NULL callback keeps
-  // inherited target-neutral inference; it does not select a physical target.
+  // authored target resolution or inheritance; it does not select a device.
   const loom_target_facts_t* (*target_facts)(void* user_data,
                                              loom_func_like_t function);
+  // Refines the default inherited resource catalog for a bound child. The
+  // default uses the root's pools and selectable memories with the child's
+  // imported pool bindings. An independent device supplies its own catalog
+  // and translates those bindings while preserving shared backing identities.
+  // A NULL callback keeps the inherited catalog. Selection uses the child's
+  // already inferred facts without walking its source. A rejected authored
+  // boundary leaves out_valid false; status carries allocation or diagnostics.
+  iree_status_t (*inventory)(void* user_data, loom_module_t* module,
+                             const loom_pipeline_invocation_t* parent,
+                             const loom_op_t* composition,
+                             const loom_value_fact_table_t* facts,
+                             loom_pipeline_resource_inventory_t* out_inventory,
+                             bool* out_valid);
   // Borrowed owner of the selected environments.
   void* user_data;
 } loom_pipeline_invocation_environment_t;

@@ -302,7 +302,7 @@ static iree_status_t loom_pipeline_realization_specialize_workers(
 
 iree_status_t loom_pipeline_realize(
     loom_pass_t* pass, loom_module_t* module, loom_func_like_t function,
-    const loom_pipeline_realization_inventory_t* inventory,
+    const loom_pipeline_resource_inventory_t* inventory,
     const loom_pipeline_realization_callback_t* callback) {
   loom_value_fact_table_t* facts = NULL;
   IREE_RETURN_IF_ERROR(loom_pass_value_facts_acquire(

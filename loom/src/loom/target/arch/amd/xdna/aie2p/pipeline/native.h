@@ -580,7 +580,7 @@ typedef struct loom_aie2p_native_context_t {
   // Tile owner by canonical backing-pool ordinal.
   loom_aie2p_native_tile_t** pool_tiles;
   // Common construction inventory for tile memory.
-  loom_pipeline_realization_inventory_t inventory;
+  loom_pipeline_resource_inventory_t inventory;
   // Source channels in canonical construction order.
   loom_aie2p_native_channel_t* channels;
   // Bound workers in source strand order.

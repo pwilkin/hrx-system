@@ -384,12 +384,23 @@ iree_status_t loom_pipeline_invocations_build(
         parent->facts->context.resolve_type_domain;
     facts->context.resolve_region_target =
         parent->facts->context.resolve_region_target;
-    facts->context.target_facts =
-        environment.target_facts
-            ? environment.target_facts(environment.user_data,
-                                       invocation->function)
-            : loom_value_fact_table_block_target_facts(
-                  parent->facts, invocation->call->parent_block);
+    if (environment.target_facts) {
+      facts->context.target_facts =
+          environment.target_facts(environment.user_data, invocation->function);
+    } else {
+      const loom_symbol_ref_t target =
+          loom_func_like_target(invocation->function);
+      if (loom_symbol_ref_is_valid(target)) {
+        if (facts->context.resolve_region_target.fn) {
+          IREE_RETURN_IF_ERROR(facts->context.resolve_region_target.fn(
+              facts->context.resolve_region_target.user_data, module, target,
+              &facts->context.target_facts));
+        }
+      } else {
+        facts->context.target_facts = loom_value_fact_table_block_target_facts(
+            parent->facts, invocation->call->parent_block);
+      }
+    }
     invocation->facts = facts;
     bool valid = false;
     IREE_RETURN_IF_ERROR(loom_pipeline_arguments_bind(
@@ -402,15 +413,30 @@ iree_status_t loom_pipeline_invocations_build(
     }
     IREE_RETURN_IF_ERROR(
         loom_value_fact_table_compute(facts, module, invocation->function));
+    loom_pipeline_resource_inventory_t inventory = {
+        .pools = root_resources->pools,
+        .pool_count = root_resources->pool_count,
+        .memories = memories,
+        .memory_count = memory_count,
+        .bindings = invocation->arguments.pools,
+        .binding_count = invocation->arguments.pool_count};
+    if (environment.inventory) {
+      IREE_RETURN_IF_ERROR(environment.inventory(environment.user_data, module,
+                                                 parent, invocation->call,
+                                                 facts, &inventory, &valid));
+      if (!valid) {
+        return iree_ok_status();
+      }
+    }
     loom_pipeline_resources_t* resources = NULL;
     IREE_RETURN_IF_ERROR(
         iree_arena_allocate(arena, sizeof(*resources), (void**)&resources));
     invocation->resources = resources;
     IREE_RETURN_IF_ERROR(loom_pipeline_resources_build(
-        module, invocation->function, facts, root_resources->pools,
-        root_resources->pool_count, memories, memory_count,
-        invocation->arguments.pools, invocation->arguments.pool_count,
-        diagnostic_emitter, arena, resources, &valid));
+        module, invocation->function, facts, inventory.pools,
+        inventory.pool_count, inventory.memories, inventory.memory_count,
+        inventory.bindings, inventory.binding_count, diagnostic_emitter, arena,
+        resources, &valid));
     if (!valid) {
       return iree_ok_status();
     }

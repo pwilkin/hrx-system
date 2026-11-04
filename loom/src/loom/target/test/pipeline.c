@@ -245,7 +245,7 @@ static iree_status_t loom_test_pipeline_run(loom_pass_t* pass,
     return iree_ok_status();
   }
   loom_test_pipeline_t state = {.pass = pass};
-  const loom_pipeline_realization_inventory_t inventory = {0};
+  const loom_pipeline_resource_inventory_t inventory = {0};
   const loom_pipeline_realization_callback_t callbacks = {
       .select = loom_test_pipeline_select,
       .worker = loom_test_pipeline_worker,

@@ -17,23 +17,6 @@
 extern "C" {
 #endif
 
-// Resource inventory supplied by a physical execution owner. Storage packing
-// and all occurrence analysis remain owned by the common realization lifecycle.
-typedef struct loom_pipeline_realization_inventory_t {
-  // Backing stores selected for this execution occurrence.
-  const loom_pipeline_resource_pool_t* pools;
-  // Number of distinct backing stores.
-  iree_host_size_t pool_count;
-  // Selectable memories in the admitted worker geometry.
-  const loom_pipeline_resource_memory_t* memories;
-  // Number of selectable memories.
-  iree_host_size_t memory_count;
-  // Caller-supplied pool arguments, if this execution imports storage.
-  const loom_pipeline_resource_pool_binding_t* bindings;
-  // Number of imported pool arguments.
-  iree_host_size_t binding_count;
-} loom_pipeline_realization_inventory_t;
-
 // Complete source occurrence presented to physical selection. Definitions are
 // independent clones, so consuming one worker cannot alter another occurrence.
 // Facts, channel identity and movement plans are established exactly once for
@@ -96,7 +79,7 @@ iree_status_t loom_pipeline_realization_register_helper(
 // in the existing compiler pipeline; this function starts no nested compiler.
 iree_status_t loom_pipeline_realize(
     loom_pass_t* pass, loom_module_t* module, loom_func_like_t function,
-    const loom_pipeline_realization_inventory_t* inventory,
+    const loom_pipeline_resource_inventory_t* inventory,
     const loom_pipeline_realization_callback_t* callback);
 
 #ifdef __cplusplus

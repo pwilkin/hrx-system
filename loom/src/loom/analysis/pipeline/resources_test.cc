@@ -21,8 +21,10 @@
 #include "loom/ops/index/ops.h"
 #include "loom/ops/op_registry.h"
 #include "loom/ops/pipeline/ops.h"
+#include "loom/ops/target/ops.h"
 #include "loom/ops/type_registry.h"
 #include "loom/rewrite/callable.h"
+#include "loom/target/facts.h"
 #include "loom/util/fact_extensions.h"
 #include "loom/verify/verify.h"
 
@@ -588,6 +590,125 @@ TEST_F(PipelineConstructionTest, CapturesKeepProtocolAndStorageSeparate) {
   EXPECT_EQ(diagnostic.count, 2u);
   EXPECT_EQ(first_allocation->byte_offset, 0u);
   EXPECT_EQ(second_allocation->byte_offset, 128u);
+}
+
+TEST_F(PipelineConstructionTest, ChildrenRetainIndependentExecutionTargets) {
+  const auto device = Symbol("child_device");
+  loom_op_t* declaration;
+  IREE_ASSERT_OK(loom_target_decl_build(&builder_, device,
+                                        LOOM_LOCATION_UNKNOWN, &declaration));
+  const auto leaf = Symbol("leaf");
+  const auto child = Symbol("child");
+  const auto root_symbol = Symbol("root");
+  loom_op_t* root_definition = nullptr;
+  for (const auto symbol : {leaf, child, root_symbol}) {
+    loom_builder_set_block(&builder_, loom_module_block(module_));
+    builder_.ip.parent_op = nullptr;
+    loom_op_t* definition;
+    IREE_ASSERT_OK(loom_pipeline_def_build(
+        &builder_,
+        symbol.symbol_id == child.symbol_id
+            ? LOOM_PIPELINE_DEF_BUILD_FLAG_HAS_TARGET
+            : 0,
+        (loom_pipeline_scope_t)0, 0, 0,
+        symbol.symbol_id == child.symbol_id ? device : loom_symbol_ref_null(),
+        symbol, nullptr, 0, nullptr, 0, nullptr, 0, LOOM_LOCATION_UNKNOWN,
+        &definition));
+    loom_builder_enter_region(&builder_, definition,
+                              loom_pipeline_def_body(definition));
+    loom_op_t* composition;
+    if (symbol.symbol_id != leaf.symbol_id) {
+      IREE_ASSERT_OK(
+          loom_pipeline_compose_build(&builder_, leaf, nullptr, 0, nullptr, 0,
+                                      LOOM_LOCATION_UNKNOWN, &composition));
+    }
+    if (symbol.symbol_id == root_symbol.symbol_id) {
+      root_definition = definition;
+      IREE_ASSERT_OK(
+          loom_pipeline_compose_build(&builder_, child, nullptr, 0, nullptr, 0,
+                                      LOOM_LOCATION_UNKNOWN, &composition));
+    }
+    loom_op_t* terminator;
+    IREE_ASSERT_OK(loom_pipeline_finish_build(&builder_, LOOM_LOCATION_UNKNOWN,
+                                              &terminator));
+  }
+  loom_verify_options_t options = {
+      .sink = {loom_diagnostic_stderr_sink, nullptr},
+  };
+  loom_verify_result_t verification = {};
+  IREE_ASSERT_OK(loom_verify_module(module_, &options, &verification));
+  ASSERT_EQ(verification.error_count, 0u);
+
+  // These resource-free constructions need no target capabilities. Unknown
+  // facts still have distinct identities and must retain their selected scope.
+  loom_target_facts_t parent_target = {}, child_target = {};
+  struct TargetScope {
+    // Authored independent environment selected by the child.
+    loom_symbol_ref_t device;
+    // Immutable projection provided by the target-fact owner.
+    const loom_target_facts_t* facts;
+    // Number of explicit boundaries resolved.
+    unsigned count;
+  } target_scope = {device, &child_target, 0};
+  loom_value_fact_table_t facts;
+  IREE_ASSERT_OK(loom_value_fact_table_initialize(&facts, &arena_, 0));
+  loom_type_registry_configure_fact_context(&facts.context);
+  facts.context.target_facts = &parent_target;
+  facts.context.resolve_region_target = {
+      .user_data = &target_scope,
+      .fn = [](void* user_data, const loom_module_t*, loom_symbol_ref_t target,
+               const loom_target_facts_t** out_facts) -> iree_status_t {
+        auto* scope = static_cast<TargetScope*>(user_data);
+        EXPECT_EQ(target.symbol_id, scope->device.symbol_id);
+        ++scope->count;
+        *out_facts = scope->facts;
+        return iree_ok_status();
+      },
+  };
+  const auto function = loom_func_like_cast(module_, root_definition);
+  IREE_ASSERT_OK(loom_value_fact_table_compute(&facts, module_, function));
+  loom_pipeline_resources_t resources;
+  bool valid = false;
+  IREE_ASSERT_OK(loom_pipeline_resources_build(
+      module_, function, &facts, nullptr, 0, nullptr, 0, nullptr, 0, {},
+      &arena_, &resources, &valid));
+  ASSERT_TRUE(valid);
+  size_t inventory_count = 0;
+  const loom_pipeline_invocation_environment_t environment = {
+      .inventory = [](void* user_data, loom_module_t*,
+                      const loom_pipeline_invocation_t* parent,
+                      const loom_op_t* call,
+                      const loom_value_fact_table_t* child_facts,
+                      loom_pipeline_resource_inventory_t* inventory,
+                      bool* out_valid) -> iree_status_t {
+        ++*static_cast<size_t*>(user_data);
+        EXPECT_NE(parent, nullptr);
+        EXPECT_NE(call, nullptr);
+        EXPECT_NE(child_facts->context.target_facts, nullptr);
+        EXPECT_EQ(inventory->pool_count, 0u);
+        *out_valid = true;
+        return iree_ok_status();
+      },
+      .user_data = &inventory_count,
+  };
+  loom_pipeline_invocations_t invocations;
+  IREE_ASSERT_OK(loom_pipeline_invocations_build(
+      module_, function, &facts, &resources, nullptr, 0, environment, {},
+      &arena_, &invocations, &valid));
+  ASSERT_TRUE(valid);
+  ASSERT_EQ(invocations.count, 4u);
+  EXPECT_EQ(inventory_count, 3u);
+  const auto* root = invocations.entries[0];
+  EXPECT_EQ(target_scope.count, 1u);
+  const auto* direct = root->compositions[0];
+  const auto* independent = root->compositions[1];
+  const auto* nested = independent->compositions[0];
+  EXPECT_EQ(direct->function.op, nested->function.op);
+  EXPECT_EQ(direct->facts->context.target_facts, &parent_target);
+  EXPECT_EQ(independent->facts->context.target_facts, &child_target);
+  EXPECT_EQ(nested->facts->context.target_facts, &child_target);
+  EXPECT_EQ(nested->parent, independent);
+  EXPECT_EQ(nested->call, independent->resources->compositions[0]);
 }
 
 TEST_F(PipelineConstructionTest, MemorySelectionsShareBackingNotAllocations) {
