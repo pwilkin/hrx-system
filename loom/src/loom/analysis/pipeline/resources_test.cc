@@ -209,9 +209,15 @@ TEST_F(PipelineConstructionTest, CapturesKeepProtocolAndStorageSeparate) {
       LOOM_PIPELINE_SCOPE_KERNEL, 0, 0, loom_symbol_ref_null(), child_symbol,
       child_arguments, 2, child_arguments + 2, 2, nullptr, 0,
       LOOM_LOCATION_UNKNOWN, &child));
+  // Replacing a channel argument can leave formal value IDs out of order.
+  // Binding lookup must preserve argument correspondence after such a rewrite.
+  auto* child_entry = loom_region_entry_block(loom_pipeline_def_body(child));
+  IREE_ASSERT_OK(loom_block_remove_arg(module_, child_entry, 2));
+  loom_value_id_t replacement;
+  IREE_ASSERT_OK(loom_module_define_value(module_, channel_type, &replacement));
+  IREE_ASSERT_OK(loom_block_insert_arg(module_, child_entry, 2, replacement));
   loom_builder_enter_region(&builder_, child, loom_pipeline_def_body(child));
-  const auto* child_arguments_ids =
-      loom_region_entry_block(loom_pipeline_def_body(child))->arg_ids;
+  const auto* child_arguments_ids = child_entry->arg_ids;
   const int64_t dynamic_origin = INT64_MIN;
   const int64_t worker_extent = 1;
   loom_op_t* child_strand;
@@ -472,6 +478,15 @@ TEST_F(PipelineConstructionTest, CapturesKeepProtocolAndStorageSeparate) {
         &resources, &facts, nullptr, 0, &child_facts, {}, &arena_, &arguments,
         &valid));
     ASSERT_TRUE(valid);
+    ASSERT_EQ(arguments.channel_count, 2u);
+    for (size_t argument = 0; argument < 2; ++argument) {
+      EXPECT_EQ(arguments.channels[argument].value_id,
+                child_arguments_ids[3 - argument]);
+      EXPECT_EQ(arguments.channels[argument].resources, &resources);
+      EXPECT_EQ(arguments.channels[argument].channel,
+                loom_pipeline_resources_lookup_channel(
+                    &resources, channels[(1 - argument) ^ occurrence]));
+    }
     ASSERT_EQ(arguments.pool_count, 1u);
     EXPECT_EQ(arguments.pools[0].value_id, child_arguments_ids[0]);
     EXPECT_EQ(arguments.pools[0].pool_index, 0u);
