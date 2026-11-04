@@ -23,7 +23,8 @@ typedef struct loom_channel_materialization_instance_t {
   loom_func_like_t function;
   // Released domain whose ordinals match the source plan exactly.
   loom_local_value_domain_t value_domain;
-  // Projected actions and exits, borrowing the source membership table.
+  // Projected actions and exits, borrowing source membership and admission
+  // ordinal tables. Admission values resolve through this instance's domain.
   loom_channel_plan_t plan;
 } loom_channel_materialization_instance_t;
 
@@ -34,7 +35,7 @@ typedef struct loom_channel_materialization_instance_t {
 // channel analysis. It leaves the original definition and domain untouched.
 //
 // Release the source domain before restoring the instance's domain. The
-// source membership table and protocol identities outlive materialization.
+// source ordinal tables and protocol identities outlive materialization.
 // Ordinal-indexed selections keep their correspondence; action and return
 // pointers refer only to the clone. Initial runtime state, other selected SSA
 // operands and dependencies of physical carrier types must use the instance's
