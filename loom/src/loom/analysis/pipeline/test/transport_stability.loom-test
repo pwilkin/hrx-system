@@ -65,6 +65,12 @@ pipeline.def<kernel> public @test() run(%input_argument: buffer, %storage_argume
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=no
+  sequence: sites=4 repetitions=4
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -137,6 +143,12 @@ pipeline.def<kernel> public @test() run(%input_argument: buffer, %storage_argume
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=no
+  sequence: sites=4 repetitions=4
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -211,6 +223,12 @@ pipeline.def<kernel> public @test() run(%input_argument: buffer, %storage_argume
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=no
+  sequence: sites=4 repetitions=4
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -278,6 +296,12 @@ pipeline.def<kernel> public @test() run(%input_argument: buffer, %storage_argume
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=yes
+  sequence: sites=4 repetitions=4
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -345,6 +369,12 @@ pipeline.def<kernel> public @test() run(%input_argument: buffer, %storage_argume
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=yes
+  sequence: sites=4 repetitions=4
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -424,4 +454,10 @@ schedule: blocks=1 loops=0 single_child_choice=yes
     yield
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=no
+  sequence: sites=4 repetitions=4
+    loop 0: iterations=4 parent=none
+    channel.reserve: executions=4 scope=0
+    kernel.async.copy: executions=4 scope=0
+    kernel.async.wait: executions=4 scope=0
+    channel.publish: executions=4 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0

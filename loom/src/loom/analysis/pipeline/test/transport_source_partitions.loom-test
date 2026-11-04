@@ -65,6 +65,12 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %output_arg: buffe
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=8 sources_stable=yes
+  sequence: sites=4 repetitions=8
+    loop 0: iterations=8 parent=none
+    channel.reserve: executions=8 scope=0
+    kernel.async.copy: executions=8 scope=0
+    kernel.async.wait: executions=8 scope=0
+    channel.publish: executions=8 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -135,6 +141,12 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %output_arg: buffe
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=8 sources_stable=no
+  sequence: sites=4 repetitions=8
+    loop 0: iterations=8 parent=none
+    channel.reserve: executions=8 scope=0
+    kernel.async.copy: executions=8 scope=0
+    kernel.async.wait: executions=8 scope=0
+    channel.publish: executions=8 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0
 
 // ====
@@ -203,4 +215,10 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %output_arg: buffe
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=8 sources_stable=no
+  sequence: sites=4 repetitions=8
+    loop 0: iterations=8 parent=none
+    channel.reserve: executions=8 scope=0
+    kernel.async.copy: executions=8 scope=0
+    kernel.async.wait: executions=8 scope=0
+    channel.publish: executions=8 scope=0
 worker 1: transport=unproven execution_counts=exact batches=0 streams=0

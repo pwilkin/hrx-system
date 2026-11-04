@@ -489,3 +489,52 @@ pipeline.def<kernel> public retain target(@device) @three_dimension_core_issue()
 
 // ----
 CHECK: COMPILE-REPORT: pipeline root=three_dimension_core_issue realization=resident-configuration workers=2 *
+
+// ====
+// RUN: with-checks emit aie2p-xdna input=source-low output=pipeline-report
+
+// A lease spans two completed egress copies. This scoped sequence cannot be
+// selected as a one-shot configuration: doing so drops repetitions and returns
+// source credit before the next record's copies execute.
+aie2p.target<array> @device {device_profile = "amd.xdna.strix.17f0_10"}
+
+pipeline.def<kernel> public retain target(@device) @nested_egress() run(%input_arg: buffer, %output_arg: buffer) {
+  %input_unique, %output_unique = buffer.assume.noalias %input_arg, %output_arg : buffer, buffer
+  %input, %output = buffer.assume.alignment %input_unique, %output_unique {minimum_alignment = 4} : buffer, buffer
+  %memory = pipeline.memory<workgroup>[0, 3] : pool
+  %origin = index.constant 0 : offset
+  %storage_bytes = index.constant 16 : offset
+  %capacity = index.constant 1 : index
+  %storage = buffer.alloca<workgroup> pool(%memory) align(4) %storage_bytes : buffer
+  %slots = buffer.view %storage[%origin] : buffer -> view<1x4xi32>
+  %records = channel.bind<fifo> %slots, %capacity : view<1x4xi32>, index -> channel<tile<4xi32>>
+  %begin = index.constant 0 : index
+  %count = index.constant 3 : index
+  %replays = index.constant 2 : index
+  %step = index.constant 1 : index
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    %external = buffer.view %input[%origin] : buffer -> view<4xi32>
+    scf.for %record = [%begin to %count step %step] {
+      %write, %destination = channel.reserve %records : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+      %copy = kernel.async.copy %external to %destination {cache_scope = workgroup, cache_temporal = regular, direction = global_to_workgroup} : view<4xi32> to view<4xi32> -> kernel.async.token
+      %group = kernel.async.group %copy : kernel.async.token -> kernel.async.group
+      kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+      channel.publish %write : write<tile<4xi32>>
+    }
+  }
+  pipeline.strand workers([0, 3], [1, 1], [1, 1]) {
+    %external = buffer.view %output[%origin] : buffer -> view<4xi32>
+    scf.for %record = [%begin to %count step %step] {
+      %read, %payload = channel.acquire %records : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+      scf.for %replay = [%begin to %replays step %step] {
+        %copy = kernel.async.copy %payload to %external {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<4xi32> to view<4xi32> -> kernel.async.token
+        %group = kernel.async.group %copy : kernel.async.token -> kernel.async.group
+        kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+      }
+      channel.release %read : read<tile<4xi32>>
+    }
+  }
+}
+
+// ----
+CHECK: COMPILE-REPORT: pipeline root=nested_egress realization=resident-configuration workers=1 *

@@ -115,10 +115,47 @@ static iree_status_t loom_check_test_pipeline_transport_print(
                               : "unproven",
       worker->block_execution_counts ? "exact" : "unknown",
       transport->batch_count, transport->stream_count));
-  if (transport->induction) {
+  if (transport->stream_count && worker->graph->has_cycles) {
     IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
         output, "  repetitions=%" PRIu64 " sources_stable=%s\n",
         transport->repetitions, transport->sources_stable ? "yes" : "no"));
+  }
+  if (transport->stream_count) {
+    IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+        output, "  sequence: sites=%" PRIhsz " repetitions=%" PRIu64 "\n",
+        transport->count, transport->repetitions));
+    const loom_value_fact_cfg_region_t* structure =
+        loom_value_fact_table_lookup_cfg_region(
+            &worker->facts, loom_func_like_body(worker->function));
+    for (uint16_t i = 0; i < structure->loops.loop_count; ++i) {
+      const uint16_t parent = structure->loops.loops[i].parent_loop_index;
+      IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+          output, "    loop %u: iterations=%" PRIu64 " parent=", i,
+          worker->loop_trip_counts[i]));
+      if (parent == LOOM_CFG_LOOP_NEST_NONE) {
+        IREE_RETURN_IF_ERROR(
+            iree_string_builder_append_cstring(output, "none\n"));
+      } else {
+        IREE_RETURN_IF_ERROR(
+            iree_string_builder_append_format(output, "%u\n", parent));
+      }
+    }
+    for (iree_host_size_t i = 0; i < transport->count; ++i) {
+      const loom_pipeline_transport_step_t* step = &transport->steps[i];
+      const iree_string_view_t name = loom_op_name(module, step->op);
+      const uint64_t executions =
+          worker->block_execution_counts[step->op->parent_block->region_index];
+      IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+          output, "    %.*s: executions=%" PRIu64 " scope=", (int)name.size,
+          name.data, executions));
+      if (step->scope == LOOM_CFG_LOOP_NEST_NONE) {
+        IREE_RETURN_IF_ERROR(
+            iree_string_builder_append_cstring(output, "none\n"));
+      } else {
+        IREE_RETURN_IF_ERROR(
+            iree_string_builder_append_format(output, "%u\n", step->scope));
+      }
+    }
   }
   for (iree_host_size_t i = 0; i < transport->batch_count; ++i) {
     const loom_pipeline_transport_batch_t* batch = &transport->batches[i];

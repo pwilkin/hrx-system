@@ -378,7 +378,9 @@ static bool loom_aie2p_native_can_configure(
     const loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
     const loom_pipeline_worker_t* worker) {
-  if (!worker->transport.steps || worker->transport.induction) {
+  if (!worker->transport.steps ||
+      (worker->transport.stream_count &&
+       (worker->transport.induction || !worker->transport.repetitions))) {
     return false;
   }
   // A singleton returns its entire credit on each turn. A retained reader

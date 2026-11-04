@@ -487,6 +487,8 @@ static iree_status_t loom_pipeline_worker_transport(
   iree_host_size_t count = 0, stream_count = 0;
   for (iree_host_size_t b = 0; b < graph->reverse_postorder.count; ++b) {
     const uint16_t block_index = order[b];
+    const uint16_t scope =
+        loom_cfg_loop_nest_innermost(&structure->loops, block_index);
     const loom_pipeline_transport_block_t* block = &blocks[block_index];
     const loom_kernel_async_stream_t* stream = block->stream;
     if (stream) {
@@ -500,17 +502,21 @@ static iree_status_t loom_pipeline_worker_transport(
         steps[count++] = (loom_pipeline_transport_step_t){
             .op = op,
             .kind = LOOM_PIPELINE_TRANSPORT_STEP_CHANNEL,
+            .scope = scope,
             .source.channel = &worker->channels.actions[channel++]};
       } else if (stream && transfer < stream->transfer_count &&
                  stream->transfers[transfer].request.op == op) {
         steps[count++] = (loom_pipeline_transport_step_t){
             .op = op,
             .kind = LOOM_PIPELINE_TRANSPORT_STEP_TRANSFER,
+            .scope = scope,
             .source.transfer = &stream->transfers[transfer++]};
       } else if (stream && wait < stream->wait_count &&
                  stream->waits[wait] == op) {
         steps[count++] = (loom_pipeline_transport_step_t){
-            .op = op, .kind = LOOM_PIPELINE_TRANSPORT_STEP_WAIT};
+            .op = op,
+            .kind = LOOM_PIPELINE_TRANSPORT_STEP_WAIT,
+            .scope = scope};
         ++wait;
       } else if (!iree_any_bit_set(op->traits, LOOM_TRAIT_TERMINATOR) &&
                  !loom_kernel_async_group_isa(op)) {
@@ -527,22 +533,21 @@ static iree_status_t loom_pipeline_worker_transport(
   const loom_value_fact_induction_t* induction = NULL;
   uint64_t repetitions = 1;
   if (graph->has_cycles && stream_count) {
-    if (structure->loops.loop_count != 1) {
-      return iree_ok_status();
-    }
-    induction = &structure->inductions[0];
-    if (induction->update != LOOM_VALUE_FACT_INDUCTION_UPDATE_ADDITIVE) {
-      return iree_ok_status();
-    }
-    for (iree_host_size_t i = 0; i < count; ++i) {
-      const uint16_t block = steps[i].op->parent_block->region_index;
-      if (!loom_cfg_loop_nest_contains(&structure->loops, 0, block) ||
-          block == structure->loops.loops[0].header_index) {
-        return iree_ok_status();
+    repetitions = 0;
+    if (structure->loops.loop_count == 1) {
+      bool uniform = true;
+      for (iree_host_size_t i = 0; i < count; ++i) {
+        const uint16_t block = steps[i].op->parent_block->region_index;
+        uniform &= steps[i].scope == 0 &&
+                   block != structure->loops.loops[0].header_index;
+      }
+      if (uniform && structure->inductions[0].update ==
+                         LOOM_VALUE_FACT_INDUCTION_UPDATE_ADDITIVE) {
+        induction = &structure->inductions[0];
+        const uint16_t block = steps[0].op->parent_block->region_index;
+        repetitions = worker->block_execution_counts[block];
       }
     }
-    repetitions =
-        worker->block_execution_counts[steps[0].op->parent_block->region_index];
   }
   const loom_pipeline_transport_cohort_t* cohorts = NULL;
   iree_host_size_t cohort_count = 0;
@@ -858,7 +863,8 @@ iree_status_t loom_pipeline_workers_prove_sources(
   iree_arena_allocator_t* arena = storage_access->arena;
   bool repeated_transport = false;
   for (iree_host_size_t i = 0; i < worker_count; ++i) {
-    repeated_transport |= workers[i].transport.induction != NULL;
+    repeated_transport |=
+        workers[i].transport.stream_count && workers[i].graph->has_cycles;
   }
   if (!repeated_transport) {
     return iree_ok_status();
@@ -946,7 +952,7 @@ iree_status_t loom_pipeline_workers_prove_sources(
   // exclude disjoint storage without implying purity.
   for (iree_host_size_t i = 0; i < worker_count; ++i) {
     loom_pipeline_worker_t* worker = &workers[i];
-    if (!worker->transport.induction) {
+    if (!worker->transport.stream_count || !worker->graph->has_cycles) {
       continue;
     }
     bool stable = true;

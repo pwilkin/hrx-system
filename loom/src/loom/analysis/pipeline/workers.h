@@ -32,6 +32,9 @@ typedef struct loom_pipeline_transport_step_t {
   const loom_op_t* op;
   // Which retained communication plan supplies this step's operands.
   loom_pipeline_transport_step_kind_t kind;
+  // Innermost natural loop containing this site, or LOOP_NEST_NONE. Execution
+  // counts and the enclosing loop chain belong to the worker's retained CFG.
+  uint16_t scope;
   // Canonical action or movement, borrowed through physical selection.
   union {
     // Channel obligation established by membership analysis.
@@ -126,11 +129,12 @@ typedef struct loom_pipeline_transport_batch_t {
 
 typedef struct loom_pipeline_transport_t {
   // All observable sites in structural execution order, visiting loop bodies
-  // before their continuations; NULL when ordinary execution is required. For
-  // borrowed movement, admission proves one straight-line sequence or repeated
-  // body. Record-batch lifetime and replay order are retained separately below.
+  // before their continuations; NULL when ordinary execution is required.
+  // Borrowed movement retains each site's execution scope, including admission
+  // and release outside inner transfer loops. Record-batch lifetime and replay
+  // order are retained separately below.
   const loom_pipeline_transport_step_t* steps;
-  // Number of steps in the complete invocation.
+  // Number of structural communication sites, independent of dynamic visits.
   iree_host_size_t count;
   // Borrowed movement streams in CFG execution order, independent of block
   // storage order. Each stream completes its groups before the next block.
@@ -150,12 +154,14 @@ typedef struct loom_pipeline_transport_t {
   const loom_pipeline_transport_loop_t* copy_loops;
   // Number of copy-loop spans; zero when uniform replay or straight-line.
   iree_host_size_t copy_loop_count;
-  // Number of executions of the borrowed-movement sequence. A straight-line
-  // invocation has one; a regular loop has its proven exact trip count.
+  // Number of uniform repetitions of the whole borrowed-movement sequence, or
+  // zero when sites have different loop scopes or execution counts. A
+  // straight-line invocation has one; a single body has its exact trip count.
   // Channel-copy batches instead retain their own admission and replay counts.
   uint64_t repetitions;
-  // Controlling recurrence for repeated execution, or NULL for straight-line
-  // execution. Borrowed from the worker's retained CFG snapshot.
+  // Controlling recurrence when all borrowed-movement sites belong to one
+  // repeated body; NULL for straight-line or nonuniform scoped execution.
+  // Borrowed from the worker's retained CFG snapshot.
   const loom_value_fact_induction_t* induction;
   // External source roots cannot change during this closed execution. This
   // proof includes every strand's effects and scoped alias contracts.

@@ -175,6 +175,11 @@ pipeline.def<kernel> public @test() run(%storage_argument: buffer, %output_argum
 
 // ----
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
+  sequence: sites=4 repetitions=1
+    channel.acquire: executions=1 scope=none
+    kernel.async.copy: executions=1 scope=none
+    kernel.async.wait: executions=1 scope=none
+    channel.release: executions=1 scope=none
 
 // ====
 // RUN: emit pipeline-transport @test
