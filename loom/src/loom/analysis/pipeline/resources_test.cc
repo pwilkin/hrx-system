@@ -401,6 +401,8 @@ TEST_F(PipelineConstructionTest, CapturesKeepProtocolAndStorageSeparate) {
     for (size_t i : {1u, 0u}) {
       auto& selected = workers[occurrence][i];
       EXPECT_EQ(selected.function.op, worker);
+      EXPECT_EQ(selected.axes, selected.source->axes);
+      EXPECT_EQ(selected.rank, selected.source->rank);
       ASSERT_EQ(selected.rank, 1u);
       EXPECT_EQ(selected.axes[0].origin, i);
       EXPECT_EQ(selected.axes[0].count, 1u);

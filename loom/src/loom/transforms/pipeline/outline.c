@@ -235,15 +235,26 @@ static iree_status_t loom_pipeline_outline_body(
     return iree_ok_status();
   }
 
-  loom_block_t* moved_entry = NULL;
-  IREE_RETURN_IF_ERROR(
-      loom_rewriter_move_region_blocks(rewriter, source_body, declaration,
-                                       target_body, 1, function, &moved_entry));
-  loom_builder_enter_region(&builder, function, target_body);
-  loom_op_t* branch = NULL;
-  IREE_RETURN_IF_ERROR(loom_cfg_br_build(&builder, moved_entry, NULL, 0,
-                                         declaration->location, &branch));
-  for (uint16_t i = 1; i < target_body->block_count; ++i) {
+  uint16_t first_body_block = 0;
+  if (source_body->block_count == 1) {
+    // A structured strand stays structured. Its captures become entry
+    // arguments without introducing a forwarding block or CFG branch.
+    loom_block_t* source_entry = loom_region_entry_block(source_body);
+    while (source_entry->first_op) {
+      IREE_RETURN_IF_ERROR(loom_rewriter_move_to_block_end(
+          rewriter, source_entry->first_op, entry, function));
+    }
+  } else {
+    loom_block_t* moved_entry = NULL;
+    IREE_RETURN_IF_ERROR(loom_rewriter_move_region_blocks(
+        rewriter, source_body, declaration, target_body, 1, function, &moved_entry));
+    loom_builder_enter_region(&builder, function, target_body);
+    loom_op_t* branch = NULL;
+    IREE_RETURN_IF_ERROR(loom_cfg_br_build(&builder, moved_entry, NULL, 0,
+                                           declaration->location, &branch));
+    first_body_block = 1;
+  }
+  for (uint16_t i = first_body_block; i < target_body->block_count; ++i) {
     loom_block_t* block = target_body->blocks[i];
     for (uint16_t a = 0; a < block->arg_count; ++a) {
       const loom_value_id_t value = loom_block_arg_id(block, a);

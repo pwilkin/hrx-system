@@ -454,16 +454,12 @@ pipeline.def public target(@core) @run() run(%value: i32) {
 }
 
 func.def inline @__pipeline_strand_0(%value: i32) {
-  cfg.br ^_bb1
-^_bb1:
   %source_result = func.call @source_identity(%value) : (i32) -> (i32)
   %result = low.invoke noinline @identity(%source_result) : (i32) -> (i32)
   func.return
 }
 
 func.def inline @__pipeline_strand_1(%value: i32) {
-  cfg.br ^_bb1
-^_bb1:
   %source_result = func.call @source_identity_spec0(%value) : (i32) -> (i32)
   %result = low.invoke noinline @identity_spec0(%source_result) : (i32) -> (i32)
   func.return
