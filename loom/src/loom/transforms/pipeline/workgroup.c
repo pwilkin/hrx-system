@@ -22,6 +22,7 @@
 #include "loom/target/function_contract.h"
 #include "loom/target/function_version.h"
 #include "loom/target/pass_environment.h"
+#include "loom/transforms/kernel/kernel_resources.h"
 
 static const loom_pass_info_t kPipelineWorkgroupPassInfo = {
     .name = IREE_SVL("realize-pipeline-workgroup"),
@@ -204,6 +205,11 @@ static iree_status_t loom_pipeline_workgroup_apply(
           loom_target_facts_identity_name(version->resolved_target.facts),
           version->resolved_target.facts, pass->diagnostic_emitter,
           owner->arena, &valid, &version->function_target_facts);
+    }
+    if (iree_status_is_ok(status)) {
+      uint16_t normalized_count = 0;
+      status = loom_kernel_resources_normalize(
+          module, loom_func_like_cast(module, kernel), &normalized_count);
     }
     loom_pass_value_fact_owner_invalidate(pass->value_facts);
     loom_pass_mark_changed(pass);
