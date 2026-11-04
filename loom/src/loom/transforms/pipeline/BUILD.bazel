@@ -113,6 +113,23 @@ loom_cc_library(
 )
 
 loom_cc_library(
+    name = "memory_channel",
+    srcs = ["memory_channel.c"],
+    hdrs = ["memory_channel.h"],
+    deps = [
+        ":channel_materialization",
+        "//loom/src/loom/analysis:channel_plan",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops/buffer",
+        "//loom/src/loom/ops/channel",
+        "//loom/src/loom/ops/index",
+        "//loom/src/loom/ops/scalar",
+        "//loom/src/loom/rewrite:rewriter",
+        "//runtime/src/iree/base",
+    ],
+)
+
+loom_cc_library(
     name = "outline",
     srcs = ["outline.c"],
     hdrs = ["outline.h"],
@@ -137,6 +154,32 @@ loom_cc_library(
         "//loom/src/loom/util:walk",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_test(
+    name = "memory_channel_test",
+    srcs = ["memory_channel_test.cc"],
+    deps = [
+        ":channel_materialization",
+        ":memory_channel",
+        "//loom/src/loom/analysis:channel_plan",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops:type_registry",
+        "//loom/src/loom/ops/buffer",
+        "//loom/src/loom/ops/cfg",
+        "//loom/src/loom/ops/channel",
+        "//loom/src/loom/ops/func",
+        "//loom/src/loom/ops/index",
+        "//loom/src/loom/ops/scalar",
+        "//loom/src/loom/rewrite:rewriter",
+        "//loom/src/loom/util:cfg_graph",
+        "//loom/src/loom/util:fact_table",
+        "//loom/src/loom/verify",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
     ],
 )
 
