@@ -139,3 +139,48 @@ pipeline.def<kernel> @scheduled_child() run(%output: view<1xi32>) {
     view.store %value, %output[0] : i32, view<1xi32>
   }
 }
+
+// ====
+// RUN: pass specialize-target-callgraph,outline-pipeline-strands,specialize-target-callgraph,realize-pipeline-workgroup,inline-callables{policy=target},canonicalize,cfg-simplify,symbol-dce
+
+// A retained helper keeps its target context while the outlined worker moves
+// into the kernel that owns the workgroup-size query.
+test.target<low_core> @device {subgroup_size = 32}
+
+func.def noinline @adjust(%value: i32) -> (i32) {
+  %width = target.subgroup.size : index
+  %increment = index.cast %width : index to i32
+  %result = scalar.addi %value, %increment : i32
+  func.return %result : i32
+}
+
+pipeline.def<kernel> public target(@device) @call_from_resident() run(%output: view<128xi32>) {
+  pipeline.strand<cooperative> workers([0], [4], [1]) {
+    %thread = kernel.workitem.id<x> : index
+    %width = kernel.workgroup.size<x> : index
+    %value = index.cast %width : index to i32
+    %result = func.call @adjust(%value) : (i32) -> (i32)
+    view.store %result, %output[%thread] : i32, view<128xi32>
+  }
+}
+
+// ----
+test.target<low_core> @device {subgroup_size = 32}
+
+func.def noinline @adjust(%value: i32) -> (i32) {
+  %increment = scalar.constant 32 : i32
+  %result = scalar.addi %value, %increment : i32
+  func.return %result : i32
+}
+
+kernel.def target(@device) export("call_from_resident") @call_from_resident() {
+  %12 = index.constant 1 : index
+  %17 = index.constant 128 : index
+  kernel.launch.config workgroups(%12, %12, %12) workgroup_size(%17, %12, %12) : index
+} launch(%output: view<128xi32>) {
+  %thread = kernel.workitem.id<x> : index
+  %value = scalar.constant 128 : i32
+  %result = func.call pure @adjust(%value) : (i32) -> (i32)
+  view.store %result, %output[%thread] : i32, view<128xi32>
+  kernel.return
+}
