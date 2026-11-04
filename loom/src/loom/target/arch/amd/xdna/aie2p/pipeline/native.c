@@ -7,6 +7,7 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
 
 #include "loom/analysis/storage_geometry.h"
+#include "loom/analysis/symbolic_projection.h"
 #include "loom/error/parameter.h"
 #include "loom/ops/channel/ops.h"
 #include "loom/ops/func/ops.h"
@@ -593,10 +594,10 @@ static bool loom_aie2p_native_can_repeat(
   }
   const loom_symbolic_expr_t* offset = &external->begin_byte_offset;
   int64_t begin = offset->constant, stride = 0;
+  uint64_t period = transport->repetitions;
   if (offset->term_count) {
     int64_t initial, increment, displacement;
     if (!loom_symbolic_expr_is_linear(offset) || offset->term_count != 1 ||
-        offset->terms[0].value_id != transport->induction->value ||
         !loom_value_facts_as_exact_i64(
             loom_value_fact_recurrence_operand_facts(
                 &source->facts, transport->induction->initial_value),
@@ -604,8 +605,47 @@ static bool loom_aie2p_native_can_repeat(
         !loom_value_facts_as_exact_i64(
             loom_value_fact_recurrence_operand_facts(
                 &source->facts, transport->induction->step),
-            &increment) ||
-        !iree_checked_mul_i64(offset->terms[0].coefficient, initial,
+            &increment)) {
+      return false;
+    }
+    if (offset->terms[0].value_id != transport->induction->value) {
+      loom_symbolic_expr_summary_t summary;
+      if (!loom_symbolic_expr_context_try_lookup_summary(
+              source->asynchronous.movement.view_regions.expression_context,
+              offset->terms[0].value_id, &summary) ||
+          !summary.projection ||
+          summary.projection->value_id != transport->induction->value) {
+        return false;
+      }
+      const loom_symbolic_projection_t* projection = summary.projection;
+      if (!iree_checked_mul_i64(projection->scale, initial, &initial) ||
+          !iree_checked_add_i64(initial, projection->offset, &initial) ||
+          !iree_checked_mul_i64(projection->scale, increment, &increment) ||
+          increment < 0 || increment % projection->divisor) {
+        return false;
+      }
+      initial /= projection->divisor;
+      increment /= projection->divisor;
+      if (projection->modulus) {
+        initial %= projection->modulus;
+        increment %= projection->modulus;
+        if (increment &&
+            transport->repetitions - 1 >
+                (uint64_t)((projection->modulus - 1 - initial) / increment)) {
+          // One immutable descriptor covers an entire address period. Its
+          // repeated tasks restart at that period's origin; a rotated or
+          // partial period still needs ordinary instruction issue.
+          if (initial >= increment || projection->modulus % increment) {
+            return false;
+          }
+          period = (uint64_t)(projection->modulus / increment);
+          if (transport->repetitions % period) {
+            return false;
+          }
+        }
+      }
+    }
+    if (!iree_checked_mul_i64(offset->terms[0].coefficient, initial,
                               &displacement) ||
         !iree_checked_add_i64(begin, displacement, &begin) ||
         !iree_checked_mul_i64(offset->terms[0].coefficient, increment,
@@ -637,10 +677,20 @@ static bool loom_aie2p_native_can_repeat(
       (stride % shim_dma->transfer_length_granularity) ||
       byte_stride / local_dma->transfer_length_granularity >
           (UINT64_C(1) << local_dma->step_size_bits) ||
-      !loom_aie2p_native_select_ingress_descriptor(
-          context, source, request, (uint32_t)stride,
-          (uint32_t)transport->repetitions, worker)) {
+      !loom_aie2p_native_select_ingress_descriptor(context, source, request,
+                                                   (uint32_t)stride,
+                                                   (uint32_t)period, worker)) {
     return false;
+  }
+  if (period != transport->repetitions) {
+    // A descriptor-local iterator cannot be duplicated across a task chain:
+    // each copy would advance an independent position. Require the complete
+    // period to fit one transfer's address dimensions instead.
+    if (worker->repetition.shim_repetitions != 1) {
+      return false;
+    }
+    worker->repetition.shim_repetitions =
+        (uint32_t)(transport->repetitions / period);
   }
   worker->repetition.count = (uint32_t)transport->repetitions;
   if (channel->replay.record_count) {

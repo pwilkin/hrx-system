@@ -138,6 +138,7 @@ loom_cc_library(
         ":worker",
         "//loom/src/loom/analysis:source_storage_packing",
         "//loom/src/loom/analysis:storage_geometry",
+        "//loom/src/loom/analysis:symbolic_expr",
         "//loom/src/loom/analysis/pipeline:execution",
         "//loom/src/loom/analysis/pipeline:schedule",
         "//loom/src/loom/codegen/low:builder",
