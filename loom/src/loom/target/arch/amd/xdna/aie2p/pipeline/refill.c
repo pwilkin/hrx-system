@@ -182,11 +182,22 @@ uint32_t loom_aie2p_native_phased_window(
           (uint64_t)cycles * records) {
     return 0;
   }
-  const uint32_t window =
+  uint32_t window =
       iree_min(records, dma->maximum_task_repeat_count / capacity * capacity);
   // Repeated cycles end on a complete bulk window and ring turn. A single
   // enclosing lifetime can retain the ordinary final partial-window task.
-  return cycles > 1 && (records % window || window % capacity) ? 0 : window;
+  if (cycles > 1) {
+    if (records % capacity) {
+      return 0;
+    }
+    // The largest hardware window need not divide the cycle. Search complete
+    // ring turns within that fixed task-repeat bound, keeping the largest
+    // divisor to minimize continuation traffic.
+    while (records % window) {
+      window -= capacity;
+    }
+  }
+  return window;
 }
 
 iree_status_t loom_aie2p_native_select_refill(
