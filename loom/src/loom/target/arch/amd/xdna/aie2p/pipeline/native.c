@@ -635,8 +635,8 @@ static iree_status_t loom_aie2p_native_select(
           context, realization->function.op,
           IREE_SV("buffer invocation arguments after specialization"));
     }
-    context->bindings[i] = (loom_aie2p_native_binding_t){
-        .root = arguments[i], .byte_length = 1, .byte_alignment = 4};
+    context->bindings[i] =
+        (loom_aie2p_native_binding_t){.byte_length = 1, .byte_alignment = 4};
   }
   const iree_host_size_t worker_count = realization->invocations.worker_count;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(

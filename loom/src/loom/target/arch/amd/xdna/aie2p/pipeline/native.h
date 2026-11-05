@@ -117,8 +117,6 @@ typedef struct loom_aie2p_native_buffer_access_t {
 
 // Explicit caller buffer contract, shared by every borrowing DMA operation.
 typedef struct loom_aie2p_native_binding_t {
-  // Original entry argument identity.
-  loom_value_id_t root;
   // Complete minimum accessible extent proved from retained endpoint ranges.
   uint64_t byte_length;
   // Minimum caller-provided alignment retained from construction facts.

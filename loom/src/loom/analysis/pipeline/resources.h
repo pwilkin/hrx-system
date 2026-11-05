@@ -9,6 +9,7 @@
 
 #include "loom/analysis/channel_plan.h"
 #include "loom/analysis/pipeline/schedule.h"
+#include "loom/analysis/pipeline/storage_arguments.h"
 #include "loom/analysis/source_storage_packing.h"
 #include "loom/error/emitter.h"
 #include "loom/util/fact_table.h"
@@ -145,6 +146,8 @@ typedef struct loom_pipeline_resource_strand_t {
 } loom_pipeline_resource_strand_t;
 
 typedef struct loom_pipeline_resources_t {
+  // Parent-relative storage projections retained before ABI normalization.
+  loom_pipeline_storage_arguments_t storage_arguments;
   // Borrowed canonical backing rows; the admitting plan outlives this result.
   const loom_pipeline_resource_pool_t* pools;
   // Number of canonical backing rows.

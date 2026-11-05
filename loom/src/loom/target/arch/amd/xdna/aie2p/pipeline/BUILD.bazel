@@ -142,6 +142,7 @@ loom_cc_library(
         "//loom/src/loom/analysis/pipeline:execution",
         "//loom/src/loom/analysis/pipeline:progress",
         "//loom/src/loom/analysis/pipeline:schedule",
+        "//loom/src/loom/analysis/pipeline:storage_arguments",
         "//loom/src/loom/codegen/low:builder",
         "//loom/src/loom/codegen/low:launch_config_program",
         "//loom/src/loom/error:parameter",

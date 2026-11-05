@@ -38,6 +38,7 @@ loom_cc_library(
     hdrs = ["resources.h"],
     deps = [
         ":schedule",
+        ":storage_arguments",
         "//loom/src/loom/analysis:channel_plan",
         "//loom/src/loom/analysis:source_storage_packing",
         "//loom/src/loom/analysis:storage_geometry",
@@ -227,5 +228,31 @@ loom_cc_library(
         "//loom/src/loom/util:cfg_execution",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_library(
+    name = "storage_arguments",
+    srcs = ["storage_arguments.c"],
+    hdrs = ["storage_arguments.h"],
+    deps = [
+        "//loom/src/loom/ir",
+        "//loom/src/loom/util:fact_table",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_test(
+    name = "storage_arguments_test",
+    srcs = ["storage_arguments_test.cc"],
+    deps = [
+        ":storage_arguments",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/util:fact_table",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
     ],
 )

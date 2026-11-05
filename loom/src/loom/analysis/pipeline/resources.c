@@ -207,6 +207,12 @@ iree_status_t loom_pipeline_resources_build(
       .pools = pools,
       .pool_count = pool_count,
   };
+  uint16_t argument_count = 0;
+  const loom_value_id_t* arguments =
+      loom_func_like_arg_ids(pipeline, &argument_count);
+  IREE_RETURN_IF_ERROR(loom_pipeline_storage_arguments_build(
+      module, arguments, argument_count, facts, arena,
+      &resources.storage_arguments));
   loom_pipeline_resource_allocation_t* allocations = NULL;
   iree_host_size_t allocation_capacity = 0;
   loom_pipeline_resource_channel_t* channels = NULL;
@@ -248,7 +254,7 @@ iree_status_t loom_pipeline_resources_build(
           (loom_pipeline_resource_pool_binding_t){
               .value_id = loom_pipeline_memory_result(op),
               .pool_index = pool_index,
-          };
+      };
       continue;
     }
     if (loom_pipeline_strand_isa(op)) {

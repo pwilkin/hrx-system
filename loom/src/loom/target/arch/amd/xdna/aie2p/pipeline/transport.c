@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "loom/analysis/pipeline/storage_arguments.h"
 #include "loom/analysis/storage_geometry.h"
 #include "loom/ops/channel/ops.h"
 #include "loom/target/arch/amd/xdna/aie2p/call_abi.h"
@@ -121,12 +122,12 @@ bool loom_aie2p_native_packet_route(loom_aie2p_native_context_t* context,
           ? context->deliveries[destination_index]
           : NULL;
   const bool routed =
-      delivery ? loom_aie2p_array_route_control(
-                     &context->routing, index, *canonical, source,
-                     &delivery->sharing)
-               : loom_aie2p_array_route_stream(
-                     &context->routing, index, *canonical, source, source_port,
-                     0, destination, destination_port, 0, true);
+      delivery
+          ? loom_aie2p_array_route_control(&context->routing, index, *canonical,
+                                           source, &delivery->sharing)
+          : loom_aie2p_array_route_stream(&context->routing, index, *canonical,
+                                          source, source_port, 0, destination,
+                                          destination_port, 0, true);
   if (!routed) {
     return false;
   }
@@ -137,8 +138,9 @@ bool loom_aie2p_native_packet_route(loom_aie2p_native_context_t* context,
 iree_status_t loom_aie2p_native_select_control_route(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
-    iree_host_size_t worker_index, const loom_aie2p_native_tile_t* tile, bool reply,
-    uint32_t* next_source, uint8_t* next_controller, bool* out_valid) {
+    iree_host_size_t worker_index, const loom_aie2p_native_tile_t* tile,
+    bool reply, uint32_t* next_source, uint8_t* next_controller,
+    bool* out_valid) {
   *out_valid = false;
   loom_aie2p_native_worker_t* worker = &context->workers[worker_index];
   loom_aie2p_native_worker_t* owner =
@@ -680,12 +682,9 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
     uint32_t* next_source, uint8_t* next_controller, bool* out_valid) {
   *out_valid = false;
   iree_arena_allocator_t* arena = context->pass->arena;
-  loom_module_t* module = context->code.module;
   const iree_host_size_t tile_count =
       (iree_host_size_t)context->family->column_count *
       context->family->row_count;
-  const loom_block_t* entry =
-      loom_region_entry_block(loom_func_like_body(realization->function));
   const loom_pipeline_worker_t* source = &realization->workers[i];
   loom_aie2p_native_worker_t* worker = &context->workers[i];
   if (!source->asynchronous.streams) {
@@ -790,10 +789,11 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
       const bool record_dynamic = !configuration && local_channel &&
                                   local_channel->source->capacity > 1 &&
                                   payload_record.maximum_admissions > 1;
-      const loom_value_t* root =
-          loom_module_value(module, external->root_value_id);
-      if (!local_channel || !loom_value_is_block_arg(root) ||
-          loom_value_def_block(root) != entry ||
+      const loom_pipeline_storage_argument_t* argument =
+          loom_pipeline_storage_arguments_find_buffer(
+              &realization->resources.storage_arguments,
+              external->root_value_id);
+      if (!local_channel || !argument ||
           !loom_symbolic_expr_is_linear(&external_view->begin_byte_offset) ||
           !loom_symbolic_expr_is_linear(&local_view->projection_byte_offset) ||
           external->begin_byte_offset.facts.range_lo < 0 ||
@@ -1010,7 +1010,7 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
           .task = queue->task,
           .source = transfer,
           .completion = group->completion,
-          .binding = loom_value_def_index(root),
+          .binding = argument->argument_index,
           .source_count = source_count,
           .external_view = external_view,
           .local_view = local_view,
