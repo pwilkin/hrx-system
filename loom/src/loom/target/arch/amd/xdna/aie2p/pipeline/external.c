@@ -249,6 +249,20 @@ iree_status_t loom_aie2p_native_route_input(
   if (!receivers_valid) {
     return loom_aie2p_native_reject(context, declaration, receiver_reason);
   }
+  loom_aie2p_native_worker_t* observer =
+      &context->workers[input->continuation.worker];
+  // The query continues through SRAM to its observing core. Select that
+  // constrained path before payload branches fix the common source prefix:
+  // an SRAM receiver accepts lanes that cannot continue to a free north link.
+  if (protocol && !loom_aie2p_native_input_route(
+                      context, next_source, canonical, shim->coordinate,
+                      LOOM_XDNA_STREAM_PORT_DMA, input->input_engine,
+                      observer->tile->coordinate, LOOM_XDNA_STREAM_PORT_CORE, 0,
+                      (uint8_t)input->source->phase_count)) {
+    return loom_aie2p_native_reject(
+        context, declaration,
+        IREE_SV("a shared generation query route to the observing core"));
+  }
   for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
     loom_aie2p_native_input_phase_t* phase = &input->phases[i];
     const loom_pipeline_transport_input_phase_t* plan = phase->source;
@@ -338,8 +352,6 @@ iree_status_t loom_aie2p_native_route_input(
           IREE_SV("packet routes from phased input to each local destination"));
     }
   }
-  loom_aie2p_native_worker_t* observer =
-      &context->workers[input->continuation.worker];
   bool valid = false;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_select_control_route(
       context, realization, input->continuation.worker, shim, protocol != NULL,
@@ -359,16 +371,10 @@ iree_status_t loom_aie2p_native_route_input(
   input->completion_packet = owner->control_replies[shim - context->tiles];
   if (!loom_aie2p_native_select_packet_route(
           context, input->continuation.worker, shim, LOOM_XDNA_STREAM_PORT_DMA,
-          input->credit_engine, next_source, &input->credit_packet) ||
-      !loom_aie2p_native_input_route(
-          context, next_source, canonical, shim->coordinate,
-          LOOM_XDNA_STREAM_PORT_DMA, input->input_engine,
-          observer->tile->coordinate, LOOM_XDNA_STREAM_PORT_CORE, 0,
-          (uint8_t)input->source->phase_count)) {
+          input->credit_engine, next_source, &input->credit_packet)) {
     return loom_aie2p_native_reject(
         context, declaration,
-        IREE_SV(
-            "shared generation query and credit routes to the observing core"));
+        IREE_SV("a shared generation credit route from the observing core"));
   }
   input->ready_descriptor = descriptor_base + *used;
   input->credit_descriptor = input->ready_descriptor + capacity;

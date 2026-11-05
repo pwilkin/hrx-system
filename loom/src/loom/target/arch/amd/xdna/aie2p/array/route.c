@@ -46,10 +46,12 @@ typedef struct loom_aie2p_array_route_step_t {
   const loom_xdna_stream_port_range_t* next_input;
   // Occupied channels on the directed physical link.
   uint32_t* occupied;
+  // Borrowable lanes owned by this packet domain, or NULL without sharing.
+  uint32_t* sharing_lanes;
   // Admitted link channels that can reach the requested final destination.
   uint32_t feasible;
   // Lanes that continue a merged path to its terminal. These follow the
-  // borrowed carrier through its receiver, then use exclusive links.
+  // borrowed carrier through its receiver, then use this domain's controls.
   uint32_t shared;
   // Prefix-tree child selected by the hop.
   loom_aie2p_array_route_direction_t direction;
@@ -224,6 +226,8 @@ static loom_aie2p_array_route_step_t loom_aie2p_array_route_step(
       .output = output,
       .next_input = next_input,
       .occupied = occupied,
+      .sharing_lanes =
+          sharing ? &sharing->links[direction * tile_count + index] : NULL,
       .feasible =
           (UINT32_MAX >> (32 - iree_min(output->count, next_input->count))) &
           (~*occupied | shared),
@@ -302,9 +306,8 @@ static bool loom_aie2p_array_plan_route(
         loom_aie2p_array_route_direction(coordinate, destination,
                                          horizontal_row);
     loom_aie2p_array_route_step_t* step = &builder->steps[step_count++];
-    *step = loom_aie2p_array_route_step(
-        builder, coordinate, incoming_port, direction,
-        shared_step_count == IREE_HOST_SIZE_MAX ? sharing : NULL);
+    *step = loom_aie2p_array_route_step(builder, coordinate, incoming_port,
+                                        direction, sharing);
     coordinate = step->destination;
     incoming_port = step->next_input->port;
   }
@@ -320,8 +323,8 @@ static bool loom_aie2p_array_plan_route(
     for (iree_host_size_t i = step_count; i > 0; --i) {
       loom_aie2p_array_route_step_t* step = &builder->steps[i - 1];
       if (i > shared_step_count) {
-        // Once past the payload receiver, only free lanes can continue the
-        // control packet. Include them in backward reachability, not sharing.
+        // Past the payload receiver, free lanes and this domain's control
+        // continuations participate in reachability. Other traffic is excluded.
         step->shared = step->feasible;
       }
       step->shared &= shared_feasible;
@@ -361,6 +364,11 @@ static bool loom_aie2p_array_plan_route(
         free_channels ? free_channels : channels);
     const bool borrowed = (*step->occupied & (UINT32_C(1) << channel)) != 0;
     *step->occupied |= UINT32_C(1) << channel;
+    if (i >= shared_step_count) {
+      // Preserve control-owned continuations for other sources with this
+      // packet namespace. No new payload path becomes borrowable here.
+      *step->sharing_lanes |= UINT32_C(1) << channel;
+    }
     loom_aie2p_array_append_route(builder, channel_index, node->coordinate,
                                   LOOM_AIE2P_ARRAY_SWITCH_KIND_STREAM_SWITCH,
                                   node->incoming_port, node->incoming_channel,
@@ -370,7 +378,7 @@ static bool loom_aie2p_array_plan_route(
     node_index = node->children[step->direction];
     if (borrowed) {
       builder->prefixes.nodes[node_index].sharing = sharing;
-      sharing->used = true;
+      sharing->used |= i < shared_step_count;
       joined = true;
     }
   }

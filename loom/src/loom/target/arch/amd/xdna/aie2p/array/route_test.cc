@@ -473,7 +473,7 @@ TEST(Aie2pRouteTest, GrantedControlContinuesBeyondPayloadReceiver) {
   for (bool shim_first : {false, true}) {
     iree_arena_reset(&arena);
     loom_aie2p_array_route_builder_t routing;
-    IREE_ASSERT_OK(loom_aie2p_array_route_builder_initialize(family, 7, 64,
+    IREE_ASSERT_OK(loom_aie2p_array_route_builder_initialize(family, 8, 64,
                                                              &arena, &routing));
     size_t carrier_count = 0;
     for (uint32_t i = 0; i < 4; ++i) {
@@ -528,6 +528,23 @@ TEST(Aie2pRouteTest, GrantedControlContinuesBeyondPayloadReceiver) {
     EXPECT_EQ(credit_mux.source_channel, 2);
     EXPECT_EQ(credit_mux.destination_port, LOOM_XDNA_STREAM_PORT_DMA);
     EXPECT_EQ(credit_mux.destination_channel, 0);
+    const size_t other_first = routing.route_count;
+    // A second arithmetic core shares the same packet namespace and must
+    // retain the already reserved continuation after the payload receiver.
+    ASSERT_TRUE(loom_aie2p_array_route_control(
+        &routing, 7, 7, {0, 3}, {0, 0}, LOOM_XDNA_STREAM_PORT_TILE_CONTROL, 0,
+        &sharing));
+    ASSERT_EQ(routing.route_count - other_first, 4u);
+    for (size_t i = other_first + 1; i < other_first + 3; ++i) {
+      EXPECT_EQ(routing.routes[i].destination_port,
+                LOOM_XDNA_STREAM_PORT_SOUTH);
+      EXPECT_EQ(routing.routes[i].destination_channel, 0);
+    }
+    const auto& other_terminal = routing.routes[routing.route_count - 1];
+    EXPECT_EQ(other_terminal.coordinate.row, 0);
+    EXPECT_EQ(other_terminal.source_channel, 0);
+    EXPECT_EQ(other_terminal.destination_port,
+              LOOM_XDNA_STREAM_PORT_TILE_CONTROL);
     EXPECT_TRUE(sharing.used);
     EXPECT_EQ(routing.link_channels.southbound[family->column_count], 15u);
     EXPECT_EQ(routing.link_channels.southbound[0], 1u);

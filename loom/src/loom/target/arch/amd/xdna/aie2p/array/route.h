@@ -22,9 +22,10 @@ extern "C" {
 // its links without waiting behind a payload dependent on future computation.
 // The owner frames payloads with IDs disjoint from the sharing control stream.
 typedef struct loom_aie2p_array_route_sharing_t {
-  // Final payload receiver and control destination.
+  // Final payload receiver; control can continue beyond this tile.
   loom_xdna_tile_coordinate_t destination;
-  // Borrowable lane masks in north/south/west/east order, indexed by tile.
+  // Borrowable payload and control-continuation lane masks in
+  // north/south/west/east order, indexed by tile.
   uint32_t* links;
   // At least one control route actually borrows this payload path.
   bool used;
@@ -131,8 +132,9 @@ iree_status_t loom_aie2p_array_route_sharing_initialize(
 
 // Routes core control packets through a granted payload's receiver. Free lanes
 // are preferred; occupied lanes may be borrowed only from |sharing|. Beyond
-// its receiver, the control route again requires exclusive lanes. The caller
-// supplies a destination whose route passes through the granted receiver.
+// its receiver, the route uses free lanes or this domain's control
+// continuations. All participating sources share the caller-owned packet
+// namespace. The destination's route must pass through the granted receiver.
 bool loom_aie2p_array_route_control(loom_aie2p_array_route_builder_t* builder,
                                     uint32_t channel_index,
                                     uint32_t source_channel_index,
