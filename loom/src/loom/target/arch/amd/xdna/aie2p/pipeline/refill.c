@@ -8,34 +8,19 @@
 
 #include <stdlib.h>
 
+#include "loom/analysis/pipeline/progress.h"
 #include "loom/ops/scalar/ops.h"
 #include "loom/ops/scf/ops.h"
 
-// Reverse physical continuation graph over canonical one-to-one copy edges.
-typedef struct loom_aie2p_native_progress_edge_t {
-  // Next source depending on the same destination's progress.
-  uint32_t next;
-  // Upstream channel whose record ordinal this edge preserves.
-  uint32_t source;
-} loom_aie2p_native_progress_edge_t;
-
-typedef struct loom_aie2p_native_progress_node_t {
-  // First upstream edge, or UINT32_MAX.
-  uint32_t upstream;
-  // Downstream channels still awaiting physical reader selection.
-  uint32_t pending;
-  // Best reachable compute reader in the completed downstream subgraph.
-  const loom_aie2p_native_channel_t* reader;
-} loom_aie2p_native_progress_node_t;
-
-static uint32_t loom_aie2p_native_progress_distance(
-    const loom_aie2p_native_context_t* context,
-    const loom_aie2p_native_channel_t* source,
-    const loom_aie2p_native_channel_t* progress) {
+static uint64_t loom_aie2p_native_progress_distance(void* user_data,
+                                                    uint32_t source,
+                                                    uint32_t reader) {
+  const loom_aie2p_native_context_t* context = user_data;
   const loom_xdna_tile_coordinate_t origin =
-      context->pool_tiles[source->pool_index]->coordinate;
+      context->pool_tiles[context->channels[source].pool_index]->coordinate;
   const loom_xdna_tile_coordinate_t target =
-      context->workers[progress->cursor.reader.worker].tile->coordinate;
+      context->workers[context->channels[reader].cursor.reader.worker]
+          .tile->coordinate;
   return (uint32_t)abs((int)origin.column - (int)target.column) +
          (uint32_t)abs((int)origin.row - (int)target.row);
 }
@@ -44,9 +29,6 @@ iree_status_t loom_aie2p_native_select_progress(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization) {
   const iree_host_size_t count = realization->invocations.channel_count;
-  if (!count) {
-    return iree_ok_status();
-  }
   bool needs_progress = false;
   for (iree_host_size_t i = 0; i < count; ++i) {
     const loom_aie2p_native_channel_t* channel = &context->channels[i];
@@ -59,107 +41,37 @@ iree_status_t loom_aie2p_native_select_progress(
   if (!needs_progress) {
     return iree_ok_status();
   }
-  iree_arena_allocator_t* arena = context->pass->arena;
-  loom_aie2p_native_progress_node_t* nodes;
-  uint32_t* ready;
-  IREE_RETURN_IF_ERROR(
-      iree_arena_allocate_array(arena, count, sizeof(*nodes), (void**)&nodes));
-  IREE_RETURN_IF_ERROR(
-      iree_arena_allocate_array(arena, count, sizeof(*ready), (void**)&ready));
-  iree_host_size_t edge_capacity = 0;
-  for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
-    const loom_pipeline_transport_t* transport =
-        &realization->workers[i].transport;
-    for (iree_host_size_t j = 0; j < transport->cohort_count; ++j) {
-      edge_capacity += transport->cohorts[j].destination_count;
-    }
-  }
-  loom_aie2p_native_progress_edge_t* edges;
+  loom_pipeline_progress_endpoint_t* endpoints;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
-      arena, edge_capacity, sizeof(*edges), (void**)&edges));
+      context->pass->arena, count, sizeof(*endpoints), (void**)&endpoints));
   for (iree_host_size_t i = 0; i < count; ++i) {
     const loom_aie2p_native_channel_t* channel = &context->channels[i];
     const uint32_t reader = channel->cursor.reader.worker;
-    nodes[i] = (loom_aie2p_native_progress_node_t){.upstream = UINT32_MAX};
-    if (!channel->replay.record_count && !channel->cursor.reader.shared &&
-        !channel->cursor.writer.shared && reader != UINT32_MAX &&
-        context->workers[reader].execution ==
-            LOOM_AIE2P_NATIVE_EXECUTION_CORE &&
-        realization->workers[reader].block_execution_counts &&
-        channel->cursor.reader.maximum_admissions) {
-      nodes[i].reader = channel;
-    }
+    endpoints[i] = (loom_pipeline_progress_endpoint_t){
+        .reads =
+            (channel->replay.record_count || channel->cursor.reader.shared ||
+             channel->cursor.writer.shared)
+                ? 0
+                : channel->cursor.reader.maximum_admissions,
+        .writes = channel->cursor.writer.shared
+                      ? 0
+                      : channel->cursor.writer.maximum_admissions,
+        .observer =
+            !channel->replay.record_count && !channel->cursor.reader.shared &&
+            !channel->cursor.writer.shared && reader != UINT32_MAX &&
+            context->workers[reader].execution ==
+                LOOM_AIE2P_NATIVE_EXECUTION_CORE &&
+            realization->workers[reader].block_execution_counts != NULL};
   }
-  uint32_t edge_count = 0;
-  for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
-    const loom_pipeline_transport_t* transport =
-        &realization->workers[i].transport;
-    for (iree_host_size_t j = 0; j < transport->batch_count; ++j) {
-      const loom_pipeline_transport_batch_t* batch = &transport->batches[j];
-      const loom_pipeline_transport_cohort_t* cohort = batch->records;
-      if (batch->record_count != 1 || cohort->release ||
-          cohort->admissions != cohort->transfers) {
-        continue;
-      }
-      const uint32_t source_index = (uint32_t)
-          loom_pipeline_invocations_channel_index(
-              &realization->invocations, cohort->admission->channel);
-      const loom_aie2p_native_channel_t* physical =
-          &context->channels[source_index];
-      if (physical->replay.record_count || physical->cursor.reader.shared ||
-          physical->cursor.writer.shared ||
-          physical->cursor.reader.maximum_admissions != cohort->admissions) {
-        continue;
-      }
-      for (iree_host_size_t k = 0; k < cohort->destination_count; ++k) {
-        const uint32_t destination_index = (uint32_t)
-            loom_pipeline_invocations_channel_index(
-                &realization->invocations, cohort->destinations[k].channel);
-        if (context->channels[destination_index]
-                .cursor.writer.maximum_admissions != cohort->transfers) {
-          continue;
-        }
-        edges[edge_count] = (loom_aie2p_native_progress_edge_t){
-            .next = nodes[destination_index].upstream, .source = source_index};
-        nodes[destination_index].upstream = edge_count++;
-        ++nodes[source_index].pending;
-      }
-    }
-  }
-  iree_host_size_t head = 0, tail = 0;
+  const loom_pipeline_progress_callback_t callback = {
+      .cost = loom_aie2p_native_progress_distance, .user_data = context};
+  uint32_t* readers;
+  IREE_RETURN_IF_ERROR(loom_pipeline_progress_select(
+      &realization->invocations, realization->workers, endpoints, callback,
+      context->pass->arena, &readers));
   for (iree_host_size_t i = 0; i < count; ++i) {
-    if (!nodes[i].pending) {
-      ready[tail++] = (uint32_t)i;
-    }
-  }
-  // Each canonical edge is consumed once. Cycles retain no equal-ordinal
-  // continuation: feedback needs its own record-distance proof.
-  while (head < tail) {
-    const uint32_t destination = ready[head++];
-    const loom_aie2p_native_channel_t* candidate = nodes[destination].reader;
-    context->channels[destination].progress = candidate;
-    for (uint32_t edge = nodes[destination].upstream; edge != UINT32_MAX;
-         edge = edges[edge].next) {
-      const uint32_t source = edges[edge].source;
-      const loom_aie2p_native_channel_t* channel = &context->channels[source];
-      const loom_aie2p_native_channel_t* selected = nodes[source].reader;
-      if (candidate &&
-          candidate->cursor.reader.maximum_admissions ==
-              channel->cursor.reader.maximum_admissions &&
-          (!selected ||
-           loom_aie2p_native_progress_distance(context, channel, candidate) <
-               loom_aie2p_native_progress_distance(context, channel,
-                                                   selected) ||
-           (loom_aie2p_native_progress_distance(context, channel, candidate) ==
-                loom_aie2p_native_progress_distance(context, channel,
-                                                    selected) &&
-            candidate < selected))) {
-        nodes[source].reader = candidate;
-      }
-      if (!--nodes[source].pending) {
-        ready[tail++] = source;
-      }
-    }
+    context->channels[i].progress =
+        readers[i] != UINT32_MAX ? &context->channels[readers[i]] : NULL;
   }
   return iree_ok_status();
 }
@@ -251,8 +163,9 @@ iree_status_t loom_aie2p_native_route_refills(
         if (!*out_valid) {
           return iree_ok_status();
         }
-        const loom_aie2p_native_worker_t* owner = &context->workers[
-            context->execution.workers[context->core_engines[i]]];
+        const loom_aie2p_native_worker_t* owner =
+            &context->workers[context->execution
+                                  .workers[context->core_engines[i]]];
         queue->packet = owner->control_packets[queue->tile - context->tiles];
       }
     }
