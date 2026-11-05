@@ -75,6 +75,7 @@ loom_test(
     name = "one_column_test",
     srcs = [
         "child_cursors.loom",
+        "child_result_sharing.loom",
         "collective_cursors.loom",
         "concurrent_distribution.loom",
         "finite_ingress.loom",

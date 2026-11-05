@@ -55,7 +55,10 @@ iree_status_t loom_aie2p_native_prepare_sharing(
   memset(context->deliveries, 0, tile_count * sizeof(*context->deliveries));
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     const loom_aie2p_native_worker_t* worker = &context->workers[i];
-    if (worker->distribution_phases) {
+    // A single finite phase starts the initial record at child entry and
+    // retires its queue at exit. Successor grants belong to the exact reader
+    // below. Multiple phases have independent startup/geometry transitions.
+    if (worker->distribution_phases && worker->distribution_phases->next) {
       continue;
     }
     for (loom_aie2p_native_distribution_t* distribution = worker->distributions;
