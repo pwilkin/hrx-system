@@ -1,0 +1,1352 @@
+// RUN: emit pipeline-notifications @stream
+
+// Two payload shapes share one completion only after both copies/readers finish.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 1
+  group 0: producer=@copy consumer=@consume admissions=4 channels=%part0,%part1
+    consumer actions: 0..3 executions=4
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Consumer intervals may use different member orders; each selects its own last release.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 2 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %again_read1, %again_payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %again_value1 = view.load %again_payload1[0] : view<4xi32> -> i32
+  view.store %again_value1, %output[1] : i32, view<2xi32>
+  channel.release %again_read1 : read<tile<4xi32>>
+  %again_read0, %again_payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %again_value0 = view.load %again_payload0[0] : view<1xi32> -> i32
+  view.store %again_value0, %output[0] : i32, view<2xi32>
+  channel.release %again_read0 : read<tile<1xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 1
+  group 0: producer=@copy consumer=@consume admissions=4 channels=%part0,%part1
+    consumer actions: 0..3 executions=2
+    consumer actions: 4..7 executions=2
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Three-member groups span nested children and one cooperative cursor owner.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %source2: channel<tile<8xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %write2, %view2 = channel.reserve %source2 : channel<tile<8xi32>> -> (write<tile<8xi32>>, view<8xi32>)
+  view.store %value, %view2[0] : i32, view<8xi32>
+  channel.publish %write2 : write<tile<8xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %source2: channel<tile<8xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %part2: channel<tile<8xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %write2, %payload2 = channel.reserve %part2 : channel<tile<8xi32>> -> (write<tile<8xi32>>, view<8xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  %read2 = channel.accept %source2 : channel<tile<8xi32>> -> read<tile<8xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  channel.copy %read2 -> %write2 : read<tile<8xi32>>, write<tile<8xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %part2: channel<tile<8xi32>>, %output: view<3xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<3xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<3xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %read2, %payload2 = channel.acquire %part2 : channel<tile<8xi32>> -> (read<tile<8xi32>>, view<8xi32>)
+  %value2 = view.load %payload2[0] : view<8xi32> -> i32
+  view.store %value2, %output[2] : i32, view<3xi32>
+  channel.release %read2 : read<tile<8xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def @producer() run(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %source2: channel<tile<8xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %part2: channel<tile<8xi32>>) {
+  pipeline.strand<cooperative> workers([0], [4], [1]) {
+    func.call @seed(%source0, %source1, %source2) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>)
+  }
+  pipeline.strand<cooperative> workers([0], [4], [1]) {
+    func.call @copy(%source0, %source1, %source2, %part0, %part1, %part2) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>)
+  }
+}
+
+pipeline.def @consumer() run(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %part2: channel<tile<8xi32>>, %output: view<3xi32>) {
+  pipeline.strand<cooperative> workers([0], [4], [1]) {
+    func.call @consume(%part0, %part1, %part2, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>, view<3xi32>)
+  }
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %source_storage2: buffer, %storage0: buffer, %storage1: buffer, %storage2: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %source_slots2 = buffer.view %source_storage2[%origin] : buffer -> view<4x8xi32>
+  %source2 = channel.bind<fifo> %source_slots2, %source_capacity : view<4x8xi32>, index -> channel<tile<8xi32>>
+  %slots2 = buffer.view %storage2[%origin] : buffer -> view<2x8xi32>
+  %part2 = channel.bind<fifo> %slots2, %capacity : view<2x8xi32>, index -> channel<tile<8xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<3xi32>
+  pipeline.compose @producer(%source0, %source1, %source2, %part0, %part1, %part2) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>)
+  pipeline.compose @consumer(%part0, %part1, %part2, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<8xi32>>, view<3xi32>)
+}
+
+// ----
+notification groups: 1
+  group 0: producer=@copy consumer=@consume admissions=4 channels=%part0,%part1,%part2
+    consumer actions: 0..5 executions=4
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// An interposed channel action prevents delaying the first reclamation.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %side: channel<tile<1xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %side_write, %side_view = channel.reserve %side : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  channel.publish %side_write : write<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer, %side_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %side_slots = buffer.view %side_storage[%origin] : buffer -> view<4x1xi32>
+  %side = channel.bind<fifo> %side_slots, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %side, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Balanced aggregate counts do not replace proof of a sole consumer.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 3 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @other(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 1 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+  pipeline.strand workers([3], [1], [1]) {
+    func.call @other(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Independent parallel participants do not share a private FIFO cursor.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 2 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [2], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Unknown epoch counts cannot establish balanced shared generations.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>, %limit: index) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer, %records: index) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output, %records) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>, index)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Different capacities retain independent slot generations.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %smaller_capacity = index.constant 1 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<1x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %smaller_capacity : view<1x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Interleaved reservations/copies do not admit the complete group before publication.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Fanout lifetimes require their own completion proof.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  %first, %last = channel.fanout %read0 : read<tile<1xi32>> -> (read<tile<1xi32>>, read<tile<1xi32>>)
+  channel.release %first : read<tile<1xi32>>
+  channel.release %last : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// A final unread record prevents whole-epoch balanced notification grouping.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 3 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>)
+  }
+}
+
+// ----
+notification groups: 0
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// A conditional side path leaves the reconverged consumer count exact.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>, %prefetch: i1) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  cfg.cond_br %prefetch, ^prefetch, ^continue
+^prefetch:
+  view.store %value0, %output[0] : i32, view<2xi32>
+  cfg.br ^continue
+^continue:
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer, %prefetch: i1) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output, %prefetch) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>, i1)
+  }
+}
+
+// ----
+notification groups: 1
+  group 0: producer=@copy consumer=@consume admissions=4 channels=%part0,%part1
+    consumer actions: 0..3 executions=4
+
+// ====
+// RUN: emit pipeline-notifications @stream
+
+// Conditional admission of a whole group leaves its visit count unproven.
+
+func.def @seed(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  %value = scalar.constant 7 : i32
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %view0 = channel.reserve %source0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  view.store %value, %view0[0] : i32, view<1xi32>
+  channel.publish %write0 : write<tile<1xi32>>
+  %write1, %view1 = channel.reserve %source1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  view.store %value, %view1[0] : i32, view<4xi32>
+  channel.publish %write1 : write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @copy(%source0: channel<tile<1xi32>>, %source1: channel<tile<4xi32>>, %part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  %write0, %payload0 = channel.reserve %part0 : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
+  %write1, %payload1 = channel.reserve %part1 : channel<tile<4xi32>> -> (write<tile<4xi32>>, view<4xi32>)
+  %read0 = channel.accept %source0 : channel<tile<1xi32>> -> read<tile<1xi32>>
+  %read1 = channel.accept %source1 : channel<tile<4xi32>> -> read<tile<4xi32>>
+  channel.copy %read0 -> %write0 : read<tile<1xi32>>, write<tile<1xi32>>
+  channel.copy %read1 -> %write1 : read<tile<4xi32>>, write<tile<4xi32>>
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+func.def @consume(%part0: channel<tile<1xi32>>, %part1: channel<tile<4xi32>>, %output: view<2xi32>, %prefetch: i1) {
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %limit = index.constant 4 : index
+  cfg.br ^header(%begin: index)
+^header(%iteration: index):
+  %more = index.cmp ult, %iteration, %limit : index
+  cfg.cond_br %more, ^body, ^done
+^body:
+  cfg.cond_br %prefetch, ^consume, ^continue
+^consume:
+  %read0, %payload0 = channel.acquire %part0 : channel<tile<1xi32>> -> (read<tile<1xi32>>, view<1xi32>)
+  %value0 = view.load %payload0[0] : view<1xi32> -> i32
+  view.store %value0, %output[0] : i32, view<2xi32>
+  channel.release %read0 : read<tile<1xi32>>
+  %read1, %payload1 = channel.acquire %part1 : channel<tile<4xi32>> -> (read<tile<4xi32>>, view<4xi32>)
+  %value1 = view.load %payload1[0] : view<4xi32> -> i32
+  view.store %value1, %output[1] : i32, view<2xi32>
+  channel.release %read1 : read<tile<4xi32>>
+  cfg.br ^continue
+^continue:
+  %next = index.add %iteration, %step : index
+  cfg.br ^header(%next: index)
+^done:
+  func.return
+}
+
+pipeline.def public @stream() run(%source_storage0: buffer, %source_storage1: buffer, %storage0: buffer, %storage1: buffer, %output_storage: buffer, %prefetch: i1) {
+  %origin = index.constant 0 : offset
+  %source_capacity = index.constant 4 : index
+  %capacity = index.constant 2 : index
+  %source_slots0 = buffer.view %source_storage0[%origin] : buffer -> view<4x1xi32>
+  %source0 = channel.bind<fifo> %source_slots0, %source_capacity : view<4x1xi32>, index -> channel<tile<1xi32>>
+  %slots0 = buffer.view %storage0[%origin] : buffer -> view<2x1xi32>
+  %part0 = channel.bind<fifo> %slots0, %capacity : view<2x1xi32>, index -> channel<tile<1xi32>>
+  %source_slots1 = buffer.view %source_storage1[%origin] : buffer -> view<4x4xi32>
+  %source1 = channel.bind<fifo> %source_slots1, %source_capacity : view<4x4xi32>, index -> channel<tile<4xi32>>
+  %slots1 = buffer.view %storage1[%origin] : buffer -> view<2x4xi32>
+  %part1 = channel.bind<fifo> %slots1, %capacity : view<2x4xi32>, index -> channel<tile<4xi32>>
+  %output = buffer.view %output_storage[%origin] : buffer -> view<2xi32>
+  pipeline.strand workers([0], [1], [1]) {
+    func.call @seed(%source0, %source1) : (channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([1], [1], [1]) {
+    func.call @copy(%source0, %source1, %part0, %part1) : (channel<tile<1xi32>>, channel<tile<4xi32>>, channel<tile<1xi32>>, channel<tile<4xi32>>)
+  }
+  pipeline.strand workers([2], [1], [1]) {
+    func.call @consume(%part0, %part1, %output, %prefetch) : (channel<tile<1xi32>>, channel<tile<4xi32>>, view<2xi32>, i1)
+  }
+}
+
+// ----
+notification groups: 0

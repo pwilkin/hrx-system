@@ -29,6 +29,7 @@ loom_cc_library(
         "//loom/src/loom/analysis:storage_interference",
         "//loom/src/loom/analysis/pipeline:arguments",
         "//loom/src/loom/analysis/pipeline:invocations",
+        "//loom/src/loom/analysis/pipeline:notifications",
         "//loom/src/loom/analysis/pipeline:resources",
         "//loom/src/loom/analysis/pipeline:schedule",
         "//loom/src/loom/analysis/pipeline:workers",

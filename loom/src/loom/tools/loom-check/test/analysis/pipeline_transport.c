@@ -7,6 +7,7 @@
 #include <inttypes.h>
 
 #include "loom/analysis/pipeline/invocations.h"
+#include "loom/analysis/pipeline/notifications.h"
 #include "loom/analysis/pipeline/resources.h"
 #include "loom/analysis/pipeline/schedule.h"
 #include "loom/analysis/pipeline/workers.h"
@@ -23,7 +24,8 @@ static bool loom_check_test_pipeline_transport_matches(
     iree_string_view_t target_name) {
   (void)provider;
   return iree_string_view_equal(target_name, IREE_SV("pipeline-transport")) ||
-         iree_string_view_equal(target_name, IREE_SV("pipeline-invocations"));
+         iree_string_view_equal(target_name, IREE_SV("pipeline-invocations")) ||
+         iree_string_view_equal(target_name, IREE_SV("pipeline-notifications"));
 }
 
 static iree_status_t loom_check_test_pipeline_schedule_print(
@@ -94,6 +96,55 @@ static iree_status_t loom_check_test_pipeline_schedule_print(
         IREE_RETURN_IF_ERROR(loom_check_test_pipeline_schedule_print(
             module, step->nested, indentation + 6, output));
       }
+    }
+  }
+  return iree_ok_status();
+}
+
+static iree_string_view_t loom_check_test_pipeline_worker_name(
+    const loom_module_t* module, const loom_pipeline_worker_t* worker) {
+  const loom_symbol_ref_t callee = loom_func_like_callee(worker->function);
+  return loom_string_table_get(
+      &module->strings, module->symbols.entries[callee.symbol_id].name_id);
+}
+
+static iree_status_t loom_check_test_pipeline_notifications_print(
+    loom_module_t* module, const loom_pipeline_invocations_t* invocations,
+    loom_pipeline_worker_t* workers, iree_arena_allocator_t* arena,
+    iree_string_builder_t* output) {
+  loom_pipeline_notification_plan_t plan;
+  IREE_RETURN_IF_ERROR(
+      loom_pipeline_notifications_analyze(invocations, workers, arena, &plan));
+  IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+      output, "notification groups: %" PRIhsz "\n", plan.group_count));
+  for (iree_host_size_t i = 0; i < plan.group_count; ++i) {
+    const loom_pipeline_notification_group_t* group = &plan.groups[i];
+    const iree_string_view_t producer =
+        loom_check_test_pipeline_worker_name(module, group->producer);
+    const iree_string_view_t consumer =
+        loom_check_test_pipeline_worker_name(module, group->consumer);
+    IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+        output,
+        "  group %" PRIhsz ": producer=@%.*s consumer=@%.*s admissions=%" PRIu64
+        " channels=",
+        i, (int)producer.size, producer.data, (int)consumer.size, consumer.data,
+        group->admissions));
+    for (iree_host_size_t j = 0; j < group->channel_count; ++j) {
+      const iree_string_view_t name = loom_module_value_name(
+          module,
+          invocations->channels[group->channels[j]].source->identity.value_id);
+      IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+          output, "%s%%%.*s", j ? "," : "", (int)name.size, name.data));
+    }
+    IREE_RETURN_IF_ERROR(iree_string_builder_append_cstring(output, "\n"));
+    for (const loom_pipeline_notification_interval_t* interval =
+             group->intervals;
+         interval; interval = interval->next) {
+      IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+          output,
+          "    consumer actions: %" PRIhsz "..%" PRIhsz " executions=%" PRIu64
+          "\n",
+          interval->first_action, interval->last_action, interval->executions));
     }
   }
   return iree_ok_status();
@@ -445,7 +496,9 @@ static iree_status_t loom_check_test_pipeline_transport_execute(
     return iree_ok_status();
   }
   if (iree_string_view_equal(request->target_name,
-                             IREE_SV("pipeline-invocations"))) {
+                             IREE_SV("pipeline-invocations")) ||
+      iree_string_view_equal(request->target_name,
+                             IREE_SV("pipeline-notifications"))) {
     loom_pipeline_invocations_t invocations = {0};
     IREE_RETURN_IF_ERROR(loom_pipeline_invocations_build(
         module, function, &facts, &resources, NULL, 0,
@@ -459,6 +512,12 @@ static iree_status_t loom_check_test_pipeline_transport_execute(
         module, &invocations, NULL, emitter, arena, &workers, &valid));
     if (!valid) {
       return iree_ok_status();
+    }
+    if (iree_string_view_equal(request->target_name,
+                               IREE_SV("pipeline-notifications"))) {
+      return loom_check_test_pipeline_notifications_print(
+          module, &invocations, workers, arena,
+          &request->result->actual_output);
     }
     loom_check_test_pipeline_invocations_t state = {
         .module = module,
@@ -552,7 +611,8 @@ static iree_status_t loom_check_test_pipeline_transport_append_names(
     iree_string_builder_t* builder) {
   (void)provider;
   return iree_string_builder_append_cstring(
-      builder, "pipeline-transport, pipeline-invocations");
+      builder,
+      "pipeline-transport, pipeline-invocations, pipeline-notifications");
 }
 
 const loom_check_test_native_emit_provider_t

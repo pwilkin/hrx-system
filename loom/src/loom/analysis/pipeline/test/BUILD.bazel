@@ -15,6 +15,7 @@ loom_check_test_suite(
         "invocation_storage.loom-test",
         "invocation_workers.loom-test",
         "invocations.loom-test",
+        "notifications.loom-test",
         "schedule.loom-test",
         "transport.loom-test",
         "transport_call_spaces.loom-test",

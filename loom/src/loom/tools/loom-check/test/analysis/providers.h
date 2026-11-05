@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-// Prints shared transport proofs for channels backed by caller buffers.
+// Prints shared transport/notification proofs for caller-backed channels.
 // These proofs describe record flow, not physical storage or device admission.
 extern const loom_check_test_native_emit_provider_t
     loom_check_test_pipeline_transport_provider;

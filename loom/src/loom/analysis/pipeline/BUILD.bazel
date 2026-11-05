@@ -181,6 +181,7 @@ loom_cc_library(
         "//loom/src/loom/ops/kernel:op_defs",
         "//loom/src/loom/ops/pipeline:op_defs",
         "//loom/src/loom/util:adaptive_sort",
+        "//loom/src/loom/util:cfg_execution",
         "//loom/src/loom/util:cfg_graph",
         "//loom/src/loom/util:fact_table",
         "//runtime/src/iree/base",
@@ -207,6 +208,23 @@ loom_cc_library(
     deps = [
         ":invocations",
         ":workers",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_library(
+    name = "notifications",
+    srcs = ["notifications.c"],
+    hdrs = ["notifications.h"],
+    deps = [
+        ":invocations",
+        ":workers",
+        "//loom/src/loom/analysis:channel_plan",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops/channel:op_defs",
+        "//loom/src/loom/ops/pipeline:op_defs",
+        "//loom/src/loom/util:cfg_execution",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
     ],
