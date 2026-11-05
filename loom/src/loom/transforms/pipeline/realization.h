@@ -12,6 +12,7 @@
 #include "loom/pass/types.h"
 #include "loom/rewrite/rewriter.h"
 #include "loom/target/function_version.h"
+#include "loom/transforms/pipeline/memory_channel.h"
 #include "loom/transforms/pipeline/worker_materialization.h"
 
 #ifdef __cplusplus
@@ -60,6 +61,17 @@ typedef struct loom_pipeline_realization_t {
   loom_pipeline_resources_t resources;
   // Complete static inventory, including bound children and retained control.
   loom_pipeline_invocations_t invocations;
+  // Parent-selected external memory protocols, indexed in this projected
+  // inventory's channel order. NULL rows retain target-local channel selection;
+  // a NULL table means no shared memory bindings were requested.
+  const loom_memory_channel_binding_t* const* memory_bindings;
+  // Canonical roots in the explicitly selected physical buffer argument order.
+  // INVALID marks generated storage, such as a notification allocation. NULL
+  // preserves the source buffer argument contract. This is selection state;
+  // emission materializes ordinary buffer arguments or configuration bindings.
+  const loom_value_id_t* buffer_roots;
+  // Number of physical buffer arguments when buffer_roots is supplied.
+  iree_host_size_t buffer_count;
   // Bound worker instances, in complete invocations.workers order.
   loom_pipeline_worker_t* workers;
   // Independent consuming bodies, created only after selection succeeds.
@@ -128,6 +140,16 @@ typedef struct loom_pipeline_realization_request_t {
   loom_symbol_ref_t symbol;
   // Target mechanics and their independently owned selection state.
   loom_pipeline_realization_callback_t callback;
+  // Entry-specific arguments for shared parent-owned memory protocols. These
+  // canonical identities can be projected into several different children;
+  // every supplied identity belongs to this entry's projected inventory.
+  const loom_memory_channel_binding_t* memory_bindings;
+  // Number of shared memory endpoints consumed by this entry.
+  iree_host_size_t memory_binding_count;
+  // Explicit physical buffer argument roots, or NULL for the source contract.
+  const loom_value_id_t* buffer_roots;
+  // Number of entries in buffer_roots.
+  iree_host_size_t buffer_count;
 } loom_pipeline_realization_request_t;
 
 // Realizes a complete admitted set with one module/version observation and one

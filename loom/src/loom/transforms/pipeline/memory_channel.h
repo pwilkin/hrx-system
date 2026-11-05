@@ -7,6 +7,7 @@
 #ifndef LOOM_TRANSFORMS_PIPELINE_MEMORY_CHANNEL_H_
 #define LOOM_TRANSFORMS_PIPELINE_MEMORY_CHANNEL_H_
 
+#include "loom/analysis/pipeline/resources.h"
 #include "loom/transforms/pipeline/channel_materialization.h"
 
 #ifdef __cplusplus
@@ -30,6 +31,48 @@ typedef struct loom_memory_channel_layout_t {
   // Ordinary borrowed view produced by reserve, acquire, and wait.
   loom_type_t view_type;
 } loom_memory_channel_layout_t;
+
+// One jointly selected memory protocol. Both peers borrow this same row while
+// realizing their independently published executable entries. Addresses select
+// payload/control storage; the source object identifies the channel.
+typedef struct loom_memory_channel_protocol_t {
+  // Canonical construction-owned channel, valid through consuming realization.
+  const loom_pipeline_resource_channel_t* source;
+  // Specialized record geometry shared by every endpoint.
+  loom_memory_channel_layout_t payload;
+  // Required accessible payload extent from the backing buffer's origin.
+  uint64_t payload_byte_length;
+  // First producer generation in the separate notification backing.
+  uint64_t ready_byte_offset;
+  // First consumer generation in that same notification backing.
+  uint64_t free_byte_offset;
+  // Byte displacement between slot generations within either plane.
+  uint64_t notification_byte_stride;
+  // Width of one generation value, jointly supported by the selected peers.
+  uint32_t generation_byte_length;
+} loom_memory_channel_protocol_t;
+
+// Ordinary buffer arguments selected for one peer's emitted entry. Argument
+// numbers may differ between peers; geometry and generation protocol do not.
+typedef struct loom_memory_channel_binding_t {
+  // Parent-owned physical protocol, independent of this entry's argument order.
+  const loom_memory_channel_protocol_t* protocol;
+  // Payload buffer ordinal in this entry's published physical contract.
+  uint32_t payload_binding;
+  // Separate control buffer ordinal; payload need not support atomics.
+  uint32_t notification_binding;
+} loom_memory_channel_binding_t;
+
+// Projects exact byte-addressable source geometry into the shared memory
+// protocol. The physical owner supplies record view type and notification
+// policy, after selecting a counter width and legal disjoint plane placement.
+// No storage is allocated or copied here. False means authored payload geometry
+// still needs specialization or exceeds the representable byte-address domain.
+bool loom_memory_channel_protocol_initialize(
+    const loom_pipeline_resource_channel_t* source, loom_type_t view_type,
+    uint64_t ready_byte_offset, uint64_t free_byte_offset,
+    uint64_t notification_byte_stride, uint32_t generation_byte_length,
+    loom_memory_channel_protocol_t* out_protocol);
 
 typedef struct loom_memory_channel_endpoint_t {
   // Jointly selected layout, retained by the enclosing physical plan.

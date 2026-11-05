@@ -240,6 +240,23 @@ loom_cc_test(
 )
 
 loom_cc_library(
+    name = "continuations",
+    srcs = ["continuations.c"],
+    hdrs = ["continuations.h"],
+    deps = [
+        ":invocations",
+        ":progress",
+        ":workers",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/util:adaptive_sort",
+        "//loom/src/loom/util:cfg_loop_nest",
+        "//loom/src/loom/util:fact_table",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_library(
     name = "notifications",
     srcs = ["notifications.c"],
     hdrs = ["notifications.h"],

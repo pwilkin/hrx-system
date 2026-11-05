@@ -167,8 +167,26 @@ class MemoryChannelTest : public ::testing::Test {
                    loom_memory_channel_callback_t callbacks) {
     Verify();
     const loom_channel_identity_t identity = {entry_->arg_ids[0]};
-    const loom_memory_channel_layout_t layout = {3, 96, 32, view_type_};
-    const loom_memory_channel_endpoint_t endpoint = {&layout,
+    // Three padded records share one selected protocol. Materialization must
+    // preserve the physical stride instead of packing the logical payload.
+    const loom_pipeline_channel_geometry_t geometry = {
+        .slot_bit_stride = 32 * 8,
+        .record_element_count = 6,
+        .record_bit_span = 12 * 8,
+        .element_bit_count = 16,
+        .record_dense = true,
+    };
+    const loom_pipeline_resource_channel_t source = {
+        .identity = identity,
+        .storage = {.base_byte_offset = loom_value_facts_make(96, 96, 32)},
+        .capacity = 3,
+        .geometry = &geometry,
+    };
+    loom_memory_channel_protocol_t protocol;
+    ASSERT_TRUE(loom_memory_channel_protocol_initialize(&source, view_type_, 0,
+                                                        192, 64, 4, &protocol));
+    EXPECT_EQ(protocol.payload_byte_length, 172u);
+    const loom_memory_channel_endpoint_t endpoint = {&protocol.payload,
                                                      entry_->arg_ids[1], 0, 1};
     loom_local_value_domain_t domain = {};
     IREE_ASSERT_OK(loom_local_value_domain_acquire_for_region(

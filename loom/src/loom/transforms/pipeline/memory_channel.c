@@ -11,6 +11,40 @@
 #include "loom/ops/index/ops.h"
 #include "loom/ops/scalar/ops.h"
 
+bool loom_memory_channel_protocol_initialize(
+    const loom_pipeline_resource_channel_t* source, loom_type_t view_type,
+    uint64_t ready_byte_offset, uint64_t free_byte_offset,
+    uint64_t notification_byte_stride, uint32_t generation_byte_length,
+    loom_memory_channel_protocol_t* out_protocol) {
+  const loom_pipeline_channel_geometry_t* geometry = source->geometry;
+  int64_t offset;
+  uint64_t extent;
+  if (!geometry || geometry->slot_bit_stride % 8 ||
+      geometry->record_bit_span % 8 ||
+      !loom_value_facts_as_exact_i64(source->storage.base_byte_offset,
+                                     &offset) ||
+      offset < 0 ||
+      !iree_checked_mul_u64(source->capacity - 1, geometry->slot_bit_stride / 8,
+                            &extent) ||
+      !iree_checked_add_u64(extent, geometry->record_bit_span / 8, &extent) ||
+      !iree_checked_add_u64(extent, (uint64_t)offset, &extent)) {
+    return false;
+  }
+  *out_protocol = (loom_memory_channel_protocol_t){
+      .source = source,
+      .payload = {.capacity = source->capacity,
+                  .byte_offset = (uint64_t)offset,
+                  .byte_stride = geometry->slot_bit_stride / 8,
+                  .view_type = view_type},
+      .payload_byte_length = extent,
+      .ready_byte_offset = ready_byte_offset,
+      .free_byte_offset = free_byte_offset,
+      .notification_byte_stride = notification_byte_stride,
+      .generation_byte_length = generation_byte_length,
+  };
+  return true;
+}
+
 static iree_status_t loom_memory_channel_constant(loom_builder_t* builder,
                                                   uint64_t value,
                                                   loom_type_t type,

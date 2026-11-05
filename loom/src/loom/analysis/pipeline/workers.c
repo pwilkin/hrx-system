@@ -695,6 +695,7 @@ static iree_status_t loom_pipeline_worker_transport(
     loom_cfg_loop_nest_order_blocks(&structure->loops, loop_order);
     order = loop_order;
   }
+  worker->block_order = order;
   iree_host_size_t count = 0, stream_count = 0;
   for (iree_host_size_t b = 0; b < graph->reverse_postorder.count; ++b) {
     const uint16_t block_index = order[b];

@@ -74,6 +74,7 @@ loom_cc_library(
     srcs = ["realization.c"],
     hdrs = ["realization.h"],
     deps = [
+        ":memory_channel",
         ":worker_materialization",
         "//loom/src/loom/analysis/pipeline:invocations",
         "//loom/src/loom/analysis/pipeline:resources",
@@ -167,12 +168,14 @@ loom_cc_library(
     deps = [
         ":channel_materialization",
         "//loom/src/loom/analysis:channel_plan",
+        "//loom/src/loom/analysis/pipeline:resources",
         "//loom/src/loom/ir",
         "//loom/src/loom/ops/buffer",
         "//loom/src/loom/ops/channel",
         "//loom/src/loom/ops/index",
         "//loom/src/loom/ops/scalar",
         "//loom/src/loom/rewrite:rewriter",
+        "//loom/src/loom/util:fact_table",
         "//runtime/src/iree/base",
     ],
 )

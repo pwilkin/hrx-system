@@ -546,6 +546,8 @@ iree_status_t loom_pipeline_realize_occurrences(
                   .version = entry_version},
         .facts = occurrence->facts,
         .resources = *occurrence->resources,
+        .buffer_roots = request->buffer_roots,
+        .buffer_count = request->buffer_count,
         .workers = occurrence->first_worker
                        ? request->workers + occurrence->first_worker
                        : request->workers,
@@ -557,6 +559,24 @@ iree_status_t loom_pipeline_realize_occurrences(
     IREE_RETURN_IF_ERROR(loom_pipeline_invocations_project(
         request->invocations, occurrence, pass->arena,
         &realization->invocations));
+    if (request->memory_binding_count) {
+      const loom_memory_channel_binding_t** bindings;
+      IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+          pass->arena, realization->invocations.channel_count,
+          sizeof(*bindings), (void**)&bindings));
+      memset(bindings, 0,
+             realization->invocations.channel_count * sizeof(*bindings));
+      for (iree_host_size_t j = 0; j < request->memory_binding_count; ++j) {
+        const loom_memory_channel_binding_t* binding =
+            &request->memory_bindings[j];
+        const iree_host_size_t channel =
+            loom_pipeline_invocations_channel_index(
+                &realization->invocations,
+                &binding->protocol->source->identity);
+        bindings[channel] = binding;
+      }
+      realization->memory_bindings = bindings;
+    }
     IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
         pass->arena, realization->invocations.worker_count,
         sizeof(*realization->worker_versions),
