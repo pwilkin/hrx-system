@@ -57,6 +57,8 @@ typedef struct loom_aie2p_native_input_t {
   loom_pipeline_continuation_t continuation;
   // Native receiver and source descriptor selection per phase.
   loom_aie2p_native_input_phase_t* phases;
+  // All phase receivers share one ordered physical queue and payload route.
+  bool shared_receiver;
   // Physical shim serving payload, readiness queries, and credit return.
   loom_aie2p_native_tile_t* shim;
   // One memory-to-stream engine shared by queries and admitted input phases.

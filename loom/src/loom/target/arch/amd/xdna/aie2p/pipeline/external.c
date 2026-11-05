@@ -7,6 +7,7 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 
 #include "loom/analysis/storage_geometry.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 
 iree_status_t loom_aie2p_native_select_input(
     loom_aie2p_native_context_t* context,
@@ -114,6 +115,75 @@ static bool loom_aie2p_native_input_route(
   return true;
 }
 
+// The input proof supplies prefixes followed by a bulk phase in each source
+// lifetime. A bulk arrival proves those prefixes have left the shared queue.
+// Counting the active task, the next prefixes and window require P+2 slots.
+static uint32_t loom_aie2p_native_input_receive_window(
+    const loom_aie2p_native_context_t* context,
+    const loom_aie2p_native_input_t* input) {
+  const iree_host_size_t tail = input->source->phase_count - 1;
+  const loom_aie2p_native_input_phase_t* bulk = &input->phases[tail];
+  const loom_aie2p_native_channel_t* channel = bulk->destination;
+  if (!tail) {
+    return 0;
+  }
+  for (iree_host_size_t i = 0; i < tail; ++i) {
+    if (input->phases[i].destination->pool_index != channel->pool_index) {
+      return 0;
+    }
+  }
+  return loom_aie2p_native_phased_window(context, channel, tail,
+                                         (uint32_t)input->source->admissions,
+                                         (uint32_t)bulk->source->transfers);
+}
+
+static iree_status_t loom_aie2p_native_input_receivers(
+    loom_aie2p_native_context_t* context, loom_aie2p_native_input_t* input,
+    iree_string_view_t* reason, bool* out_valid) {
+  const uint32_t window =
+      loom_aie2p_native_input_receive_window(context, input);
+  input->shared_receiver = window != 0;
+  const iree_host_size_t tail = input->source->phase_count - 1;
+  for (iree_host_size_t i = 0; i <= tail; ++i) {
+    loom_aie2p_native_input_phase_t* phase = &input->phases[i];
+    const uint32_t repetitions =
+        window
+            ? (i == tail ? window : 1)
+            : (uint32_t)(input->source->admissions * phase->source->transfers);
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
+        context, phase->destination, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+        repetitions, 1, window && i ? &input->phases[0].receiver : NULL,
+        &phase->receiver, reason, out_valid));
+    if (!*out_valid) {
+      return iree_ok_status();
+    }
+    phase->receiver.wait_for_idle = true;
+  }
+  const loom_aie2p_native_input_phase_t* bulk = &input->phases[tail];
+  const uint32_t repetitions =
+      (uint32_t)(input->source->admissions * bulk->source->transfers);
+  if (window && repetitions > window) {
+    loom_aie2p_native_refill_queue_t* queue;
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_add_refill(
+        context, context->pool_tiles[bulk->destination->pool_index],
+        bulk->receiver.engine, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+        bulk->destination, repetitions, window, &bulk->receiver.sequence,
+        &queue));
+    if (input->source->admissions > 1) {
+      uint32_t* prefixes;
+      IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+          context->pass->arena, tail, sizeof(*prefixes), (void**)&prefixes));
+      for (iree_host_size_t i = 0; i < tail; ++i) {
+        prefixes[i] = input->phases[i].receiver.sequence.tasks[0];
+      }
+      queue->prefixes = prefixes;
+      queue->prefix_count = (uint32_t)tail;
+      queue->cycle_windows = (uint32_t)bulk->source->transfers / window;
+    }
+  }
+  return iree_ok_status();
+}
+
 iree_status_t loom_aie2p_native_route_input(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
@@ -172,6 +242,13 @@ iree_status_t loom_aie2p_native_route_input(
                    origin);
   }
   const uint32_t canonical = *next_source;
+  iree_string_view_t receiver_reason;
+  bool receivers_valid = false;
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_input_receivers(
+      context, input, &receiver_reason, &receivers_valid));
+  if (!receivers_valid) {
+    return loom_aie2p_native_reject(context, declaration, receiver_reason);
+  }
   for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
     loom_aie2p_native_input_phase_t* phase = &input->phases[i];
     const loom_pipeline_transport_input_phase_t* plan = phase->source;
@@ -181,16 +258,6 @@ iree_status_t loom_aie2p_native_route_input(
           context, plan->transfer->request.op,
           IREE_SV("aligned phased input DMA sources"));
     }
-    iree_string_view_t reason;
-    bool valid = false;
-    IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
-        context, phase->destination, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
-        (uint32_t)(input->source->admissions * plan->transfers), 1, NULL,
-        &phase->receiver, &reason, &valid));
-    if (!valid) {
-      return loom_aie2p_native_reject(context, declaration, reason);
-    }
-    phase->receiver.wait_for_idle = true;
     loom_storage_geometry_t geometry;
     if (!loom_storage_geometry_query(
             &source->facts.context, context->code.module,
@@ -210,7 +277,8 @@ iree_status_t loom_aie2p_native_route_input(
         loom_xdna_register_field_encode(
             LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD2_ENABLE_PACKET, 1) |
         loom_xdna_register_field_encode(
-            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD2_PACKET_ID, i);
+            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD2_PACKET_ID,
+            input->shared_receiver ? 0 : i);
     phase->descriptor = descriptor_base + *used;
     const bool prefix = i + 1 < input->source->phase_count;
     const uint32_t count = prefix ? 1 : (uint32_t)capacity;
@@ -259,7 +327,8 @@ iree_status_t loom_aie2p_native_route_input(
           offset + slot * slot_stride,
           span + (prefix ? (capacity - 1) * slot_stride : 0), phase->words));
     }
-    if (!loom_aie2p_native_input_route(
+    if ((!input->shared_receiver || !i) &&
+        !loom_aie2p_native_input_route(
             context, next_source, canonical, shim->coordinate,
             LOOM_XDNA_STREAM_PORT_DMA, input->input_engine,
             phase->receiver.tile->coordinate, LOOM_XDNA_STREAM_PORT_DMA,
