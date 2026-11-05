@@ -68,7 +68,7 @@ iree_status_t loom_aie2p_native_select_progress(
   uint32_t* readers;
   IREE_RETURN_IF_ERROR(loom_pipeline_progress_select(
       &realization->invocations, realization->workers, endpoints, callback,
-      context->pass->arena, &readers));
+      NULL, 0, context->pass->arena, &readers, NULL));
   for (iree_host_size_t i = 0; i < count; ++i) {
     context->channels[i].progress =
         readers[i] != UINT32_MAX ? &context->channels[readers[i]] : NULL;

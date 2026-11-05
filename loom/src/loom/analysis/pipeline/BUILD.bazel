@@ -222,8 +222,20 @@ loom_cc_library(
     deps = [
         ":invocations",
         ":workers",
+        "//loom/src/loom/util:adaptive_sort",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_test(
+    name = "progress_test",
+    srcs = ["progress_test.cc"],
+    deps = [
+        ":progress",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
     ],
 )
 
