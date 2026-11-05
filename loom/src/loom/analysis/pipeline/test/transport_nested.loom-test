@@ -53,7 +53,8 @@ pipeline.def<kernel> public @stream() run(%external_arg: buffer, %local_arg: buf
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=0 sources_stable=yes
   sequence: sites=6 repetitions=0
-  input: source=record admissions=3 transfers=4 period=4 source_offset=0 source_stride=16 destination_offset=0
+  input: source=record admissions=3 phases=1
+    phase 0: scope=0 transfers=4 period=4 source_offset=0 source_stride=16 destination_offset=0
     loop 0: iterations=4 parent=1
     loop 1: iterations=3 parent=none
     channel.acquire: executions=3 scope=1
@@ -108,7 +109,8 @@ pipeline.def<kernel> public @stream() run(%external_arg: buffer, %local_arg: buf
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=0 sources_stable=yes
   sequence: sites=6 repetitions=0
-  input: source=record admissions=1 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
+  input: source=record admissions=1 phases=1
+    phase 0: scope=0 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
     loop 0: iterations=4 parent=none
     channel.acquire: executions=1 scope=none
     channel.reserve: executions=4 scope=0
@@ -175,6 +177,9 @@ pipeline.def<kernel> public @stream() run(%external_arg: buffer, %local_arg: buf
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=2
   repetitions=0 sources_stable=yes
   sequence: sites=10 repetitions=0
+  input: source=record admissions=1 phases=2
+    phase 0: scope=1 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
+    phase 1: scope=0 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
     loop 0: iterations=4 parent=none
     loop 1: iterations=4 parent=none
     channel.acquire: executions=1 scope=none

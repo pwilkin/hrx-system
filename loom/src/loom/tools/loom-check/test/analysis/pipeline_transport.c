@@ -179,12 +179,27 @@ static iree_status_t loom_check_test_pipeline_transport_print(
       const loom_pipeline_transport_input_t* input = transport->input;
       IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
           output,
-          "  input: source=%s admissions=%" PRIu64 " transfers=%" PRIu64
-          " period=%" PRIu64 " source_offset=%" PRId64 " source_stride=%" PRId64
-          " destination_offset=%" PRId64 "\n",
+          "  input: source=%s admissions=%" PRIu64 " phases=%" PRIhsz "\n",
           input->acquisition ? "record" : "storage", input->admissions,
-          input->transfers, input->period, input->source_byte_offset,
-          input->source_byte_stride, input->destination_byte_offset));
+          input->phase_count));
+      for (iree_host_size_t i = 0; i < input->phase_count; ++i) {
+        const loom_pipeline_transport_input_phase_t* phase = &input->phases[i];
+        IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+            output, "    phase %" PRIhsz ": scope=", i));
+        if (phase->scope == LOOM_CFG_LOOP_NEST_NONE) {
+          IREE_RETURN_IF_ERROR(
+              iree_string_builder_append_cstring(output, "none"));
+        } else {
+          IREE_RETURN_IF_ERROR(
+              iree_string_builder_append_format(output, "%u", phase->scope));
+        }
+        IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+            output,
+            " transfers=%" PRIu64 " period=%" PRIu64 " source_offset=%" PRId64
+            " source_stride=%" PRId64 " destination_offset=%" PRId64 "\n",
+            phase->transfers, phase->period, phase->source_byte_offset,
+            phase->source_byte_stride, phase->destination_byte_offset));
+      }
     }
     const loom_value_fact_cfg_region_t* structure =
         loom_value_fact_table_lookup_cfg_region(

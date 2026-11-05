@@ -128,23 +128,17 @@ typedef struct loom_pipeline_transport_batch_t {
   uint64_t replays;
 } loom_pipeline_transport_batch_t;
 
-// One source lifetime feeding a sequence of independently published records.
-// The retained geometry describes visits, not an expanded list of transfers.
-// Source stability and physical transport support are separate selection gates.
-typedef struct loom_pipeline_transport_input_t {
-  // Acquired source record, or NULL for a view with enclosing storage lifetime.
-  const loom_channel_plan_action_t* acquisition;
-  // Final source release after every copy in that acquisition, or NULL.
-  const loom_channel_plan_action_t* release;
+// One independently completed transfer pattern within a source lifetime.
+// Structural order and loop scopes retain repeated phase order without
+// expanding dynamic visits into a transfer list.
+typedef struct loom_pipeline_transport_input_phase_t {
   // Destination reservation made once for each transfer.
   const loom_channel_plan_action_t* reservation;
   // Destination publication after the corresponding transfer completes.
   const loom_channel_plan_action_t* publication;
   // Canonical movement site executed throughout this sequence.
   const loom_kernel_async_transfer_t* transfer;
-  // Number of source acquisitions; one for an enclosing storage lifetime.
-  uint64_t admissions;
-  // Number of completed transfers within each source lifetime.
+  // Number of this phase's completed transfers within each source lifetime.
   uint64_t transfers;
   // Transfer count before the source address repeats, dividing transfers.
   uint64_t period;
@@ -154,6 +148,24 @@ typedef struct loom_pipeline_transport_input_t {
   int64_t source_byte_stride;
   // Constant byte displacement within every reserved destination record.
   int64_t destination_byte_offset;
+  // Innermost natural loop containing this phase, or LOOP_NEST_NONE.
+  uint16_t scope;
+} loom_pipeline_transport_input_phase_t;
+
+// One source lifetime feeding independently published records in ordered
+// phases. Source stability and physical transport support are separate gates.
+typedef struct loom_pipeline_transport_input_t {
+  // Acquired source record, or NULL for views with enclosing storage lifetime.
+  const loom_channel_plan_action_t* acquisition;
+  // Final source release after every phase in that acquisition, or NULL.
+  const loom_channel_plan_action_t* release;
+  // Number of source acquisitions; one for enclosing storage lifetimes.
+  uint64_t admissions;
+  // Complete transfer patterns in structural execution order. Loop scopes
+  // distinguish repeated interleaving from consecutive phase loops.
+  const loom_pipeline_transport_input_phase_t* phases;
+  // Number of structural phases, independent of dynamic visits.
+  iree_host_size_t phase_count;
 } loom_pipeline_transport_input_t;
 
 typedef struct loom_pipeline_transport_t {

@@ -539,17 +539,19 @@ static bool loom_aie2p_native_can_repeat(
     const loom_pipeline_worker_t* source, loom_aie2p_native_worker_t* worker) {
   const loom_pipeline_transport_t* transport = &source->transport;
   const loom_pipeline_transport_input_t* input = transport->input;
-  if (!input || input->acquisition || !transport->induction ||
-      !transport->sources_stable || transport->repetitions < 2) {
+  if (!input || input->acquisition || input->phase_count != 1 ||
+      !transport->induction || !transport->sources_stable ||
+      transport->repetitions < 2) {
     return false;
   }
-  const loom_movement_request_t* request = &input->transfer->request;
+  const loom_pipeline_transport_input_phase_t* phase = &input->phases[0];
+  const loom_movement_request_t* request = &phase->transfer->request;
   if (request->source.memory_space != LOOM_VALUE_FACT_MEMORY_SPACE_GLOBAL ||
       request->dest.memory_space != LOOM_VALUE_FACT_MEMORY_SPACE_WORKGROUP) {
     return false;
   }
   const loom_aie2p_native_channel_t* channel = loom_aie2p_native_channel(
-      context, realization, input->reservation->channel);
+      context, realization, phase->reservation->channel);
   // Consumer completion observes every DMA publication, and therefore the last
   // external read and local write, before the invocation can retire storage.
   // Egress must instead observe global-write completion before releasing its
@@ -561,9 +563,9 @@ static bool loom_aie2p_native_can_repeat(
            .block_execution_counts) {
     return false;
   }
-  const int64_t begin = input->source_byte_offset;
-  const int64_t stride = input->source_byte_stride;
-  const uint64_t period = input->period;
+  const int64_t begin = phase->source_byte_offset;
+  const int64_t stride = phase->source_byte_stride;
+  const uint64_t period = phase->period;
   const loom_xdna_dma_facts_t* local_dma =
       &context->pool_tiles[channel->pool_index]->facts->dma;
   const loom_xdna_dma_facts_t* shim_dma =
@@ -573,7 +575,7 @@ static bool loom_aie2p_native_can_repeat(
   if (channel->replay.record_count &&
       ((uint64_t)request->transferred_byte_count !=
            channel->record_byte_length ||
-       input->destination_byte_offset != 0 ||
+       phase->destination_byte_offset != 0 ||
        stride != channel->record_byte_length ||
        transport->repetitions % channel->replay.record_count)) {
     return false;

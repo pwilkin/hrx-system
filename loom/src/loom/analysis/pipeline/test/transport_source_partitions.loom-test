@@ -66,7 +66,8 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %output_arg: buffe
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=8 sources_stable=yes
   sequence: sites=4 repetitions=8
-  input: source=storage admissions=1 transfers=8 period=8 source_offset=0 source_stride=0 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=8 period=8 source_offset=0 source_stride=0 destination_offset=0
     loop 0: iterations=8 parent=none
     channel.reserve: executions=8 scope=0
     kernel.async.copy: executions=8 scope=0
@@ -143,7 +144,8 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %output_arg: buffe
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=8 sources_stable=no
   sequence: sites=4 repetitions=8
-  input: source=storage admissions=1 transfers=8 period=8 source_offset=0 source_stride=0 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=8 period=8 source_offset=0 source_stride=0 destination_offset=0
     loop 0: iterations=8 parent=none
     channel.reserve: executions=8 scope=0
     kernel.async.copy: executions=8 scope=0
@@ -218,7 +220,8 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %output_arg: buffe
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=8 sources_stable=no
   sequence: sites=4 repetitions=8
-  input: source=storage admissions=1 transfers=8 period=8 source_offset=0 source_stride=0 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=8 period=8 source_offset=0 source_stride=0 destination_offset=0
     loop 0: iterations=8 parent=none
     channel.reserve: executions=8 scope=0
     kernel.async.copy: executions=8 scope=0

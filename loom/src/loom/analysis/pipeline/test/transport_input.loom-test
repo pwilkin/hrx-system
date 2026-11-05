@@ -194,7 +194,8 @@ pipeline.def<kernel> public @stream() run(%input_arg: buffer, %local_arg: buffer
 worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=16 sources_stable=yes
   sequence: sites=4 repetitions=16
-  input: source=storage admissions=1 transfers=16 period=8 source_offset=0 source_stride=4 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=16 period=8 source_offset=0 source_stride=4 destination_offset=0
     loop 0: iterations=16 parent=none
     channel.reserve: executions=16 scope=0
     kernel.async.copy: executions=16 scope=0
@@ -203,7 +204,8 @@ worker 0: transport=borrowed-movement execution_counts=exact batches=0 streams=1
 worker 1: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=16 sources_stable=yes
   sequence: sites=4 repetitions=16
-  input: source=storage admissions=1 transfers=16 period=4 source_offset=4 source_stride=8 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=16 period=4 source_offset=4 source_stride=8 destination_offset=0
     loop 0: iterations=16 parent=none
     channel.reserve: executions=16 scope=0
     kernel.async.copy: executions=16 scope=0
@@ -212,7 +214,8 @@ worker 1: transport=borrowed-movement execution_counts=exact batches=0 streams=1
 worker 2: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=16 sources_stable=yes
   sequence: sites=4 repetitions=16
-  input: source=storage admissions=1 transfers=16 period=8 source_offset=0 source_stride=4 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=16 period=8 source_offset=0 source_stride=4 destination_offset=0
     loop 0: iterations=16 parent=none
     channel.reserve: executions=16 scope=0
     kernel.async.copy: executions=16 scope=0
@@ -221,7 +224,8 @@ worker 2: transport=borrowed-movement execution_counts=exact batches=0 streams=1
 worker 3: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=yes
   sequence: sites=4 repetitions=4
-  input: source=storage admissions=1 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=4 period=4 source_offset=0 source_stride=0 destination_offset=0
     loop 0: iterations=4 parent=none
     channel.reserve: executions=4 scope=0
     kernel.async.copy: executions=4 scope=0
@@ -230,7 +234,8 @@ worker 3: transport=borrowed-movement execution_counts=exact batches=0 streams=1
 worker 4: transport=borrowed-movement execution_counts=exact batches=0 streams=1
   repetitions=4 sources_stable=yes
   sequence: sites=4 repetitions=4
-  input: source=storage admissions=1 transfers=4 period=4 source_offset=8 source_stride=4 destination_offset=0
+  input: source=storage admissions=1 phases=1
+    phase 0: scope=0 transfers=4 period=4 source_offset=8 source_stride=4 destination_offset=0
     loop 0: iterations=4 parent=none
     channel.reserve: executions=4 scope=0
     kernel.async.copy: executions=4 scope=0
