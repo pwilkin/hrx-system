@@ -977,7 +977,8 @@ static iree_status_t loom_pipeline_worker_build(
                                          worker->graph->reverse_postorder.count,
                                          sizeof(*order), (void**)&order);
       if (iree_status_is_ok(status)) {
-        loom_cfg_loop_nest_order_blocks(&structure->loops, order);
+        status =
+            loom_cfg_loop_nest_order_blocks(&structure->loops, arena, order);
         worker->block_order = order;
       }
     }
