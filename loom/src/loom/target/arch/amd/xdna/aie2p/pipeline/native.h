@@ -531,7 +531,9 @@ typedef struct loom_aie2p_native_worker_t {
   // Tile-control reply identity by source tile, or UINT8_MAX when unassigned.
   // Existing DMA-token routes can also carry explicitly requested status reads.
   uint8_t* control_replies;
-  // Number of tile-control destinations selected for the physical core.
+  // Packet IDs already assigned to this physical core's outgoing stream.
+  uint32_t control_packet_mask;
+  // Number of outgoing packet classes selected for the physical core.
   uint8_t control_packet_count;
   // An external-write path already owns the core's completion stream.
   bool has_egress;
@@ -745,6 +747,14 @@ iree_status_t loom_aie2p_native_select_control_route(
     bool reply, uint32_t* next_source, uint8_t* next_controller,
     bool* out_valid);
 
+// Assigns one outgoing core packet class and its physical route. A shared
+// payload path admits the same ID from different cores only for the same
+// terminal. Each core remains bounded by its source port's four filter slots.
+bool loom_aie2p_native_select_packet_route(
+    loom_aie2p_native_context_t* context, iree_host_size_t worker_index,
+    const loom_aie2p_native_tile_t* tile, loom_xdna_stream_port_t port,
+    uint8_t channel, uint32_t* next_source, uint8_t* out_packet);
+
 iree_status_t loom_aie2p_native_distribution_boundary(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
     iree_host_size_t worker_index, const loom_pipeline_invocation_t* invocation,
@@ -788,7 +798,8 @@ bool loom_aie2p_native_packet_route(loom_aie2p_native_context_t* context,
                                     loom_xdna_stream_port_t source_port,
                                     loom_xdna_tile_coordinate_t destination,
                                     loom_xdna_stream_port_t destination_port,
-                                    uint8_t packet);
+                                    uint8_t destination_channel, uint8_t packet,
+                                    loom_aie2p_native_delivery_t* delivery);
 
 // Selects and retains a regular ingress stream's external descriptor geometry.
 // Stable-source and exact consumer-completion admission precede this query.

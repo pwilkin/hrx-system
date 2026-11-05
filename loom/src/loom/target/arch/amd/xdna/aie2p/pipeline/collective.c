@@ -186,9 +186,9 @@ iree_status_t loom_aie2p_native_route_collectives(
               (first_hop ? reader_worker : relay_worker)->tile->coordinate,
               LOOM_XDNA_STREAM_PORT_CORE,
               context->workers[participants->workers[e]].tile->coordinate,
-              LOOM_XDNA_STREAM_PORT_CORE,
+              LOOM_XDNA_STREAM_PORT_CORE, 0,
               first_hop ? collective->reader_packet
-                        : collective->relay_packet)) {
+                        : collective->relay_packet, NULL)) {
         return loom_aie2p_native_reject(
             context, collective->source->operations[0],
             IREE_SV(

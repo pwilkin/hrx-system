@@ -357,13 +357,9 @@ iree_status_t loom_aie2p_native_route_input(
     return iree_ok_status();
   }
   input->completion_packet = owner->control_replies[shim - context->tiles];
-  const iree_host_size_t core = observer->tile - context->tiles;
-  if (owner->control_packet_count == 4 ||
-      !loom_aie2p_native_input_route(
-          context, next_source, context->control_sources[core * 2],
-          observer->tile->coordinate, LOOM_XDNA_STREAM_PORT_CORE, 0,
-          shim->coordinate, LOOM_XDNA_STREAM_PORT_DMA, input->credit_engine,
-          owner->control_packet_count) ||
+  if (!loom_aie2p_native_select_packet_route(
+          context, input->continuation.worker, shim, LOOM_XDNA_STREAM_PORT_DMA,
+          input->credit_engine, next_source, &input->credit_packet) ||
       !loom_aie2p_native_input_route(
           context, next_source, canonical, shim->coordinate,
           LOOM_XDNA_STREAM_PORT_DMA, input->input_engine,
@@ -374,7 +370,6 @@ iree_status_t loom_aie2p_native_route_input(
         IREE_SV(
             "shared generation query and credit routes to the observing core"));
   }
-  input->credit_packet = owner->control_packet_count++;
   input->ready_descriptor = descriptor_base + *used;
   input->credit_descriptor = input->ready_descriptor + capacity;
   *used += capacity * 2;

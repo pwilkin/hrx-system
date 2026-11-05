@@ -12,6 +12,16 @@ package(
     licenses = ["notice"],
 )
 
+loom_cc_test(
+    name = "sharing_test",
+    srcs = ["sharing_test.cc"],
+    deps = [
+        ":native",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
 loom_cc_library(
     name = "worker",
     srcs = ["worker.c"],
