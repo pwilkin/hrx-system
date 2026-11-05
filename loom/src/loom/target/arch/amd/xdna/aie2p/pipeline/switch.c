@@ -277,13 +277,16 @@ static uint8_t loom_aie2p_native_packet_component(uint8_t* parents,
 }
 
 // Overlapping destination sets share one arbiter because each physical output
-// selects only one arbiter. Disjoint components may use different selections
-// of that same arbiter. Identical sets reuse a selection across packet IDs and
-// inputs. Each input/packet ID matches exactly one admitted filter.
+// selects only one arbiter. An arbiter holds its grant for the whole packet,
+// including stalls: sharing it can prevent an otherwise independent input
+// from making the progress needed to finish that packet. Disjoint components
+// may share only when both have the same single input, which already serializes
+// their packets. Identical sets reuse a selection across packet IDs and inputs.
 static bool loom_aie2p_native_switch_select_packets(
     const loom_aie2p_native_tile_t* tile,
     loom_aie2p_native_switch_admission_t* state) {
   uint8_t selection_counts[32] = {0};
+  uint32_t component_inputs[32] = {0};
   uint8_t component_bases[32];
   memset(component_bases, UINT8_MAX, sizeof(component_bases));
   for (uint16_t i = 0; i < state->group_count; ++i) {
@@ -291,6 +294,8 @@ static bool loom_aie2p_native_switch_select_packets(
     group->component = loom_aie2p_native_packet_component(
         state->masters,
         (uint8_t)iree_math_count_trailing_zeros_u32(group->masters));
+    component_inputs[group->component] |=
+        UINT32_C(1) << (group->filter / state->filter_slot_count);
     bool shared = false;
     for (uint16_t j = 0; j < i; ++j) {
       if (state->groups[j].masters == group->masters) {
@@ -308,31 +313,35 @@ static bool loom_aie2p_native_switch_select_packets(
     }
   }
   uint8_t arbiter_uses[8] = {0};
-  uint8_t next_arbiter = 0;
-  // Largest components first prevent singleton sets from fragmenting the
-  // four-selection arbiters needed by overlapping multicast sets.
-  for (uint8_t count = tile->facts->packet_master_select_count; count;
-       --count) {
-    for (uint16_t i = 0; i < state->group_count; ++i) {
-      const uint8_t component = state->groups[i].component;
-      uint8_t* base = &component_bases[component];
-      if (*base != UINT8_MAX || selection_counts[component] != count) {
+  uint32_t arbiter_inputs[8] = {0};
+  for (uint16_t i = 0; i < state->group_count; ++i) {
+    const uint8_t component = state->groups[i].component;
+    uint8_t* base = &component_bases[component];
+    if (*base != UINT8_MAX) {
+      continue;
+    }
+    const uint8_t count = selection_counts[component];
+    const uint32_t inputs = component_inputs[component];
+    const bool single_input = (inputs & (inputs - 1)) == 0;
+    // Allocated arbiters precede unused ones, so a compatible arbiter is
+    // reused before opening another. One input's filter budget bounds the
+    // total number of distinct destination sets that can share its arbiter.
+    for (uint8_t arbiter = 0; arbiter < tile->facts->packet_arbiter_count;
+         ++arbiter) {
+      if (arbiter_uses[arbiter] &&
+          (!single_input || arbiter_inputs[arbiter] != inputs)) {
         continue;
       }
-      for (uint8_t j = 0; j < tile->facts->packet_arbiter_count; ++j) {
-        const uint8_t arbiter =
-            (next_arbiter + j) % tile->facts->packet_arbiter_count;
-        if (arbiter_uses[arbiter] + count <=
-            tile->facts->packet_master_select_count) {
-          *base = arbiter | (arbiter_uses[arbiter] << 3);
-          arbiter_uses[arbiter] += count;
-          next_arbiter = (arbiter + 1) % tile->facts->packet_arbiter_count;
-          break;
-        }
+      if (arbiter_uses[arbiter] + count <=
+          tile->facts->packet_master_select_count) {
+        *base = arbiter | (arbiter_uses[arbiter] << 3);
+        arbiter_uses[arbiter] += count;
+        arbiter_inputs[arbiter] = inputs;
+        break;
       }
-      if (*base == UINT8_MAX) {
-        return false;
-      }
+    }
+    if (*base == UINT8_MAX) {
+      return false;
     }
   }
   for (uint16_t i = 0; i < state->group_count; ++i) {
@@ -475,7 +484,8 @@ iree_status_t loom_aie2p_native_switches_build(
                                                   &switches[i]))) {
       return loom_aie2p_native_reject(
           context, entry,
-          IREE_SV("available packet filters and multicast master selections"));
+          IREE_SV(
+              "available packet filters and independent multicast arbiters"));
     }
   }
   *out_valid = true;
