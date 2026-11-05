@@ -866,3 +866,70 @@ low.func.def target<test.low.core>(@test_target) @cross_operand_partial_slice(%a
   %middle = slice %whole[1] : reg<test.i32 x4> -> reg<test.i32 x2>
   return %middle
 }
+
+// ====
+
+// Required aliases can change through an owner absent from their use list.
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @partial_alias_capture_across_move(%source: reg<test.i32 x4>, %other: reg<test.i32 x2>) -> (reg<test.i32 x2>, reg<test.i32 x4>) asm {
+  %alias = low.assume %source [range(%source, 0, 1024)] : reg<test.i32 x4>
+  %whole = concat(%alias, %other) : (reg<test.i32 x4>, reg<test.i32 x2>) -> reg<test.i32 x6>
+  %moved = move %source : reg<test.i32 x4> -> reg<test.i32 x4>
+  %saved = slice %whole[1] : reg<test.i32 x6> -> reg<test.i32 x2>
+  return %saved, %moved
+}
+
+// ----
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @partial_alias_capture_across_move(%source: reg<test.i32 x4>, %other: reg<test.i32 x2>) -> (reg<test.i32 x2>, reg<test.i32 x4>) asm {
+  %alias = low.assume %source [range(%source, 0, 1024)] : reg<test.i32 x4>
+  %saved = slice %alias[1] : reg<test.i32 x4> -> reg<test.i32 x2>
+  %moved = move %source : reg<test.i32 x4> -> reg<test.i32 x4>
+  return %saved, %moved
+}
+
+// ====
+
+// A consumed partial result keeps independent ownership of its register.
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @consumed_partial_capture(%source: reg<test.i32 x2>, %other: reg<test.i32 x2>) -> (reg<test.i32>, reg<test.i32 x2>) asm {
+  %whole = concat(%source, %other) : (reg<test.i32 x2>, reg<test.i32 x2>) -> reg<test.i32 x4>
+  %saved = slice %whole[1] : reg<test.i32 x4> -> reg<test.i32>
+  %changed = test.tied.any %saved
+  return %changed, %source
+}
+
+// ----
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @consumed_partial_capture(%source: reg<test.i32 x2>, %other: reg<test.i32 x2>) -> (reg<test.i32>, reg<test.i32 x2>) asm {
+  %saved = slice %source[1] : reg<test.i32 x2> -> reg<test.i32>
+  %changed = test.tied.any %saved
+  return %changed, %source
+}
+
+// ====
+
+// Eliminating the unused concat input exposes its producer to ordinary DCE.
+// RUN: pass canonicalize,low-dce
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @partial_projection_removes_dead_producer(%live: reg<test.i32 x2>, %left: reg<test.i32>, %right: reg<test.i32>) -> (reg<test.i32>, reg<test.i32>) asm {
+  %dead = test.add.i32 %left, %right
+  %whole = concat(%live, %dead) : (reg<test.i32 x2>, reg<test.i32>) -> reg<test.i32 x3>
+  %first = slice %whole[0] : reg<test.i32 x3> -> reg<test.i32>
+  %second = slice %whole[1] : reg<test.i32 x3> -> reg<test.i32>
+  return %first, %second
+}
+
+// ----
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @partial_projection_removes_dead_producer(%live: reg<test.i32 x2>, %left: reg<test.i32>, %right: reg<test.i32>) -> (reg<test.i32>, reg<test.i32>) asm {
+  %first = slice %live[0] : reg<test.i32 x2> -> reg<test.i32>
+  %second = slice %live[1] : reg<test.i32 x2> -> reg<test.i32>
+  return %first, %second
+}
