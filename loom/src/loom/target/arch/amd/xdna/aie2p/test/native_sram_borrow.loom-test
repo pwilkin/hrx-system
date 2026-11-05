@@ -3,6 +3,8 @@
 // A core fills a retained SRAM batch through borrowed DMA views, then consumes
 // its replay through compute memory. SRAM payloads have no core address. Each
 // copy retires both endpoint tasks before the complete batch is published.
+// Fixed byte addresses encode as word-address constants in the DMA packets;
+// advancing the destination by four bytes advances that encoded address by one.
 aie2p.target<array> @device {device_profile = "amd.xdna.strix.17f0_10"}
 
 pipeline.def<kernel> public retain target(@device) @staged_records() run(%input_arg: buffer, %output_arg: buffer) {
