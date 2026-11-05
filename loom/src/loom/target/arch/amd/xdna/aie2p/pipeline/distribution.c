@@ -592,6 +592,25 @@ static iree_status_t loom_aie2p_native_distribution_refills(
   return iree_ok_status();
 }
 
+// Circuit geometry owns the destination storage and semaphore identities as
+// well as its transfer count. Ordered phases can share a wire without sharing
+// those descriptors.
+static bool loom_aie2p_native_distribution_geometry_equal(
+    const loom_aie2p_native_distribution_t* distribution,
+    const loom_pipeline_transport_cohort_t* cohort, uint32_t repetitions) {
+  if (distribution->repetitions != repetitions ||
+      distribution->receiver_count != cohort->destination_count) {
+    return false;
+  }
+  for (iree_host_size_t i = 0; i < cohort->destination_count; ++i) {
+    if (distribution->source->records->destinations[i].channel !=
+        cohort->destinations[i].channel) {
+      return false;
+    }
+  }
+  return true;
+}
+
 iree_status_t loom_aie2p_native_select_worker_distributions(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
@@ -679,19 +698,6 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
             IREE_SV("one source memory tile and destination set for an "
                     "ordered multicast path"));
       }
-      for (iree_host_size_t j = 0;
-           !packet_program && j < cohort->destination_count; ++j) {
-        if (cohort->destinations[j].channel != first->destinations[j].channel ||
-            (path &&
-             loom_aie2p_native_channel(context, realization,
-                                       cohort->destinations[j].channel) !=
-                 path->receivers[j].channel)) {
-          return loom_aie2p_native_reject(
-              context, cohort->destinations[j].copy,
-              IREE_SV("the same ordered destinations in every shared "
-                      "multicast phase"));
-        }
-      }
     }
     // Geometry variants are bounded by the physical descriptor bank. A later
     // phase can reuse one only after its prior endpoints have retired.
@@ -703,7 +709,8 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
           (packet_program ? loom_aie2p_native_distribution_program_equal(
                                 candidate->transport, candidate->source,
                                 &source->transport, batch)
-                          : candidate->repetitions == repetitions)) {
+                          : loom_aie2p_native_distribution_geometry_equal(
+                                candidate, cohort, repetitions))) {
         distribution = candidate;
         break;
       }
@@ -752,6 +759,13 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
           const loom_aie2p_native_channel_t* destination_channel =
               loom_aie2p_native_channel(context, realization,
                                         destination->channel);
+          if (path && context->pool_tiles[destination_channel->pool_index] !=
+                          path->receivers[j].tile) {
+            return loom_aie2p_native_reject(
+                context, destination->copy,
+                IREE_SV("the same ordered physical destinations in every "
+                        "shared multicast phase"));
+          }
           if (ordered && repetitions % destination_channel->source->capacity) {
             return loom_aie2p_native_reject(
                 context, destination->copy,
