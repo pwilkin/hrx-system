@@ -113,6 +113,7 @@ loom_test_module(
 loom_test(
     name = "retained_input_test",
     srcs = [
+        "finite_input_phases.loom",
         "retained_input.loom",
         "retained_stream.loom",
     ],

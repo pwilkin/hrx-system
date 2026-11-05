@@ -930,7 +930,7 @@ iree_status_t loom_aie2p_native_bind_distribution_phases(
         uint32_t cursor = sender ? endpoint->channel->cursor.writer.worker
                                  : endpoint->channel->cursor.reader.worker;
         if (cursor != UINT32_MAX && context->workers[cursor].input) {
-          cursor = context->workers[cursor].input->continuation.worker;
+          cursor = context->workers[cursor].input->controller;
         }
         iree_host_size_t engine = cursor == UINT32_MAX
                                       ? IREE_HOST_SIZE_MAX

@@ -1204,8 +1204,8 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
         continue;
       }
       const uint32_t sites[] = {
-          input->continuation.phases[input->continuation.first_phase].action,
-          input->continuation.phases[input->source->phase_count - 1].action};
+          input->continuation->phases[input->continuation->first_phase].action,
+          input->continuation->phases[input->source->phase_count - 1].action};
       for (iree_host_size_t site = 0; site < IREE_ARRAYSIZE(sites); ++site) {
         const loom_op_t* action = source->channels.actions[sites[site]].op;
         const loom_op_t* issue = transfer->source->request.op;

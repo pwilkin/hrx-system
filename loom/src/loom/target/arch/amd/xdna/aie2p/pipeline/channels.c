@@ -161,6 +161,8 @@ typedef struct loom_aie2p_native_channel_emitter_t {
   const loom_pipeline_worker_t* worker;
   // Projected actions in the same ordinal order as source completion deltas.
   const loom_channel_plan_action_t* actions;
+  // Inputs whose admission and completion belong to this existing worker.
+  const loom_aie2p_native_input_t* inputs;
   // Exact admission/arrival actions selected for phased source lifetimes.
   // NULL when this worker has no input continuation.
   const loom_aie2p_native_input_t** inputs_by_action;
@@ -647,6 +649,13 @@ static iree_status_t loom_aie2p_native_channel_exit(
     const loom_value_id_t* state, iree_host_size_t state_count) {
   (void)terminator;
   loom_aie2p_native_channel_emitter_t* emitter = user_data;
+  for (const loom_aie2p_native_input_t* input = emitter->inputs; input;
+       input = input->next) {
+    if (!input->continuation && loom_symbol_ref_is_valid(input->complete)) {
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_invoke(
+          &rewriter->builder, input->complete, NULL, 0, NULL, NULL));
+    }
+  }
   const int64_t zero = 0;
   for (iree_host_size_t i = 0; i < state_count; ++i) {
     if (emitter->state_views[i] == LOOM_VALUE_ID_INVALID) {
@@ -715,6 +724,7 @@ iree_status_t loom_aie2p_native_emit_worker(
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_prepare_refills(context, worker->refills));
   iree_host_size_t input_state_count = 0;
+  emitter.inputs = worker->inputs;
   if (worker->inputs) {
     IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
         arena, channels->plan.action_count, sizeof(*emitter.inputs_by_action),
@@ -723,12 +733,16 @@ iree_status_t loom_aie2p_native_emit_worker(
            channels->plan.action_count * sizeof(*emitter.inputs_by_action));
     for (loom_aie2p_native_input_t* input = worker->inputs; input;
          input = input->next) {
-      const loom_pipeline_continuation_phase_t* phases =
-          input->continuation.phases;
-      emitter.inputs_by_action[phases[input->continuation.first_phase].action] =
-          input;
-      emitter.inputs_by_action[phases[input->source->phase_count - 1].action] =
-          input;
+      if (input->continuation) {
+        const loom_pipeline_continuation_phase_t* phases =
+            input->continuation->phases;
+        emitter
+            .inputs_by_action[phases[input->continuation->first_phase].action] =
+            input;
+        emitter
+            .inputs_by_action[phases[input->source->phase_count - 1].action] =
+            input;
+      }
       IREE_RETURN_IF_ERROR(loom_aie2p_native_prepare_input(context, input));
       input_state_count += loom_aie2p_native_input_state_count(input);
     }

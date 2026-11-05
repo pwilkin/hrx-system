@@ -73,6 +73,9 @@ typedef struct loom_pipeline_progress_observations_t {
 // Selection consumes retained plans without walking source IR or inferring
 // facts. Physical owners supply endpoint eligibility, placement costs, and any
 // mechanism that consumes the resulting progress; no worker is launched here.
+// Ordinary copies from multiple phases of the same worker compose when their
+// combined coverage accounts for every source read and destination write.
+// Different source identities and partial coverage never establish an edge.
 //
 // observation_sources requests complete eligible populations for joint
 // selection. The same graph owner computes each requested source once; no

@@ -47,10 +47,50 @@ iree_status_t loom_aie2p_native_select_progress(
   iree_host_size_t input_count = 0, phase_count = 0;
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     needs_progress |= realization->workers[i].transport.prefix_cycles != 0;
-    if (context->workers[i].input) {
-      ++input_count;
-      phase_count += context->workers[i].input->source->phase_count;
+    loom_aie2p_native_input_t* input = context->workers[i].input;
+    if (!input) {
+      continue;
     }
+    const loom_pipeline_transport_input_phase_t* tail =
+        &input->source->phases[input->source->phase_count - 1];
+    if (input->binding || input->source->admissions != 1 ||
+        tail->period != tail->transfers) {
+      ++input_count;
+      phase_count += input->source->phase_count;
+      continue;
+    }
+    // Complete stable input has no external readiness or credit dependency.
+    // An existing participant starts it once at entry and retires its queues
+    // before returning. Selection consumes the retained execution row, not
+    // downstream phase observations or another traversal of source IR.
+    const iree_host_size_t* participants =
+        &context->execution.workers[input->invocation->ordinal *
+                                    context->execution.engine_count];
+    uint64_t best_cost = UINT64_MAX;
+    for (iree_host_size_t engine = 0; engine < context->execution.engine_count;
+         ++engine) {
+      const iree_host_size_t candidate = participants[engine];
+      if (candidate == IREE_HOST_SIZE_MAX ||
+          realization->invocations.workers[candidate].invocation !=
+              input->invocation) {
+        continue;
+      }
+      const uint64_t cost = loom_aie2p_native_input_distance(
+          context, (uint32_t)i, (uint32_t)candidate);
+      if (cost < best_cost) {
+        best_cost = cost;
+        input->controller = (uint32_t)candidate;
+      }
+    }
+    if (input->controller == UINT32_MAX) {
+      return loom_aie2p_native_reject(
+          context, realization->workers[i].source->declaration,
+          IREE_SV("an existing instruction worker in the finite input's "
+                  "invocation"));
+    }
+    loom_aie2p_native_worker_t* owner = &context->workers[input->controller];
+    input->next = owner->inputs;
+    owner->inputs = input;
   }
   for (iree_host_size_t i = 0; i < count; ++i) {
     const loom_aie2p_native_channel_t* channel = &context->channels[i];
@@ -104,7 +144,8 @@ iree_status_t loom_aie2p_native_select_progress(
     for (iree_host_size_t i = 0; i < realization->invocations.worker_count;
          ++i) {
       const loom_pipeline_worker_t* worker = &realization->workers[i];
-      if (context->workers[i].input) {
+      if (context->workers[i].input &&
+          context->workers[i].input->controller == UINT32_MAX) {
         inputs[input_index++] = i;
         for (iree_host_size_t j = 0; j < worker->transport.input->phase_count;
              ++j) {
@@ -159,7 +200,8 @@ iree_status_t loom_aie2p_native_select_progress(
           IREE_SV("an existing reader observing every shared input phase in "
                   "one lifetime"));
     }
-    input->continuation = continuations[i];
+    input->controller = continuations[i].worker;
+    input->continuation = &continuations[i];
     if (input->invocation->ordinal &&
         realization->invocations.workers[continuations[i].worker].invocation !=
             input->invocation) {

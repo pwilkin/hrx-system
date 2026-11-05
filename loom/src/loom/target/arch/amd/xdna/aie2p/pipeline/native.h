@@ -437,7 +437,7 @@ typedef enum loom_aie2p_native_execution_e {
   LOOM_AIE2P_NATIVE_EXECUTION_CORE,
   LOOM_AIE2P_NATIVE_EXECUTION_CONFIGURATION,
   LOOM_AIE2P_NATIVE_EXECUTION_DMA,
-  // Shared external leases, driven by a selected existing reader continuation.
+  // Phased external inputs controlled by an existing instruction worker.
   LOOM_AIE2P_NATIVE_EXECUTION_INPUT,
   LOOM_AIE2P_NATIVE_EXECUTION_DISTRIBUTION,
 } loom_aie2p_native_execution_t;
@@ -772,6 +772,15 @@ iree_status_t loom_aie2p_native_distribution_boundary(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
     iree_host_size_t worker_index, const loom_pipeline_invocation_t* invocation,
     bool before);
+
+// Waits for one owned DMA queue's tasks and trailing state updates to retire.
+// The caller's async groups have already retired; the scalar reply stream is
+// exclusively owned by this register poll until it completes.
+iree_status_t loom_aie2p_native_queue_retire(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    loom_region_t* region, const loom_aie2p_native_tile_t* tile,
+    uint16_t engine, loom_xdna_dma_direction_t direction, uint8_t packet,
+    uint8_t reply);
 
 // Publishes a selected finite endpoint sequence from a resident controller.
 // Iteration state is rewound only when the sequence's retained plan requires

@@ -121,8 +121,7 @@ static iree_status_t loom_aie2p_native_program_frame(
           !direction && channel->external
               ? context->workers[cursor->worker].input
               : NULL;
-      const uint32_t owner =
-          input ? input->continuation.worker : cursor->worker;
+      const uint32_t owner = input ? input->controller : cursor->worker;
       const bool persistent =
           input ? input->cursor_index != UINT32_MAX : cursor->advances;
       if (!persistent || context->core_engines[owner] != engine) {

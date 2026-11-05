@@ -182,22 +182,30 @@ iree_status_t loom_aie2p_native_endpoint_start(
   return iree_ok_status();
 }
 
+iree_status_t loom_aie2p_native_queue_retire(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    loom_region_t* region, const loom_aie2p_native_tile_t* tile,
+    uint16_t engine, loom_xdna_dma_direction_t direction, uint8_t packet,
+    uint8_t reply) {
+  const loom_aie2p_native_queue_status_t status =
+      loom_aie2p_native_queue_status(context, tile, engine, direction);
+  const uint64_t origin =
+      (uint64_t)tile->coordinate.column << context->family->column_shift |
+      (uint64_t)tile->coordinate.row << context->family->row_shift;
+  return loom_aie2p_worker_control_wait_clear(
+      &context->code, builder, region, packet, reply,
+      (uint32_t)(status.address - origin), status.pending_mask);
+}
+
 static iree_status_t loom_aie2p_native_endpoint_retire_body(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
     loom_region_t* region,
     const loom_aie2p_native_distribution_command_t* command, uint8_t packet,
     uint8_t reply) {
   const loom_aie2p_native_distribution_endpoint_t* endpoint = command->endpoint;
-  const loom_aie2p_native_queue_status_t status =
-      loom_aie2p_native_queue_status(context, endpoint->tile, endpoint->engine,
-                                     command->direction);
-  const uint64_t origin = (uint64_t)endpoint->tile->coordinate.column
-                              << context->family->column_shift |
-                          (uint64_t)endpoint->tile->coordinate.row
-                              << context->family->row_shift;
-  return loom_aie2p_worker_control_wait_clear(
-      &context->code, builder, region, packet, reply,
-      (uint32_t)(status.address - origin), status.pending_mask);
+  return loom_aie2p_native_queue_retire(context, builder, region,
+                                        endpoint->tile, endpoint->engine,
+                                        command->direction, packet, reply);
 }
 
 static iree_status_t loom_aie2p_native_endpoint_retire(

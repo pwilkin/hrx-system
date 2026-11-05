@@ -36,8 +36,8 @@ iree_status_t loom_aie2p_native_select_input(
       cursor_index = channel;
     }
   } else if (!source->transport.sources_stable || plan->phase_count == 1) {
-    // A single stable phase retains the autonomous repeat path. Only phased
-    // streams need a reader continuation to sequence their source descriptors.
+    // A single stable phase retains the autonomous repeat path. Phased streams
+    // share one shim queue whose admission belongs to an existing core.
     return iree_ok_status();
   }
   // Prefixes fit independently before the first bulk demand, even if the
@@ -71,6 +71,7 @@ iree_status_t loom_aie2p_native_select_input(
       .cursor_index = cursor_index,
       .binding = binding,
       .source = plan,
+      .controller = UINT32_MAX,
   };
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       context->pass->arena, plan->phase_count, sizeof(*input->phases),
@@ -277,8 +278,7 @@ iree_status_t loom_aie2p_native_route_input(
   if (!receivers_valid) {
     return loom_aie2p_native_reject(context, declaration, receiver_reason);
   }
-  loom_aie2p_native_worker_t* observer =
-      &context->workers[input->continuation.worker];
+  loom_aie2p_native_worker_t* observer = &context->workers[input->controller];
   // The query continues through SRAM to its observing core. Select that
   // constrained path before payload branches fix the common source prefix:
   // an SRAM receiver accepts lanes that cannot continue to a free north link.
@@ -382,7 +382,8 @@ iree_status_t loom_aie2p_native_route_input(
   }
   bool valid = false;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_select_control_route(
-      context, realization, input->continuation.worker, shim, protocol != NULL,
+      context, realization, input->controller, shim,
+      protocol != NULL || (!input->continuation && input->invocation->ordinal),
       next_source, next_controller, &valid));
   if (!valid) {
     return iree_ok_status();
@@ -390,18 +391,17 @@ iree_status_t loom_aie2p_native_route_input(
   if (input->invocation->ordinal) {
     for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
       IREE_RETURN_IF_ERROR(loom_aie2p_native_select_control_route(
-          context, realization, input->continuation.worker,
-          input->phases[i].receiver.tile, false, next_source, next_controller,
-          &valid));
+          context, realization, input->controller,
+          input->phases[i].receiver.tile, input->continuation == NULL,
+          next_source, next_controller, &valid));
       if (!valid) {
         return iree_ok_status();
       }
     }
   }
   loom_aie2p_native_worker_t* owner =
-      &context
-           ->workers[context->execution.workers
-                         [context->core_engines[input->continuation.worker]]];
+      &context->workers[context->execution
+                            .workers[context->core_engines[input->controller]]];
   input->control_packet = owner->control_packets[shim - context->tiles];
   if (!protocol) {
     *out_valid = true;
@@ -409,7 +409,7 @@ iree_status_t loom_aie2p_native_route_input(
   }
   input->completion_packet = owner->control_replies[shim - context->tiles];
   if (!loom_aie2p_native_select_packet_route(
-          context, input->continuation.worker, shim, LOOM_XDNA_STREAM_PORT_DMA,
+          context, input->controller, shim, LOOM_XDNA_STREAM_PORT_DMA,
           input->credit_engine, next_source, &input->credit_packet)) {
     return loom_aie2p_native_reject(
         context, declaration,
