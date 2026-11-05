@@ -107,7 +107,7 @@ static iree_status_t loom_pipeline_realization_report(
 static iree_status_t loom_pipeline_realization_clone_workers(
     loom_pass_t* pass, loom_rewriter_t* rewriter,
     loom_pipeline_realization_t* realization, loom_symbol_map_t* names,
-    uint32_t* next_name) {
+    uint32_t* next_name, const loom_pipeline_realization_callback_t* callback) {
   loom_module_t* module = rewriter->module;
   loom_function_version_owner_t* owner = realization->version_owner;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
@@ -118,6 +118,12 @@ static iree_status_t loom_pipeline_realization_clone_workers(
     const loom_target_function_version_t* source_version =
         realization->worker_versions[i];
     realization->worker_versions[i] = NULL;
+    if (!callback->has_worker_body(callback->user_data, i)) {
+      realization->instances[i] = (loom_pipeline_worker_materialization_t){0};
+      // Name ordinals follow source workers, including descriptor-only roles.
+      ++*next_name;
+      continue;
+    }
     loom_string_id_t name = LOOM_STRING_ID_INVALID;
     do {
       char text[48];
@@ -402,6 +408,9 @@ static iree_status_t loom_pipeline_realization_emit_workers(
     loom_pipeline_worker_t* worker = &realization->workers[i];
     loom_channel_materialization_instance_t* instance =
         &realization->instances[i].channels;
+    if (!instance->function.op) {
+      continue;
+    }
     loom_local_value_domain_restore(&instance->value_domain);
     status = callback->worker(callback->user_data, rewriter, realization, i);
     loom_local_value_domain_release(&instance->value_domain);
@@ -567,7 +576,8 @@ iree_status_t loom_pipeline_realize_occurrences(
        ++i) {
     loom_pipeline_realization_t* realization = &realizations[i];
     status = loom_pipeline_realization_clone_workers(
-        pass, &rewriter, realization, &symbols.names, &next_name);
+        pass, &rewriter, realization, &symbols.names, &next_name,
+        &requests[i].callback);
     if (iree_status_is_ok(status)) {
       status = loom_pipeline_realization_emit_workers(
           pass, &rewriter, realization, &requests[i].callback);

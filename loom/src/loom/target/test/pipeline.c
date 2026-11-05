@@ -68,6 +68,13 @@ static iree_status_t loom_test_pipeline_select(
   return iree_ok_status();
 }
 
+static bool loom_test_pipeline_has_worker_body(const void* user_data,
+                                               iree_host_size_t worker_index) {
+  (void)user_data;
+  (void)worker_index;
+  return true;
+}
+
 static iree_status_t loom_test_pipeline_worker(
     void* user_data, loom_rewriter_t* rewriter,
     const loom_pipeline_realization_t* realization, iree_host_size_t worker) {
@@ -262,6 +269,7 @@ static iree_status_t loom_test_pipeline_run(loom_pass_t* pass,
   const loom_pipeline_resource_inventory_t inventory = {0};
   const loom_pipeline_realization_callback_t callbacks = {
       .select = loom_test_pipeline_select,
+      .has_worker_body = loom_test_pipeline_has_worker_body,
       .worker = loom_test_pipeline_worker,
       .prepare = loom_test_pipeline_prepare,
       .entry = loom_test_pipeline_entry,

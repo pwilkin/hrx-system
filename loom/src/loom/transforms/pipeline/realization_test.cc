@@ -191,11 +191,15 @@ class PipelineRealizationTest : public ::testing::Test {
     return iree_ok_status();
   }
 
+  static bool HasWorkerBody(const void* data, iree_host_size_t) {
+    return static_cast<const PipelineRealizationTest*>(data)->has_body_;
+  }
+
   static iree_status_t Prepare(void* data, loom_rewriter_t*,
                                const loom_pipeline_realization_t* realization,
                                bool* valid) {
     auto* self = static_cast<PipelineRealizationTest*>(data);
-    EXPECT_EQ(self->workers_.size(), 2u);
+    EXPECT_EQ(self->workers_.size(), self->has_body_ ? 2u : 0u);
     EXPECT_NE(realization->function.op->parent_block, nullptr);
     EXPECT_EQ(realization->invocations.entries[0]->function.op,
               self->source_version_.base.function.op);
@@ -208,8 +212,12 @@ class PipelineRealizationTest : public ::testing::Test {
                              const loom_pipeline_realization_t* realization,
                              loom_func_like_t* output) {
     auto* self = static_cast<PipelineRealizationTest*>(data);
-    EXPECT_EQ(self->workers_.size(), 2u);
+    EXPECT_EQ(self->workers_.size(), self->has_body_ ? 2u : 0u);
     EXPECT_EQ(self->prepared_, 2u);
+    if (!self->has_body_) {
+      EXPECT_EQ(realization->instances[0].channels.function.op, nullptr);
+      EXPECT_EQ(realization->worker_versions[0], nullptr);
+    }
     *output = self->Function(&rewriter->builder, realization->entry.symbol);
     realization->entry.version->target_context_ordinal =
         realization->entry_target_context;
@@ -221,7 +229,7 @@ class PipelineRealizationTest : public ::testing::Test {
     return {&invocations_,
             source_workers_,
             symbol,
-            {Select, Worker, Prepare, Entry, this}};
+            {Select, HasWorkerBody, Worker, Prepare, Entry, this}};
   }
 
   // Arena and module own all source and consuming instances throughout the
@@ -265,6 +273,9 @@ class PipelineRealizationTest : public ::testing::Test {
   size_t prepared_ = 0;
   // Optional one-based selection rejected by the target admission callback.
   size_t reject_ = 0;
+  // Selected mechanics consume source plans without an instruction body when
+  // false, just as native descriptor-only workers do.
+  bool has_body_ = true;
   // Independently materialized workers in emission order.
   std::vector<loom_op_t*> workers_;
   // Distinct output entry versions, or the source version for replacement.
@@ -314,6 +325,25 @@ TEST_F(PipelineRealizationTest, ReplacementWaitsForEverySourceConsumer) {
   EXPECT_NE(outputs_[1], &source_version_);
   EXPECT_EQ(outputs_[1]->base.flags, 0u);
   EXPECT_EQ(versions_.list.count, 5u);
+  Verify();
+}
+
+TEST_F(PipelineRealizationTest, OffloadedWorkersNeedNoBodiesOrVersions) {
+  has_body_ = false;
+  const auto worker = worker_version_.base.function;
+  const loom_pipeline_realization_request_t requests[] = {
+      Request(Symbol("first")), Request(Symbol("second"))};
+  const auto symbols = module_->symbols.count;
+  bool valid = false;
+  IREE_ASSERT_OK(
+      loom_pipeline_realize_occurrences(&pass_, module_, requests, 2, &valid));
+  ASSERT_TRUE(valid);
+  EXPECT_TRUE(workers_.empty());
+  EXPECT_EQ(outputs_.size(), 2u);
+  EXPECT_EQ(module_->symbols.count, symbols);
+  EXPECT_EQ(versions_.list.count, 4u);
+  EXPECT_EQ(worker_version_.base.function.op, worker.op);
+  EXPECT_NE(worker.op->parent_block, nullptr);
   Verify();
 }
 

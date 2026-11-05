@@ -1014,6 +1014,13 @@ static iree_status_t loom_aie2p_native_select(
       context->pass->diagnostic_emitter, out_valid);
 }
 
+static bool loom_aie2p_native_has_worker_body(const void* user_data,
+                                              iree_host_size_t worker_index) {
+  const loom_aie2p_native_context_t* context = user_data;
+  return context->workers[worker_index].execution ==
+         LOOM_AIE2P_NATIVE_EXECUTION_CORE;
+}
+
 static iree_status_t loom_aie2p_native_prepare_entry(
     void* user_data, loom_rewriter_t* rewriter,
     const loom_pipeline_realization_t* realization, bool* out_valid) {
@@ -1041,6 +1048,7 @@ iree_status_t loom_aie2p_pipeline_realization_initialize(
                                                             &context->code));
   *out_callback = (loom_pipeline_realization_callback_t){
       .select = loom_aie2p_native_select,
+      .has_worker_body = loom_aie2p_native_has_worker_body,
       .worker = loom_aie2p_native_emit_worker,
       .prepare = loom_aie2p_native_prepare_entry,
       .entry = loom_aie2p_native_emit_configuration,
