@@ -11,6 +11,7 @@
 #include "loom/ops/scf/ops.h"
 #include "loom/ops/type_registry.h"
 #include "loom/ops/view/ops.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 #include "loom/transforms/pipeline/channel_materialization.h"
@@ -64,6 +65,9 @@ typedef struct loom_aie2p_native_channel_emitter_t {
   const loom_pipeline_worker_t* worker;
   // Projected actions in the same ordinal order as source completion deltas.
   const loom_channel_plan_action_t* actions;
+  // Exact admission/arrival actions selected for shared external lifetimes.
+  // NULL when this worker has no external input continuation.
+  const loom_aie2p_native_input_t** inputs_by_action;
   // Initial byte displacement for every channel cursor.
   loom_value_id_t origin;
   // Invocation-private scalar views in the channel materializer's state order.
@@ -192,14 +196,14 @@ static iree_status_t loom_aie2p_native_sram_publish_helper(
   return loom_aie2p_worker_return(&builder, NULL, 0);
 }
 
-static iree_status_t loom_aie2p_native_materialize_buffer_accesses(
+static iree_status_t loom_aie2p_native_materialize_storage_accesses(
     loom_aie2p_native_context_t* context, loom_rewriter_t* rewriter,
     const loom_aie2p_native_worker_t* worker,
     const loom_pipeline_worker_materialization_t* instance) {
   const loom_type_t buffer_type = loom_type_buffer();
-  for (iree_host_size_t i = 0; i < worker->buffers.count; ++i) {
-    const loom_aie2p_native_buffer_access_t* access =
-        &worker->buffers.accesses[i];
+  for (iree_host_size_t i = 0; i < worker->storage.count; ++i) {
+    const loom_aie2p_native_storage_access_t* access =
+        &worker->storage.accesses[i];
     loom_symbol_ref_t helper;
     IREE_RETURN_IF_ERROR(
         loom_aie2p_native_address_helper(context, access->address, &helper));
@@ -211,10 +215,23 @@ static iree_status_t loom_aie2p_native_materialize_buffer_accesses(
     IREE_RETURN_IF_ERROR(loom_buffer_assume_alignment_build(
         &rewriter->builder, &buffer, 1, access->alignment, &buffer_type, 1,
         LOOM_LOCATION_UNKNOWN, &aligned));
-    IREE_RETURN_IF_ERROR(loom_rewriter_replace_all_uses_with(
-        rewriter,
-        loom_pipeline_worker_materialization_value(instance, access->argument),
-        loom_op_results(aligned)[0]));
+    const loom_value_id_t argument =
+        loom_pipeline_worker_materialization_value(instance, access->argument);
+    const loom_type_t type = loom_module_value_type(rewriter->module, argument);
+    loom_value_id_t replacement = loom_op_results(aligned)[0];
+    if (loom_type_is_view(type)) {
+      loom_op_t *origin, *view;
+      IREE_RETURN_IF_ERROR(
+          loom_index_constant_build(&rewriter->builder, loom_attr_i64(0),
+                                    loom_type_scalar(LOOM_SCALAR_TYPE_OFFSET),
+                                    LOOM_LOCATION_UNKNOWN, &origin));
+      IREE_RETURN_IF_ERROR(loom_buffer_view_build(
+          &rewriter->builder, replacement, loom_index_constant_result(origin),
+          type, LOOM_LOCATION_UNKNOWN, &view));
+      replacement = loom_buffer_view_result(view);
+    }
+    IREE_RETURN_IF_ERROR(
+        loom_rewriter_replace_all_uses_with(rewriter, argument, replacement));
   }
   return iree_ok_status();
 }
@@ -276,6 +293,14 @@ static iree_status_t loom_aie2p_native_channel_action(
           emitter->invocations, action->channel)];
   loom_aie2p_native_endpoint_t* endpoint = &emitter->endpoints[index];
   loom_builder_t* builder = &rewriter->builder;
+  const iree_host_size_t action_index = action - emitter->actions;
+  const loom_aie2p_native_input_t* input =
+      emitter->inputs_by_action ? emitter->inputs_by_action[action_index]
+                                : NULL;
+  if (input) {
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_emit_input(
+        builder, input, action_index, false, state));
+  }
   if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE ||
       action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE ||
       action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_WAIT) {
@@ -298,6 +323,10 @@ static iree_status_t loom_aie2p_native_channel_action(
       if (endpoint->access->window) {
         IREE_RETURN_IF_ERROR(loom_aie2p_native_invoke(
             builder, *acquire, &emitter->acquire_delta, 1, NULL, NULL));
+      }
+      if (input) {
+        IREE_RETURN_IF_ERROR(loom_aie2p_native_emit_input(
+            builder, input, action_index, true, state));
       }
       if (!write) {
         for (const loom_aie2p_native_refill_t* refill = endpoint->refills;
@@ -473,6 +502,23 @@ iree_status_t loom_aie2p_native_emit_worker(
   }
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_prepare_refills(context, worker->refills));
+  iree_host_size_t input_count = 0;
+  if (worker->inputs) {
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        arena, channels->plan.action_count, sizeof(*emitter.inputs_by_action),
+        (void**)&emitter.inputs_by_action));
+    memset(emitter.inputs_by_action, 0,
+           channels->plan.action_count * sizeof(*emitter.inputs_by_action));
+    for (loom_aie2p_native_input_t* input = worker->inputs; input;
+         input = input->next) {
+      const uint32_t* actions = input->continuation.phase_actions;
+      emitter.inputs_by_action[actions[input->continuation.first_phase]] =
+          input;
+      emitter.inputs_by_action[actions[input->source->phase_count - 1]] = input;
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_prepare_input(context, input));
+      ++input_count;
+    }
+  }
   loom_aie2p_worker_builder_t* code = &context->code;
   if (has_sram) {
     IREE_RETURN_IF_ERROR(loom_rewriter_enable_worklist(rewriter));
@@ -517,7 +563,7 @@ iree_status_t loom_aie2p_native_emit_worker(
   loom_block_t* entry =
       loom_region_entry_block(loom_func_like_body(channels->function));
   loom_builder_set_before(&rewriter->builder, entry->first_op);
-  IREE_RETURN_IF_ERROR(loom_aie2p_native_materialize_buffer_accesses(
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_materialize_storage_accesses(
       context, rewriter, worker, instance));
   const loom_type_t delta_type = loom_type_scalar(LOOM_SCALAR_TYPE_I32);
   // Establish one canonical +/-1 pair in every channel-bearing worker. Both
@@ -546,7 +592,7 @@ iree_status_t loom_aie2p_native_emit_worker(
   emitter.origin = loom_index_constant_result(origin);
   loom_value_id_t* state = NULL;
   const iree_host_size_t state_capacity =
-      endpoint_count * (has_sram ? 3 : 2) + refill_count * 2;
+      endpoint_count * (has_sram ? 3 : 2) + refill_count * 2 + input_count * 3;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       arena, state_capacity, sizeof(*state), (void**)&state));
   loom_value_id_t* state_views = NULL;
@@ -637,6 +683,19 @@ iree_status_t loom_aie2p_native_emit_worker(
       loom_op_t* value;
       IREE_RETURN_IF_ERROR(loom_scalar_constant_build(
           &rewriter->builder, loom_attr_i64((int32_t)initial[i]), delta_type,
+          LOOM_LOCATION_UNKNOWN, &value));
+      state_views[state_count] = LOOM_VALUE_ID_INVALID;
+      state[state_count++] = loom_scalar_constant_result(value);
+    }
+  }
+  for (loom_aie2p_native_input_t* input = worker->inputs; input;
+       input = input->next) {
+    input->state_index = state_count;
+    const uint32_t initial[] = {0, 1, 0};
+    for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(initial); ++i) {
+      loom_op_t* value;
+      IREE_RETURN_IF_ERROR(loom_scalar_constant_build(
+          &rewriter->builder, loom_attr_i64(initial[i]), delta_type,
           LOOM_LOCATION_UNKNOWN, &value));
       state_views[state_count] = LOOM_VALUE_ID_INVALID;
       state[state_count++] = loom_scalar_constant_result(value);

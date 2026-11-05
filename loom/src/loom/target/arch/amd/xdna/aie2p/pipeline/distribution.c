@@ -11,7 +11,7 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/switch.h"
 #include "loom/target/arch/amd/xdna/array/registers.h"
 
-static iree_status_t loom_aie2p_native_select_distribution_endpoint(
+iree_status_t loom_aie2p_native_select_channel_endpoint(
     loom_aie2p_native_context_t* context,
     const loom_aie2p_native_channel_t* channel,
     loom_xdna_dma_direction_t direction, uint32_t repetitions,
@@ -317,7 +317,7 @@ static iree_status_t loom_aie2p_native_select_packet_distribution(
     }
     iree_string_view_t reason;
     bool valid = false;
-    IREE_RETURN_IF_ERROR(loom_aie2p_native_select_distribution_endpoint(
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
         context, receiver_channel, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
         totals[i], 1, path ? &path->receivers[ordinal] : NULL,
         &distribution->receivers[ordinal], &reason, &valid));
@@ -632,7 +632,7 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
             (void**)&distribution->receivers));
         iree_string_view_t reason;
         bool valid = false;
-        IREE_RETURN_IF_ERROR(loom_aie2p_native_select_distribution_endpoint(
+        IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
             context, source_channel, LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM,
             distribution->repetitions,
             (uint32_t)(cohort->admissions == 1 ? batch->replays : 1),
@@ -656,7 +656,7 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
                 IREE_SV("complete destination-ring turns at a shared multicast "
                         "phase boundary"));
           }
-          IREE_RETURN_IF_ERROR(loom_aie2p_native_select_distribution_endpoint(
+          IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
               context, destination_channel,
               LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
               distribution->repetitions, 1, path ? &path->receivers[j] : NULL,

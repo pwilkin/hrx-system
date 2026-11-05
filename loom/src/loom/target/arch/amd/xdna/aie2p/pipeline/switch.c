@@ -209,9 +209,6 @@ iree_status_t loom_aie2p_native_switches_build(
   for (iree_host_size_t i = 0; i < context->routing.route_count; ++i) {
     const loom_aie2p_native_route_t* selected = &context->routes[i];
     const loom_aie2p_array_route_plan_t* edge = selected->edge;
-    if (edge->switch_kind == LOOM_AIE2P_ARRAY_SWITCH_KIND_SHIM_MUX) {
-      continue;
-    }
     const iree_host_size_t tile_index =
         edge->coordinate.column * context->family->row_count +
         edge->coordinate.row;
@@ -223,6 +220,21 @@ iree_status_t loom_aie2p_native_switches_build(
           loom_aie2p_native_switch_initialize(context, tile, state));
       *tail = state->desired;
       tail = &state->desired->next;
+    }
+    if (edge->switch_kind == LOOM_AIE2P_ARRAY_SWITCH_KIND_SHIM_MUX) {
+      if (edge->destination_port == LOOM_XDNA_STREAM_PORT_DMA &&
+          selected->packet != UINT8_MAX) {
+        // The shim DMA sits behind the mux. Its payload leaves the stream
+        // switch's south master, which owns header removal before the mux.
+        const uint16_t master =
+            loom_xdna_array_stream_port_range(context->family, kind,
+                                              LOOM_XDNA_STREAM_DIRECTION_MASTER,
+                                              LOOM_XDNA_STREAM_PORT_SOUTH)
+                ->ordinal +
+            edge->source_channel;
+        state->drop_headers |= UINT32_C(1) << master;
+      }
+      continue;
     }
     const uint16_t master =
         loom_xdna_array_stream_port_range(context->family, kind,

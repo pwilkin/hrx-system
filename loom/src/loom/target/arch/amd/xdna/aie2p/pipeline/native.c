@@ -10,6 +10,8 @@
 #include "loom/ops/channel/ops.h"
 #include "loom/ops/func/ops.h"
 #include "loom/ops/pipeline/ops.h"
+#include "loom/ops/type_registry.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 #include "loom/target/arch/amd/xdna/error_catalog.h"
 #include "loom/target/function_version.h"
@@ -96,9 +98,35 @@ static iree_status_t loom_aie2p_native_select_channels(
     const loom_pipeline_resource_allocation_t* allocation =
         occurrence->allocation;
     if (!allocation) {
-      return loom_aie2p_native_reject(
-          context, source->binding,
-          IREE_SV("invocation-owned on-chip channel storage"));
+      const loom_memory_channel_binding_t* external =
+          realization->memory_bindings ? realization->memory_bindings[i] : NULL;
+      if (!external) {
+        return loom_aie2p_native_reject(
+            context, source->binding,
+            IREE_SV("on-chip storage or a jointly selected external channel "
+                    "protocol"));
+      }
+      const loom_memory_channel_protocol_t* protocol = external->protocol;
+      if (protocol->payload.byte_stride > UINT32_MAX ||
+          source->geometry->record_bit_span / 8 > UINT32_MAX ||
+          protocol->generation_byte_length != 4) {
+        return loom_aie2p_native_reject(
+            context, source->binding,
+            IREE_SV(
+                "native byte-addressable slots and 32-bit shared generations"));
+      }
+      context->channels[i] = (loom_aie2p_native_channel_t){
+          .source = source,
+          .external = external,
+          .pool_index = UINT32_MAX,
+          .byte_stride = (uint32_t)protocol->payload.byte_stride,
+          .record_byte_length =
+              (uint32_t)(source->geometry->record_bit_span / 8),
+          .record_dense = source->geometry->record_dense,
+          .cursor = {.reader = {.worker = UINT32_MAX},
+                     .writer = {.worker = UINT32_MAX}},
+      };
+      continue;
     }
     loom_aie2p_native_tile_t* owner =
         context->pool_tiles[allocation->pool_index];
@@ -168,6 +196,11 @@ static iree_status_t loom_aie2p_native_select_channel_accesses(
     loom_aie2p_native_channel_access_t* access =
         &worker->channels.accesses[worker->channels.count++];
     const loom_aie2p_native_channel_t* channel = &context->channels[index];
+    if (channel->external) {
+      return loom_aie2p_native_reject(
+          context, source->source->declaration,
+          IREE_SV("DMA transfer of external channel payload into local views"));
+    }
     *access = (loom_aie2p_native_channel_access_t){.channel = channel};
     if (context->pool_tiles[channel->pool_index]->facts->kind ==
         LOOM_XDNA_TILE_KIND_MEMORY) {
@@ -241,7 +274,7 @@ static iree_status_t loom_aie2p_native_select_channel_accesses(
   return iree_ok_status();
 }
 
-static iree_status_t loom_aie2p_native_select_buffer_accesses(
+static iree_status_t loom_aie2p_native_select_storage_accesses(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_invocation_t* invocation,
     const loom_pipeline_worker_t* source, loom_aie2p_native_worker_t* worker,
@@ -251,29 +284,56 @@ static iree_status_t loom_aie2p_native_select_buffer_accesses(
   const loom_value_id_t* arguments =
       loom_func_like_arg_ids(source->function, &argument_count);
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
-      context->pass->arena, argument_count, sizeof(*worker->buffers.accesses),
-      (void**)&worker->buffers.accesses));
+      context->pass->arena, argument_count, sizeof(*worker->storage.accesses),
+      (void**)&worker->storage.accesses));
   for (uint16_t i = 0; i < argument_count; ++i) {
     const loom_value_id_t argument = arguments[i];
-    if (!loom_type_is_buffer(
-            loom_module_value_type(context->code.module, argument)) ||
+    const loom_type_t type =
+        loom_module_value_type(context->code.module, argument);
+    if ((!loom_type_is_buffer(type) && !loom_type_is_view(type)) ||
         !loom_module_value_has_uses(context->code.module, argument)) {
       continue;
     }
-    loom_value_fact_buffer_reference_t reference;
-    if (!loom_value_facts_query_buffer_reference(
-            &source->facts.context,
-            loom_value_fact_table_lookup(&source->facts, argument),
-            &reference)) {
+    const loom_value_facts_t facts =
+        loom_value_fact_table_lookup(&source->facts, argument);
+    loom_value_id_t root;
+    loom_value_fact_memory_space_t memory_space;
+    loom_value_facts_t byte_offset = loom_value_facts_exact_i64(0);
+    uint64_t offset_alignment = UINT64_MAX;
+    if (loom_type_is_buffer(type)) {
+      loom_value_fact_buffer_reference_t reference;
+      if (!loom_value_facts_query_buffer_reference(&source->facts.context,
+                                                   facts, &reference)) {
+        return loom_aie2p_native_reject(
+            context, source->source->call,
+            IREE_SV("a resolved storage root for each core buffer capture"));
+      }
+      root = loom_value_fact_buffer_reference_resolve_root_value(reference,
+                                                                 argument);
+      memory_space = reference.memory_space;
+    } else {
+      loom_value_fact_view_reference_t reference;
+      if (!loom_value_facts_query_view_reference(&source->facts.context, facts,
+                                                 &reference)) {
+        return loom_aie2p_native_reject(
+            context, source->source->call,
+            IREE_SV("a resolved storage root for each core view capture"));
+      }
+      root = loom_value_fact_view_reference_resolve_root_value(reference,
+                                                               argument);
+      memory_space = reference.memory_space;
+      byte_offset = reference.base_byte_offset;
+      offset_alignment = reference.minimum_alignment;
+    }
+    if (memory_space != LOOM_VALUE_FACT_MEMORY_SPACE_WORKGROUP) {
+      continue;
+    }
+    int64_t offset;
+    if (!loom_value_facts_as_exact_i64(byte_offset, &offset) || offset < 0 ||
+        (uint64_t)offset > UINT32_MAX) {
       return loom_aie2p_native_reject(
           context, source->source->call,
-          IREE_SV("a resolved storage root for each core buffer capture"));
-    }
-    const loom_value_id_t root =
-        loom_value_fact_buffer_reference_resolve_root_value(reference,
-                                                            argument);
-    if (reference.memory_space != LOOM_VALUE_FACT_MEMORY_SPACE_WORKGROUP) {
-      continue;
+          IREE_SV("a fixed local byte offset for each core storage capture"));
     }
     const loom_pipeline_resource_allocation_t* allocation =
         loom_pipeline_invocation_lookup_allocation(invocation, root);
@@ -283,7 +343,7 @@ static iree_status_t loom_aie2p_native_select_buffer_accesses(
       return loom_aie2p_native_reject(
           context, source->source->call,
           IREE_SV("an invocation-owned finite local allocation for each core "
-                  "buffer capture"));
+                  "storage capture"));
     }
     const loom_aie2p_native_tile_t* owner =
         context->pool_tiles[allocation->pool_index];
@@ -299,11 +359,14 @@ static iree_status_t loom_aie2p_native_select_buffer_accesses(
           context, source->source->call,
           IREE_SV("captured storage directly visible from its consuming core"));
     }
-    loom_aie2p_native_buffer_access_t* access =
-        &worker->buffers.accesses[worker->buffers.count++];
+    loom_aie2p_native_storage_access_t* access =
+        &worker->storage.accesses[worker->storage.count++];
     access->argument = argument;
-    access->alignment = allocation->byte_alignment;
-    access->address = window->base + (uint32_t)allocation->byte_offset;
+    access->alignment =
+        offset ? iree_min(allocation->byte_alignment, offset_alignment)
+               : allocation->byte_alignment;
+    access->address =
+        window->base + (uint32_t)allocation->byte_offset + (uint32_t)offset;
   }
   *out_valid = true;
   return iree_ok_status();
@@ -379,7 +442,8 @@ static bool loom_aie2p_native_can_configure(
   for (iree_host_size_t i = 0; i < worker->binding_count; ++i) {
     const loom_aie2p_native_channel_t* channel = loom_aie2p_native_channel(
         context, realization, &worker->bindings[i].channel->identity);
-    if (channel->cursor.reader.shared || channel->cursor.writer.shared) {
+    if (channel->external || channel->cursor.reader.shared ||
+        channel->cursor.writer.shared) {
       return false;
     }
     if (channel->source->capacity > 1 &&
@@ -627,18 +691,71 @@ static iree_status_t loom_aie2p_native_select(
   uint16_t argument_count = 0;
   const loom_value_id_t* arguments =
       loom_func_like_arg_ids(realization->function, &argument_count);
+  const iree_host_size_t binding_count =
+      realization->buffer_roots ? realization->buffer_count : argument_count;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
-      context->pass->arena, argument_count, sizeof(*context->bindings),
+      context->pass->arena, binding_count, sizeof(*context->bindings),
       (void**)&context->bindings));
-  context->binding_count = argument_count;
+  context->binding_count = binding_count;
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      context->pass->arena, argument_count, sizeof(*context->argument_bindings),
+      (void**)&context->argument_bindings));
+  memset(context->argument_bindings, 0xff,
+         argument_count * sizeof(*context->argument_bindings));
   for (uint16_t i = 0; i < argument_count; ++i) {
-    if (!loom_type_is_buffer(loom_module_value_type(module, arguments[i]))) {
+    const loom_type_t type = loom_module_value_type(module, arguments[i]);
+    if (!loom_type_is_buffer(type) &&
+        !(realization->buffer_roots && loom_channel_type_isa(type))) {
       return loom_aie2p_native_reject(
           context, realization->function.op,
           IREE_SV("buffer invocation arguments after specialization"));
     }
+    if (!realization->buffer_roots) {
+      context->argument_bindings[i] = i;
+    }
+  }
+  for (iree_host_size_t i = 0; i < binding_count; ++i) {
     context->bindings[i] =
         (loom_aie2p_native_binding_t){.byte_length = 1, .byte_alignment = 4};
+    if (realization->buffer_roots &&
+        realization->buffer_roots[i] != LOOM_VALUE_ID_INVALID) {
+      const loom_pipeline_storage_argument_t* argument =
+          loom_pipeline_storage_arguments_find_buffer(
+              &realization->resources.storage_arguments,
+              realization->buffer_roots[i]);
+      if (argument) {
+        context->argument_bindings[argument->argument_index] = (uint32_t)i;
+      }
+    }
+  }
+  for (iree_host_size_t i = 0; i < realization->invocations.channel_count;
+       ++i) {
+    const loom_memory_channel_binding_t* external =
+        context->channels[i].external;
+    if (!external) {
+      continue;
+    }
+    const loom_memory_channel_protocol_t* protocol = external->protocol;
+    loom_aie2p_native_binding_t* payload =
+        &context->bindings[external->payload_binding];
+    payload->byte_length =
+        iree_max(payload->byte_length, protocol->payload_byte_length);
+    payload->byte_alignment =
+        iree_max(payload->byte_alignment,
+                 protocol->source->storage.root_minimum_alignment);
+    // Directional access is set by the admitted transport. Counter access is
+    // separate so cached payloads do not inherit atomic/control requirements.
+    loom_aie2p_native_binding_t* notification =
+        &context->bindings[external->notification_binding];
+    notification->byte_length = iree_max(
+        notification->byte_length,
+        iree_max(protocol->ready_byte_offset, protocol->free_byte_offset) +
+            (protocol->payload.capacity - 1) *
+                protocol->notification_byte_stride +
+            protocol->generation_byte_length);
+    notification->byte_alignment =
+        iree_max(notification->byte_alignment,
+                 (uint64_t)protocol->generation_byte_length);
   }
   const iree_host_size_t worker_count = realization->invocations.worker_count;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
@@ -675,6 +792,11 @@ static iree_status_t loom_aie2p_native_select(
         }
         loom_aie2p_native_channel_t* channel = loom_aie2p_native_channel(
             context, realization, first->admission->channel);
+        if (channel->external) {
+          return loom_aie2p_native_reject(
+              context, first->admission->op,
+              IREE_SV("borrowed input phases for shared external transport"));
+        }
         const loom_aie2p_native_tile_t* owner =
             context->pool_tiles[channel->pool_index];
         // One admitted batch has a single finite DMA lifetime. Its first
@@ -833,6 +955,13 @@ static iree_status_t loom_aie2p_native_select(
             IREE_SV("a completed FIFO prefix within semaphore credit range"));
       }
     }
+    bool input = false;
+    IREE_RETURN_IF_ERROR(
+        loom_aie2p_native_select_input(context, realization, i, &input));
+    if (input) {
+      worker->execution = LOOM_AIE2P_NATIVE_EXECUTION_INPUT;
+      continue;
+    }
     bool configure = false;
     bool repeat = false;
     if (source->transport.steps) {
@@ -959,7 +1088,7 @@ static iree_status_t loom_aie2p_native_select(
     if (!valid) {
       return iree_ok_status();
     }
-    IREE_RETURN_IF_ERROR(loom_aie2p_native_select_buffer_accesses(
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_select_storage_accesses(
         context, realization->invocations.workers[i].invocation, source, worker,
         &valid));
     if (!valid) {
@@ -984,7 +1113,11 @@ static iree_status_t loom_aie2p_native_select(
           IREE_SV("a DMA-owned ingress for retained FIFO replay"));
     }
   }
-  IREE_RETURN_IF_ERROR(loom_aie2p_native_select_progress(context, realization));
+  IREE_RETURN_IF_ERROR(
+      loom_aie2p_native_select_progress(context, realization, out_valid));
+  if (!*out_valid) {
+    return iree_ok_status();
+  }
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_select_collectives(context, realization, out_valid));
   if (!*out_valid) {

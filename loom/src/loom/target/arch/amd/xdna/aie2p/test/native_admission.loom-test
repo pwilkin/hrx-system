@@ -68,7 +68,7 @@ pipeline.def<kernel> public retain target(@device) @external_channel_backing() r
   %origin = index.constant 0 : offset
   %slots = index.constant 1 : index
   %records = buffer.view %backing[%origin] : buffer -> view<1x1xi32>
-  // ERROR@+1: XDNA/051 {requirement="invocation-owned on-chip channel storage"}
+  // ERROR@+1: XDNA/051 {requirement="on-chip storage or a jointly selected external channel protocol"}
   %channel = channel.bind<fifo> %records, %slots : view<1x1xi32>, index -> channel<tile<1xi32>>
   pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
     %write, %record = channel.reserve %channel : channel<tile<1xi32>> -> (write<tile<1xi32>>, view<1xi32>)
@@ -85,7 +85,7 @@ aie2p.target<array> @device {device_profile = "amd.xdna.strix.17f0_10"}
 pipeline.def<kernel> public retain target(@device) @unowned_local_core_buffer(%buffer: buffer) run() {
   %local = buffer.assume.memory_space<workgroup> %buffer : buffer
   %origin = index.constant 0 : offset
-  // ERROR@+1: XDNA/051 {requirement="an invocation-owned finite local allocation for each core buffer capture"}
+  // ERROR@+1: XDNA/051 {requirement="an invocation-owned finite local allocation for each core storage capture"}
   pipeline.strand workers([0, 3], [1, 1], [1, 1]) {
     %view = buffer.view %local[%origin] : buffer -> view<16xi32>
     %value = vector.splati 42 : vector<16xi32>

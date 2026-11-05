@@ -39,7 +39,7 @@ class Aie2pSwitchTest : public ::testing::TestWithParam<loom_xdna_tile_kind_t> {
                         coordinate_.row];
     tile.coordinate = coordinate_;
     tile.facts = loom_xdna_array_tile_facts(context_.family, coordinate_);
-    // Each test uses at most one route per packet ID, with no inter-tile hops.
+    // Local switch and shim mux edges fit within 32 entries in every case.
     IREE_ASSERT_OK(loom_aie2p_array_route_builder_initialize(
         context_.family, 32, 32, &arena_, &context_.routing));
   }
@@ -56,8 +56,9 @@ class Aie2pSwitchTest : public ::testing::TestWithParam<loom_xdna_tile_kind_t> {
     ASSERT_TRUE(loom_aie2p_array_route_stream(
         &context_.routing, index, index, coordinate_, source, source_channel,
         coordinate_, destination, destination_channel, packet != UINT8_MAX));
-    ASSERT_EQ(context_.routing.route_count, index + 1);
-    routes_.push_back({&context_.routing.routes[index], packet});
+    for (size_t i = index; i < context_.routing.route_count; ++i) {
+      routes_.push_back({&context_.routing.routes[i], packet});
+    }
   }
 
   void Build(bool expected_valid) {
@@ -273,18 +274,20 @@ TEST_P(Aie2pSwitchTest, OnlyDmaPayloadEndpointsRemovePacketHeaders) {
   const auto source = GetParam() == LOOM_XDNA_TILE_KIND_MEMORY
                           ? LOOM_XDNA_STREAM_PORT_DMA
                           : LOOM_XDNA_STREAM_PORT_SOUTH;
-  const bool payload = GetParam() != LOOM_XDNA_TILE_KIND_SHIM_NOC;
-  const auto endpoint =
-      payload ? LOOM_XDNA_STREAM_PORT_DMA : LOOM_XDNA_STREAM_PORT_TILE_CONTROL;
-  AddRoute(source, 0, endpoint, 0, 1);
+  AddRoute(source, 0, LOOM_XDNA_STREAM_PORT_DMA, 0, 1);
   AddRoute(source, 0, LOOM_XDNA_STREAM_PORT_NORTH, 0, 1);
   ASSERT_NO_FATAL_FAILURE(Build(true));
-  const uint16_t dma = Ordinal(LOOM_XDNA_STREAM_DIRECTION_MASTER, endpoint, 0);
+  const bool shim = GetParam() == LOOM_XDNA_TILE_KIND_SHIM_NOC;
+  const auto* tile = loom_xdna_array_tile_facts(context_.family, coordinate_);
+  const uint16_t dma =
+      Ordinal(LOOM_XDNA_STREAM_DIRECTION_MASTER,
+              shim ? LOOM_XDNA_STREAM_PORT_SOUTH : LOOM_XDNA_STREAM_PORT_DMA,
+              shim ? tile->dma.stream_to_memory_port_base : 0);
   const uint16_t north = Ordinal(LOOM_XDNA_STREAM_DIRECTION_MASTER,
                                  LOOM_XDNA_STREAM_PORT_NORTH, 0);
   EXPECT_EQ(PacketDestinations(source, 0, 1), (1u << dma) | (1u << north));
   EXPECT_EQ(Word(LOOM_AIE2P_NATIVE_SWITCH_BANK_MASTERS, dma) & (1u << 7),
-            payload ? 1u << 7 : 0u);
+            1u << 7);
   EXPECT_EQ(Word(LOOM_AIE2P_NATIVE_SWITCH_BANK_MASTERS, north) & (1u << 7), 0u);
 }
 

@@ -7,6 +7,7 @@
 #ifndef LOOM_TARGET_ARCH_AMD_XDNA_AIE2P_PIPELINE_NATIVE_H_
 #define LOOM_TARGET_ARCH_AMD_XDNA_AIE2P_PIPELINE_NATIVE_H_
 
+#include "loom/analysis/pipeline/continuations.h"
 #include "loom/analysis/pipeline/execution.h"
 #include "loom/target/arch/amd/xdna/aie2p/array/route.h"
 #include "loom/target/arch/amd/xdna/aie2p/facts.h"
@@ -39,7 +40,10 @@ typedef struct loom_aie2p_native_cursor_t {
 typedef struct loom_aie2p_native_channel_t {
   // Source channel occurrence retaining geometry and identity.
   const loom_pipeline_resource_channel_t* source;
-  // Canonical tile memory owning all records and credits.
+  // Shared external memory binding, or NULL for an on-chip FIFO. External
+  // storage owns no local pool or hardware semaphore pair.
+  const loom_memory_channel_binding_t* external;
+  // Canonical tile memory owning records and credits; unused for external.
   uint32_t pool_index;
   // First slot's byte address relative to the owner tile.
   uint32_t byte_offset;
@@ -105,15 +109,15 @@ typedef struct loom_aie2p_native_channel_access_t {
   } locks;
 } loom_aie2p_native_channel_access_t;
 
-// One worker formal bound to a pipeline-owned local allocation.
-typedef struct loom_aie2p_native_buffer_access_t {
+// One buffer or view formal bound to a pipeline-owned local allocation.
+typedef struct loom_aie2p_native_storage_access_t {
   // Worker entry argument whose uses consume this address.
   loom_value_id_t argument;
-  // Allocation base load address as seen by this worker.
+  // Captured buffer or view base load address as seen by this worker.
   uint32_t address;
-  // Minimum alignment guaranteed for the allocation base.
+  // Minimum alignment guaranteed at the captured base.
   uint64_t alignment;
-} loom_aie2p_native_buffer_access_t;
+} loom_aie2p_native_storage_access_t;
 
 // Explicit caller buffer contract, shared by every borrowing DMA operation.
 typedef struct loom_aie2p_native_binding_t {
@@ -421,6 +425,8 @@ typedef enum loom_aie2p_native_execution_e {
   LOOM_AIE2P_NATIVE_EXECUTION_CORE,
   LOOM_AIE2P_NATIVE_EXECUTION_CONFIGURATION,
   LOOM_AIE2P_NATIVE_EXECUTION_DMA,
+  // Shared external leases, driven by a selected existing reader continuation.
+  LOOM_AIE2P_NATIVE_EXECUTION_INPUT,
   LOOM_AIE2P_NATIVE_EXECUTION_DISTRIBUTION,
 } loom_aie2p_native_execution_t;
 
@@ -467,13 +473,13 @@ typedef struct loom_aie2p_native_worker_t {
   uint16_t completion_lock;
   // Worker-visible selector of its completion semaphore.
   uint16_t completion_selector;
-  // Pipeline-owned buffer captures selected for this worker.
+  // Pipeline-owned buffer and view captures selected for this worker.
   struct {
     // Access records in worker argument order.
-    loom_aie2p_native_buffer_access_t* accesses;
-    // Number of retained buffer accesses.
+    loom_aie2p_native_storage_access_t* accesses;
+    // Number of retained storage accesses.
     iree_host_size_t count;
-  } buffers;
+  } storage;
   // Admitted channel access windows in private cursor-state order.
   struct {
     // Access records owned by this worker occurrence.
@@ -523,6 +529,10 @@ typedef struct loom_aie2p_native_worker_t {
   bool has_egress;
   // Reader-driven continuation groups sharing one window counter pair.
   struct loom_aie2p_native_refill_t* refills;
+  // Borrowed input mechanics owned by a communication-only worker, or NULL.
+  struct loom_aie2p_native_input_t* input;
+  // External input continuations assigned to this instruction worker.
+  struct loom_aie2p_native_input_t* inputs;
 } loom_aie2p_native_worker_t;
 
 typedef struct loom_aie2p_native_join_function_t {
@@ -611,10 +621,17 @@ typedef struct loom_aie2p_native_context_t {
   iree_host_size_t distribution_sharing_capacity;
   // Complete entry program per physical core, initialized and joined once.
   loom_func_like_t* programs;
-  // Caller buffer contracts in source argument order.
+  // Published entry buffer contracts in physical binding order.
   loom_aie2p_native_binding_t* bindings;
+  // Physical buffer ordinal by original entry argument; channels are erased.
+  // Source storage projections select their original formal once, then consume
+  // this retained correspondence instead of inferring the physical ABI.
+  uint32_t* argument_bindings;
   // Number of caller buffer contracts.
   iree_host_size_t binding_count;
+  // Shared payload/control descriptors relocated by ordinary invocation
+  // bindings.
+  struct loom_aie2p_native_external_descriptor_t* external_descriptors;
   // Physical interconnect allocation shared by payload and control routes.
   loom_aie2p_array_route_builder_t routing;
   // Packet identity for every physical route edge.
@@ -739,6 +756,17 @@ iree_status_t loom_aie2p_native_select_sequence(
     uint32_t capacity, uint32_t byte_offset, uint32_t byte_stride,
     uint32_t credit_interval, const uint32_t template_words[8],
     loom_aie2p_native_dma_sequence_t* out_sequence,
+    iree_string_view_t* out_reason, bool* out_valid);
+
+// Selects a local record-credit DMA endpoint shared by distributions and
+// externally admitted input. The source channel owns its payload and credits.
+iree_status_t loom_aie2p_native_select_channel_endpoint(
+    loom_aie2p_native_context_t* context,
+    const loom_aie2p_native_channel_t* channel,
+    loom_xdna_dma_direction_t direction, uint32_t repetitions,
+    uint32_t credit_interval,
+    const loom_aie2p_native_distribution_endpoint_t* shared,
+    loom_aie2p_native_distribution_endpoint_t* out_endpoint,
     iree_string_view_t* out_reason, bool* out_valid);
 
 // Attaches one packet identity to newly allocated route edges.

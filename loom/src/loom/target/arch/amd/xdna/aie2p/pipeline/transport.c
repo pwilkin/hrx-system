@@ -8,6 +8,7 @@
 #include "loom/analysis/storage_geometry.h"
 #include "loom/ops/channel/ops.h"
 #include "loom/target/arch/amd/xdna/aie2p/call_abi.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/sharing.h"
@@ -794,6 +795,7 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
               &realization->resources.storage_arguments,
               external->root_value_id);
       if (!local_channel || !argument ||
+          context->argument_bindings[argument->argument_index] == UINT32_MAX ||
           !loom_symbolic_expr_is_linear(&external_view->begin_byte_offset) ||
           !loom_symbolic_expr_is_linear(&local_view->projection_byte_offset) ||
           external->begin_byte_offset.facts.range_lo < 0 ||
@@ -1010,7 +1012,7 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
           .task = queue->task,
           .source = transfer,
           .completion = group->completion,
-          .binding = argument->argument_index,
+          .binding = context->argument_bindings[argument->argument_index],
           .source_count = source_count,
           .external_view = external_view,
           .local_view = local_view,
@@ -1148,6 +1150,27 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
       continue;
     }
     const loom_aie2p_native_transfer_t* transfer = task->first_transfer;
+    // Input queries and final credit retirement consume this same scalar
+    // stream. They must not intercept an outstanding task completion. Async
+    // legality has already confined each task's lifetime to one basic block.
+    for (const loom_aie2p_native_input_t* input = worker->inputs; input;
+         input = input->next) {
+      const uint32_t sites[] = {
+          input->continuation.phase_actions[input->continuation.first_phase],
+          input->continuation.phase_actions[input->source->phase_count - 1]};
+      for (iree_host_size_t site = 0; site < IREE_ARRAYSIZE(sites); ++site) {
+        const loom_op_t* action = source->channels.actions[sites[site]].op;
+        const loom_op_t* issue = transfer->source->request.op;
+        if (action->parent_block == issue->parent_block &&
+            action->block_ordinal > issue->block_ordinal &&
+            !loom_aie2p_native_transfer_retired(transfer, action)) {
+          return loom_aie2p_native_reject(
+              context, action,
+              IREE_SV("DMA completion before a shared-input continuation uses "
+                      "the same core reply stream"));
+        }
+      }
+    }
     for (const loom_aie2p_native_dma_path_t* path = resource_owner->paths; path;
          path = path->next) {
       const loom_aie2p_native_transfer_t* previous = path->last_token_transfer;
@@ -1277,7 +1300,11 @@ iree_status_t loom_aie2p_native_select_transfers(
   iree_host_size_t cohort_count = 0;
   iree_host_size_t destination_count = 0;
   iree_host_size_t child_control_count = 0;
+  iree_host_size_t input_source_count = 0;
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
+    if (context->workers[i].input) {
+      input_source_count += context->workers[i].input->source->phase_count + 4;
+    }
     for (const loom_kernel_async_stream_t* stream =
              realization->workers[i].asynchronous.streams;
          stream; stream = stream->next) {
@@ -1300,7 +1327,7 @@ iree_status_t loom_aie2p_native_select_transfers(
   }
   iree_host_size_t source_count =
       transfer_count * 4 + cohort_count + destination_count +
-      child_control_count +
+      child_control_count + input_source_count +
       context->collective_count * context->execution.engine_count;
   for (iree_host_size_t i = 0; i < realization->invocations.channel_count; ++i) {
     // One receiver and one sender queue per equal-ordinal channel. Shared
@@ -1371,6 +1398,12 @@ iree_status_t loom_aie2p_native_select_transfers(
       }
       status = loom_aie2p_native_select_worker_distributions(
           context, realization, i, &next_source, &valid);
+      continue;
+    }
+    if (context->workers[i].input) {
+      status = loom_aie2p_native_route_input(
+          context, realization, context->workers[i].input, &next_source,
+          next_controller, &valid);
       continue;
     }
     loom_pipeline_worker_t* worker = &realization->workers[i];

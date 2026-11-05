@@ -1,0 +1,143 @@
+// RUN: emit source-low @local_views target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=low
+
+// Buffer and typed captures alias one allocation. The view origin is part of
+// the selected local address; its strided layout remains part of the view type.
+pipeline.def<kernel> public @local_views() run() {
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %bytes = index.constant 64 : offset
+  %origin = index.constant 0 : offset
+  %displacement = index.constant 20 : offset
+  %storage = buffer.alloca<workgroup> pool(%memory) align(64) %bytes : buffer
+  %whole = buffer.view %storage[%origin] : buffer -> view<16xi32>
+  %matrix = buffer.view %storage[%displacement] : buffer -> view<2x2xi32, #encoding.layout.strided<strides=[4, 1]>>
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    %packet = vector.splati 37 : vector<16xi32>
+    vector.store %packet, %whole[0] : vector<16xi32>, view<16xi32>
+    %base = buffer.view %storage[%origin] : buffer -> view<1xi32>
+    %value = scalar.constant 37 : i32
+    view.store %value, %base[0] : i32, view<1xi32>
+    view.store %value, %matrix[0, 0] : i32, view<2x2xi32, #encoding.layout.strided<strides=[4, 1]>>
+    view.store %value, %matrix[1, 1] : i32, view<2x2xi32, #encoding.layout.strided<strides=[4, 1]>>
+  }
+}
+
+// ----
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_4() asm {
+  %22 = mov.local-address 458752
+  %32 = mov.local-address 458772
+  %66 = mov.short 37
+  %packet = vbcst.32 %66
+  vst.512.i32x16 %packet, %22, 0
+  st %66, %22, 0
+  st %66, %32, 0
+  st %66, %32, 20
+  %47 = mov.short 1
+  rel %47, 48
+  low.br ^_bb1
+^_bb1:
+  %48 = mov.ss
+  low.br ^_bb1
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_5) @__aie2p_worker_helper_6() asm {
+  %49 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  %50 = constant 3 : reg<aie2p.config.scalar : i64>
+  %51 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %49, %50, %51
+  %52 = constant 0 : reg<aie2p.config.scalar : i64>
+  program.load %52, %51, @__aie2p_worker_helper_4
+  %53 = constant 64 : reg<aie2p.config.scalar : i64>
+  data.reserve %52, %51, %52, %53
+  return
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_5) @__aie2p_worker_helper_7() asm {
+  %54 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  %55 = constant 0 : reg<aie2p.config.scalar : i64>
+  write32 %54, %55
+  measure.begin
+  %56 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  %57 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %56, %57, %55
+  %58 = constant 1 : reg<aie2p.config.scalar : i64>
+  write.mask32 %56, %58, %58
+  %59 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %54, %59, %58
+  measure.end
+  %60 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %56, %60, %57
+  return
+}
+
+low.func.def public target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_5) abi(array_program) @local_views() asm {
+  %61 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %61, @__aie2p_worker_helper_6, @__aie2p_worker_helper_7
+  return
+}
+
+// ====
+
+// RUN: emit source-low @neighbor_view target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=low
+
+// A capture in the preceding tile uses its neighbor aperture, not the owner's
+// local address, and preserves the nonzero subword displacement.
+pipeline.def<kernel> public @neighbor_view() run() {
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %bytes = index.constant 32 : offset
+  %displacement = index.constant 6 : offset
+  %storage = buffer.alloca<workgroup> pool(%memory) align(32) %bytes : buffer
+  %element = buffer.view %storage[%displacement] : buffer -> view<1xi16>
+  pipeline.strand workers([0, 3], [1, 1], [1, 1]) {
+    %value = scalar.constant 19 : i16
+    view.store %value, %element[0] : i16, view<1xi16>
+  }
+}
+
+// ----
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_2() asm {
+  %10 = mov.local-address 262150
+  %value = mov.short 19
+  st.s16 %value, %10, 0
+  %22 = mov.short 1
+  rel %22, 48
+  low.br ^_bb1
+^_bb1:
+  %23 = mov.ss
+  low.br ^_bb1
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_3) @__aie2p_worker_helper_4() asm {
+  %24 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  %25 = constant 3 : reg<aie2p.config.scalar : i64>
+  %26 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %24, %25, %26
+  %27 = constant 0 : reg<aie2p.config.scalar : i64>
+  program.load %27, %25, @__aie2p_worker_helper_2
+  %28 = constant 32 : reg<aie2p.config.scalar : i64>
+  data.reserve %27, %26, %27, %28
+  return
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_3) @__aie2p_worker_helper_5() asm {
+  %29 = constant 3272704 : reg<aie2p.config.scalar : i64>
+  %30 = constant 0 : reg<aie2p.config.scalar : i64>
+  write32 %29, %30
+  measure.begin
+  %31 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  %32 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %31, %32, %30
+  %33 = constant 1 : reg<aie2p.config.scalar : i64>
+  write.mask32 %31, %33, %33
+  %34 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %29, %34, %33
+  measure.end
+  %35 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %31, %35, %32
+  return
+}
+
+low.func.def public target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_3) abi(array_program) @neighbor_view() asm {
+  %36 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %36, @__aie2p_worker_helper_4, @__aie2p_worker_helper_5
+  return
+}
