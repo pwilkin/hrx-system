@@ -353,6 +353,25 @@ typedef struct loom_target_pipeline_contribution_t {
 typedef iree_status_t (*loom_target_provider_pipeline_contribution_fn_t)(
     const loom_target_pipeline_contribution_t* contribution);
 
+typedef struct loom_target_function_version_t loom_target_function_version_t;
+typedef struct loom_pipeline_resource_inventory_t
+    loom_pipeline_resource_inventory_t;
+typedef struct loom_pipeline_realization_callback_t
+    loom_pipeline_realization_callback_t;
+
+// Creates physical resources and emission mechanics for one execution
+// occurrence. The supplied version identifies the child independently of the
+// active pass frame. State lives in pass->arena through common selection and
+// emission; the common owner retains source analysis, traversal, and all
+// function lifetimes. A diagnosed target-support rejection leaves out_valid
+// false. Status carries allocation or diagnostic emission failure. No source IR
+// is changed here.
+typedef iree_status_t (*loom_target_provider_pipeline_realization_fn_t)(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_target_function_version_t* version,
+    loom_pipeline_resource_inventory_t* out_inventory,
+    loom_pipeline_realization_callback_t* out_callback, bool* out_valid);
+
 // Selects one immutable process-lifetime profile by family-owned selector.
 //
 // The returned profile is borrowed and requires no release. Providers without
@@ -418,6 +437,11 @@ struct loom_target_provider_t {
   const loom_pass_registry_t* pass_registry;
   // Optional pass-pipeline contribution callback.
   loom_target_provider_pipeline_contribution_fn_t contribute_pipeline;
+  // Optional physical inventory and mechanics for common pipeline realization.
+  // The resolved provider is retained on the child version; parent owners do
+  // not recover target identity from source symbols or link private backends.
+  loom_target_provider_pipeline_realization_fn_t
+      initialize_pipeline_realization;
   // True when execution-resource planning needs loop policies expanded and
   // control flow lowered while strands still borrow construction storage.
   // Common preparation owns those transforms before outlining. Ordinary

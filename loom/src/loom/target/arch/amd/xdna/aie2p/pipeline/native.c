@@ -1056,20 +1056,3 @@ iree_status_t loom_aie2p_pipeline_realization_initialize(
   *out_valid = true;
   return iree_ok_status();
 }
-
-iree_status_t loom_aie2p_pipeline_realize(loom_pass_t* pass,
-                                          loom_module_t* module,
-                                          loom_func_like_t function) {
-  loom_aie2p_native_context_t context;
-  loom_pipeline_realization_callback_t callback;
-  bool valid = false;
-  IREE_RETURN_IF_ERROR(loom_aie2p_pipeline_realization_initialize(
-      pass, module,
-      loom_target_function_version_const_cast(pass->function_version), &context,
-      &callback, &valid));
-  if (!valid) {
-    return iree_ok_status();
-  }
-  return loom_pipeline_realize(pass, module, function, &context.inventory,
-                               &callback);
-}

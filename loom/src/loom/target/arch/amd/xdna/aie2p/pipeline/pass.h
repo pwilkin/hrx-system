@@ -13,6 +13,7 @@
 #include "loom/ir/ir.h"
 #include "loom/pass/registry.h"
 #include "loom/pass/types.h"
+#include "loom/transforms/pipeline/realization.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,14 @@ const loom_pass_info_t* loom_aie2p_pipeline_lower_pass_info(void);
 iree_status_t loom_aie2p_pipeline_lower_run(loom_pass_t* pass,
                                             loom_module_t* module,
                                             loom_func_like_t function);
+
+// Creates target mechanics whose lifetime spans parent-wide selection and
+// emission. The provider exposes this without exporting private native state.
+iree_status_t loom_aie2p_pipeline_realization_create(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_target_function_version_t* version,
+    loom_pipeline_resource_inventory_t* out_inventory,
+    loom_pipeline_realization_callback_t* out_callback, bool* out_valid);
 
 // Target pass registry containing AIE2P execution-realization passes.
 extern const loom_pass_registry_t loom_aie2p_pipeline_pass_registry;

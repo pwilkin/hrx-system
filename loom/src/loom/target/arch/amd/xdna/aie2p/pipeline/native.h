@@ -768,10 +768,6 @@ iree_status_t loom_aie2p_native_emit_transfers(
     const loom_pipeline_realization_t* realization,
     iree_host_size_t worker_index);
 
-iree_status_t loom_aie2p_pipeline_realize(loom_pass_t* pass,
-                                          loom_module_t* module,
-                                          loom_func_like_t function);
-
 // Selects the FIFO reader, relay, scalar carriers, and shared cursor ownership.
 iree_status_t loom_aie2p_native_select_collectives(
     loom_aie2p_native_context_t* context,

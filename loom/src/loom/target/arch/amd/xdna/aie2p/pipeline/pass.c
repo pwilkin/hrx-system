@@ -11,6 +11,7 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/configuration_entry.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/kernel_realization.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
+#include "loom/target/provider.h"
 
 static const loom_pass_info_t loom_aie2p_kernel_realization_pass_info_storage =
     {
@@ -54,7 +55,34 @@ iree_status_t loom_aie2p_pipeline_lower_run(loom_pass_t* pass,
   }
   // Construction helpers borrow their caller's pools and protocols. The
   // artifact owner binds and realizes them as children of its one invocation.
-  return loom_aie2p_pipeline_realize(pass, module, function);
+  const loom_target_function_version_t* version =
+      loom_target_function_version_const_cast(pass->function_version);
+  loom_pipeline_resource_inventory_t inventory;
+  loom_pipeline_realization_callback_t callback;
+  bool valid = false;
+  IREE_RETURN_IF_ERROR(
+      version->resolved_target.provider->initialize_pipeline_realization(
+          pass, module, version, &inventory, &callback, &valid));
+  if (!valid) {
+    return iree_ok_status();
+  }
+  return loom_pipeline_realize(pass, module, function, &inventory, &callback);
+}
+
+iree_status_t loom_aie2p_pipeline_realization_create(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_target_function_version_t* version,
+    loom_pipeline_resource_inventory_t* out_inventory,
+    loom_pipeline_realization_callback_t* out_callback, bool* out_valid) {
+  loom_aie2p_native_context_t* context = NULL;
+  IREE_RETURN_IF_ERROR(
+      iree_arena_allocate(pass->arena, sizeof(*context), (void**)&context));
+  IREE_RETURN_IF_ERROR(loom_aie2p_pipeline_realization_initialize(
+      pass, module, version, context, out_callback, out_valid));
+  if (*out_valid) {
+    *out_inventory = context->inventory;
+  }
+  return iree_ok_status();
 }
 
 static const loom_pass_info_t kAie2pConfigurationEntryPassInfo = {

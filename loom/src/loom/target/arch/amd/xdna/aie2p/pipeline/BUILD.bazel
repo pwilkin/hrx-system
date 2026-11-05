@@ -63,11 +63,13 @@ loom_cc_library(
         "//loom/src/loom/pass:value_facts",
         "//loom/src/loom/rewrite:rewriter",
         "//loom/src/loom/target:function_version",
+        "//loom/src/loom/target:provider",
         "//loom/src/loom/target/arch/amd/xdna:error_defs",
         "//loom/src/loom/target/arch/amd/xdna/aie2p:target_facts",
         "//loom/src/loom/target/arch/amd/xdna/aie2p/array:abi_layout",
         "//loom/src/loom/target/arch/amd/xdna/array:facts",
         "//loom/src/loom/target/arch/amd/xdna/device:profile",
+        "//loom/src/loom/transforms/pipeline:realization",
         "//runtime/src/iree/base",
     ],
 )
