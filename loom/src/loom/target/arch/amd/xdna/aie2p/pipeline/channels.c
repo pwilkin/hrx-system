@@ -196,6 +196,61 @@ static iree_status_t loom_aie2p_native_sram_publish_helper(
   return loom_aie2p_worker_return(&builder, NULL, 0);
 }
 
+static iree_status_t loom_aie2p_native_sram_lock_helper(
+    loom_aie2p_native_context_t* context,
+    const loom_aie2p_native_channel_t* channel, uint16_t lock, bool acquire,
+    uint32_t credits, loom_symbol_ref_t* out_symbol) {
+  loom_aie2p_worker_builder_t* code = &context->code;
+  const loom_aie2p_native_worker_t* owner =
+      &context
+           ->workers[context->execution
+                         .workers[context->core_engines[code->worker_index]]];
+  const loom_aie2p_native_tile_t* tile =
+      context->pool_tiles[channel->pool_index];
+  const iree_host_size_t tile_index = tile - context->tiles;
+  const int32_t delta = acquire ? -(int32_t)credits : (int32_t)credits;
+  const uint16_t indices[] = {lock, (uint16_t)delta & 127};
+  const uint64_t origin =
+      (uint64_t)tile->coordinate.column << context->family->column_shift |
+      (uint64_t)tile->coordinate.row << context->family->row_shift;
+  const loom_xdna_register_field_id_t field =
+      acquire ? LOOM_XDNA_REGISTER_FIELD_MEMORY_TILE_LOCK_ACQUIRE_SUCCESS
+              : LOOM_XDNA_REGISTER_FIELD_MEMORY_TILE_LOCK_RELEASE_SUCCESS;
+  const uint32_t address =
+      (uint32_t)(loom_xdna_register_field_address(context->family, field,
+                                                  tile->coordinate, indices) -
+                 origin);
+  loom_builder_t builder;
+  loom_op_t* function;
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(
+      code, NULL, 0, NULL, 0, &builder, out_symbol, &function));
+  loom_value_id_t zero;
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(code, &builder, 0, &zero));
+  loom_region_t* region = loom_low_func_def_body(function);
+  loom_block_t *request, *complete;
+  IREE_RETURN_IF_ERROR(
+      loom_region_append_block(code->module, region, &request));
+  IREE_RETURN_IF_ERROR(
+      loom_region_append_block(code->module, region, &complete));
+  loom_op_t* branch;
+  IREE_RETURN_IF_ERROR(loom_low_br_build(&builder, request, NULL, 0,
+                                         LOOM_LOCATION_UNKNOWN, &branch));
+  loom_builder_set_block(&builder, request);
+  loom_value_id_t success, pending;
+  // These addresses have read side effects. Read exactly one word: rounding
+  // the address or reading a prefix would execute different lock operations.
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_read(
+      code, &builder, owner->control_packets[tile_index],
+      owner->control_replies[tile_index], address, 1, &success));
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
+      code, &builder, AIE2P_CORE_DESCRIPTOR_REF_CMP_EQ_I32, success, zero,
+      &pending));
+  IREE_RETURN_IF_ERROR(loom_low_cond_br_build(
+      &builder, pending, request, complete, LOOM_LOCATION_UNKNOWN, &branch));
+  loom_builder_set_block(&builder, complete);
+  return loom_aie2p_worker_return(&builder, NULL, 0);
+}
+
 static iree_status_t loom_aie2p_native_materialize_storage_accesses(
     loom_aie2p_native_context_t* context, loom_rewriter_t* rewriter,
     const loom_aie2p_native_worker_t* worker,
@@ -323,6 +378,16 @@ static iree_status_t loom_aie2p_native_channel_action(
       if (endpoint->access->window) {
         IREE_RETURN_IF_ERROR(loom_aie2p_native_invoke(
             builder, *acquire, &emitter->acquire_delta, 1, NULL, NULL));
+      } else if (!endpoint->access->batch_publication) {
+        if (!loom_symbol_ref_is_valid(*acquire)) {
+          IREE_RETURN_IF_ERROR(loom_aie2p_native_sram_lock_helper(
+              emitter->context, endpoint->access->channel,
+              write ? endpoint->access->channel->free_lock
+                    : endpoint->access->channel->ready_lock,
+              true, 1, acquire));
+        }
+        IREE_RETURN_IF_ERROR(
+            loom_aie2p_native_invoke(builder, *acquire, NULL, 0, NULL, NULL));
       }
       if (input) {
         IREE_RETURN_IF_ERROR(loom_aie2p_native_emit_input(
@@ -377,7 +442,7 @@ static iree_status_t loom_aie2p_native_channel_action(
   if (!credits) {
     return iree_ok_status();
   }
-  if (!endpoint->access->window) {
+  if (endpoint->access->batch_publication) {
     const loom_type_t offset_type = loom_type_scalar(LOOM_SCALAR_TYPE_OFFSET);
     loom_op_t *delta, *prefix, *capacity, *complete, *publish;
     IREE_RETURN_IF_ERROR(
@@ -415,6 +480,16 @@ static iree_status_t loom_aie2p_native_channel_action(
       publish ? &endpoint->publish : &endpoint->release;
   if (credits != 1) {
     completion = &additional;
+  }
+  if (!endpoint->access->window) {
+    if (!loom_symbol_ref_is_valid(*completion)) {
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_sram_lock_helper(
+          emitter->context, endpoint->access->channel,
+          publish ? endpoint->access->channel->ready_lock
+                  : endpoint->access->channel->free_lock,
+          false, credits, completion));
+    }
+    return loom_aie2p_native_invoke(builder, *completion, NULL, 0, NULL, NULL);
   }
   if (!loom_symbol_ref_is_valid(*completion)) {
     IREE_RETURN_IF_ERROR(loom_aie2p_native_lock_helper(
@@ -539,7 +614,8 @@ iree_status_t loom_aie2p_native_emit_worker(
     memset(erased_values, 0, channels->plan.value_count);
     for (iree_host_size_t i = 0; i < channels->plan.action_count; ++i) {
       const loom_channel_plan_action_t* action = &channels->plan.actions[i];
-      if (action->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE) {
+      if (action->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE &&
+          action->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE) {
         continue;
       }
       const iree_host_size_t channel_index =
@@ -619,7 +695,7 @@ iree_status_t loom_aie2p_native_emit_worker(
                                    &buffer_type, &endpoint->buffer));
     }
     const loom_aie2p_native_channel_t* channel = endpoint->access->channel;
-    if (!endpoint->access->window) {
+    if (endpoint->access->batch_publication) {
       endpoint->publication = state_count;
       state_views[state_count] = LOOM_VALUE_ID_INVALID;
       state[state_count++] = emitter.origin;

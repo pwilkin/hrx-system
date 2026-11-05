@@ -1174,6 +1174,34 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
         }
       }
     }
+    for (iree_host_size_t action_index = 0;
+         worker->channels.remote_count &&
+         action_index < source->channels.action_count;
+         ++action_index) {
+      const loom_channel_plan_action_t* action =
+          &source->channels.actions[action_index];
+      const iree_host_size_t channel = loom_pipeline_invocations_channel_index(
+          &realization->invocations, action->channel);
+      const loom_aie2p_native_channel_access_t* access =
+          &worker->channels.accesses[worker->channels.indices[channel]];
+      if (access->window || access->batch_publication) {
+        continue;
+      }
+      if (!loom_channel_acquire_isa(action->op) &&
+          !loom_channel_reserve_isa(action->op) &&
+          !source->completion.actions[action_index].credits) {
+        continue;
+      }
+      const loom_op_t* issue = transfer->source->request.op;
+      if (action->op->parent_block == issue->parent_block &&
+          action->op->block_ordinal > issue->block_ordinal &&
+          !loom_aie2p_native_transfer_retired(transfer, action->op)) {
+        return loom_aie2p_native_reject(
+            context, action->op,
+            IREE_SV("DMA completion before an SRAM credit request uses the "
+                    "same core reply stream"));
+      }
+    }
     for (const loom_aie2p_native_dma_path_t* path = resource_owner->paths; path;
          path = path->next) {
       const loom_aie2p_native_transfer_t* previous = path->last_token_transfer;
@@ -1308,6 +1336,7 @@ iree_status_t loom_aie2p_native_select_transfers(
     if (context->workers[i].input) {
       input_source_count += context->workers[i].input->source->phase_count + 4;
     }
+    input_source_count += context->workers[i].channels.remote_count * 2;
     for (const loom_kernel_async_stream_t* stream =
              realization->workers[i].asynchronous.streams;
          stream; stream = stream->next) {
@@ -1470,6 +1499,15 @@ iree_status_t loom_aie2p_native_select_transfers(
       }
       const iree_host_size_t tile =
           context->pool_tiles[access->channel->pool_index] - context->tiles;
+      if (!access->batch_publication) {
+        status = loom_aie2p_native_select_control_route(
+            context, realization, i, &context->tiles[tile], true, &next_source,
+            next_controller, &valid);
+        if (!iree_status_is_ok(status) || !valid) {
+          break;
+        }
+        continue;
+      }
       if (!owner->control_packets ||
           owner->control_packets[tile] == UINT8_MAX) {
         return loom_aie2p_native_reject(
