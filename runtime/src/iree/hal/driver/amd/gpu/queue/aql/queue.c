@@ -657,6 +657,8 @@ static void iree_hal_amd_gpu_aql_process_entry(
     iree_hal_amd_gpu_publication_entry_t* entry) {
   iree_hal_amd_gpu_aql_entry_t* typed =
       iree_containerof(entry, iree_hal_amd_gpu_aql_entry_t, publication);
+  IREE_TRACE_ZONE_BEGIN(z0);
+  IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, typed->kind);
   switch (typed->kind) {
     case IREE_HAL_AMD_GPU_AQL_ENTRY_ALLOCATION:
     case IREE_HAL_AMD_GPU_AQL_ENTRY_TRANSFER:
@@ -742,6 +744,7 @@ static void iree_hal_amd_gpu_aql_process_entry(
       iree_hal_amd_gpu_aql_trim_storage(queue);
       break;
   }
+  IREE_TRACE_ZONE_END(z0);
 }
 
 static void iree_hal_amd_gpu_aql_enqueue_entry(
@@ -1492,7 +1495,9 @@ static iree_status_t iree_hal_amd_gpu_aql_queue_transfer(
     const iree_hal_transfer_operation_t* operations,
     const iree_hal_queue_barriers_t* barriers) {
   iree_hal_amd_gpu_aql_queue_t* queue = (void*)base;
-  IREE_RETURN_IF_ERROR(iree_hal_amd_gpu_aql_check_acceptance(queue));
+  IREE_TRACE_ZONE_BEGIN(z0);
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amd_gpu_aql_check_acceptance(queue));
   iree_hal_amd_gpu_profile_operation_t operation;
   if (queue->profile) {
     iree_hal_amd_gpu_profile_operation_initialize(
@@ -1502,12 +1507,16 @@ static iree_status_t iree_hal_amd_gpu_aql_queue_transfer(
         waits.count, signals.count, count, &operation);
   }
   iree_hal_amd_gpu_aql_submission_t* submission = NULL;
-  IREE_RETURN_IF_ERROR(iree_hal_amd_gpu_aql_submission_transfer(
+  IREE_TRACE_ZONE_BEGIN_NAMED(z1,
+                              "iree_hal_amd_gpu_aql_queue_transfer_capture");
+  iree_status_t status = iree_hal_amd_gpu_aql_submission_transfer(
       &queue->captures, queue->profile ? &operation : NULL, base->queue_family,
       waits, signals, count, operations,
       iree_hal_amd_gpu_aql_barrier_prepare(barriers ? barriers->before : NULL),
       iree_hal_amd_gpu_aql_barrier_prepare(barriers ? barriers->after : NULL),
-      &submission));
+      &submission);
+  IREE_TRACE_ZONE_END(z1);
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(z0, status);
   if (queue->profile) {
     iree_hal_amd_gpu_profile_operation_t* captured =
         iree_hal_amd_gpu_aql_submission_profile(submission);
@@ -1517,7 +1526,11 @@ static iree_status_t iree_hal_amd_gpu_aql_queue_transfer(
   submission->has_host_owner = true;
   iree_atomic_fetch_add(&queue->pending.host_owners, 1,
                         iree_memory_order_relaxed);
+  IREE_TRACE_ZONE_BEGIN_NAMED(z2,
+                              "iree_hal_amd_gpu_aql_queue_transfer_publish");
   iree_hal_amd_gpu_aql_enqueue_entry(queue, &submission->entry);
+  IREE_TRACE_ZONE_END(z2);
+  IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
 

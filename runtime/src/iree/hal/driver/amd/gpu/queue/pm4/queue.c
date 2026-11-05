@@ -3088,17 +3088,27 @@ static iree_status_t iree_hal_amd_gpu_pm4_queue_transfer(
     const iree_hal_transfer_operation_t* operations,
     const iree_hal_queue_barriers_t* barriers) {
   iree_hal_amd_gpu_pm4_queue_t* queue = (void*)base;
-  IREE_RETURN_IF_ERROR(iree_hal_amd_gpu_pm4_check_acceptance(queue));
+  IREE_TRACE_ZONE_BEGIN(z0);
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amd_gpu_pm4_check_acceptance(queue));
   iree_hal_amd_gpu_pm4_submission_t* submission = NULL;
-  IREE_RETURN_IF_ERROR(iree_hal_amd_gpu_pm4_submission_create_transfer(
+  IREE_TRACE_ZONE_BEGIN_NAMED(z1,
+                              "iree_hal_amd_gpu_pm4_queue_transfer_capture");
+  iree_status_t status = iree_hal_amd_gpu_pm4_submission_create_transfer(
       &queue->captures, queue->profile != NULL, base->queue_family, waits,
       signals, count, operations, &queue->options.barriers, barriers,
-      (iree_hal_amd_gpu_retirement_callback_t){0}, &submission));
+      (iree_hal_amd_gpu_retirement_callback_t){0}, &submission);
+  IREE_TRACE_ZONE_END(z1);
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(z0, status);
   if (queue->profile) {
     iree_hal_amd_gpu_pm4_submission_profile_transfer(
         submission, queue->profile, queue->options.queue_ordinal);
   }
+  IREE_TRACE_ZONE_BEGIN_NAMED(z2,
+                              "iree_hal_amd_gpu_pm4_queue_transfer_publish");
   iree_hal_amd_gpu_pm4_submit(queue, submission);
+  IREE_TRACE_ZONE_END(z2);
+  IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
 

@@ -50,6 +50,8 @@ iree_status_t iree_hal_amd_gpu_aql_transfer_prepare_chunk(
     const iree_hal_amd_gpu_transfer_t* transfer, uint64_t kernel,
     uint32_t packet_capacity, iree_byte_span_t upload, uint64_t upload_address,
     iree_hal_amd_gpu_aql_transfer_chunk_t* out_chunk) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+  IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, upload.data_length);
   *out_chunk = (iree_hal_amd_gpu_aql_transfer_chunk_t){
       .next = transfer->cursor,
   };
@@ -133,5 +135,6 @@ iree_status_t iree_hal_amd_gpu_aql_transfer_prepare_chunk(
       staging_length
           ? staging_offset + staging_length
           : out_chunk->packet_count * sizeof(iree_hal_amd_gpu_blit_arguments_t);
+  IREE_TRACE_ZONE_END(z0);
   return status;
 }
