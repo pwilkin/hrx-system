@@ -48,7 +48,8 @@ typedef struct loom_aie2p_native_input_phase_t {
 typedef struct loom_aie2p_native_input_t {
   // Communication-only source worker.
   uint32_t worker;
-  // Shared parent-selected payload and notification binding.
+  // Shared parent-selected payload and notification binding, or NULL when
+  // common analysis proves enclosing caller storage stable for the invocation.
   const loom_memory_channel_binding_t* binding;
   // Complete lease and phase counts from common transport analysis.
   const loom_pipeline_transport_input_t* source;
@@ -76,14 +77,15 @@ typedef struct loom_aie2p_native_input_t {
   uint32_t input_queue;
   // Tile-relative credit task publication register.
   uint32_t credit_queue;
-  // First of three private SSA values: slot, generation, and final-phase
-  // position. Assigned during worker materialization.
+  // First private SSA value. Shared leases retain slot, generation, and bulk
+  // position; stable enclosing storage retains only bulk position. Assigned
+  // during worker materialization.
   iree_host_size_t state_index;
   // Generated admission and arrival helpers in the observing worker's context.
   loom_symbol_ref_t begin;
   // Generated source reclamation helper in that same context.
   loom_symbol_ref_t complete;
-  // Next external input whose continuation runs on the same existing core.
+  // Next input whose continuation runs on the same existing core.
   struct loom_aie2p_native_input_t* next;
 } loom_aie2p_native_input_t;
 

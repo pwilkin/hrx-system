@@ -180,6 +180,7 @@ loom_check_test_suite(
         "native_dma_descriptors.loom-test",
         "native_local_buffers.loom-test",
         "native_periodic_refill.loom-test",
+        "native_phased_input.loom-test",
         "native_refill.loom-test",
         "native_refill_sharing.loom-test",
         "native_stream_routes.loom-test",

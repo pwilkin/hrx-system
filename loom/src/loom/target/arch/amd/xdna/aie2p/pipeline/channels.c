@@ -65,8 +65,8 @@ typedef struct loom_aie2p_native_channel_emitter_t {
   const loom_pipeline_worker_t* worker;
   // Projected actions in the same ordinal order as source completion deltas.
   const loom_channel_plan_action_t* actions;
-  // Exact admission/arrival actions selected for shared external lifetimes.
-  // NULL when this worker has no external input continuation.
+  // Exact admission/arrival actions selected for phased source lifetimes.
+  // NULL when this worker has no input continuation.
   const loom_aie2p_native_input_t** inputs_by_action;
   // Initial byte displacement for every channel cursor.
   loom_value_id_t origin;
@@ -502,7 +502,7 @@ iree_status_t loom_aie2p_native_emit_worker(
   }
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_prepare_refills(context, worker->refills));
-  iree_host_size_t input_count = 0;
+  iree_host_size_t input_state_count = 0;
   if (worker->inputs) {
     IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
         arena, channels->plan.action_count, sizeof(*emitter.inputs_by_action),
@@ -516,7 +516,7 @@ iree_status_t loom_aie2p_native_emit_worker(
           input;
       emitter.inputs_by_action[actions[input->source->phase_count - 1]] = input;
       IREE_RETURN_IF_ERROR(loom_aie2p_native_prepare_input(context, input));
-      ++input_count;
+      input_state_count += input->binding ? 3 : 1;
     }
   }
   loom_aie2p_worker_builder_t* code = &context->code;
@@ -591,8 +591,8 @@ iree_status_t loom_aie2p_native_emit_worker(
                                 LOOM_LOCATION_UNKNOWN, &origin));
   emitter.origin = loom_index_constant_result(origin);
   loom_value_id_t* state = NULL;
-  const iree_host_size_t state_capacity =
-      endpoint_count * (has_sram ? 3 : 2) + refill_count * 2 + input_count * 3;
+  const iree_host_size_t state_capacity = endpoint_count * (has_sram ? 3 : 2) +
+                                          refill_count * 2 + input_state_count;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       arena, state_capacity, sizeof(*state), (void**)&state));
   loom_value_id_t* state_views = NULL;
@@ -692,7 +692,7 @@ iree_status_t loom_aie2p_native_emit_worker(
        input = input->next) {
     input->state_index = state_count;
     const uint32_t initial[] = {0, 1, 0};
-    for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(initial); ++i) {
+    for (iree_host_size_t i = 0; i < (input->binding ? 3 : 1); ++i) {
       loom_op_t* value;
       IREE_RETURN_IF_ERROR(loom_scalar_constant_build(
           &rewriter->builder, loom_attr_i64(initial[i]), delta_type,

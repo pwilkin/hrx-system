@@ -1155,6 +1155,9 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
     // legality has already confined each task's lifetime to one basic block.
     for (const loom_aie2p_native_input_t* input = worker->inputs; input;
          input = input->next) {
+      if (!input->binding) {
+        continue;
+      }
       const uint32_t sites[] = {
           input->continuation.phase_actions[input->continuation.first_phase],
           input->continuation.phase_actions[input->source->phase_count - 1]};
