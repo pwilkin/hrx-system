@@ -30,16 +30,16 @@ pipeline.def<kernel> public retain target(@device) @local_capture() run() {
 
 // ----
 low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_5() asm {
-  %32 = mov.local-address 327680
-  %36 = mov.local-address 458752
-  %40 = mov.local-address 393216
-  %44 = mov.local-address 262144
+  %31 = mov.local-address 327680
+  %35 = mov.local-address 458752
+  %39 = mov.local-address 393216
+  %43 = mov.local-address 262144
   %80 = mov.short 42
   %value = vbcst.32 %80
-  vst.512.i32x16 %value, %36, 0
-  vst.512.i32x16 %value, %44, 0
-  vst.512.i32x16 %value, %32, 0
-  vst.512.i32x16 %value, %40, 0
+  vst.512.i32x16 %value, %35, 0
+  vst.512.i32x16 %value, %43, 0
+  vst.512.i32x16 %value, %31, 0
+  vst.512.i32x16 %value, %39, 0
   %59 = mov.short 1
   rel %59, 48
   low.br ^_bb1

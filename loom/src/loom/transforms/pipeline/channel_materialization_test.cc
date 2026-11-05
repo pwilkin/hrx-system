@@ -203,7 +203,8 @@ class ChannelMaterializationTest : public ::testing::Test {
   }
 
   void MaterializePlan(const loom_channel_plan_t& plan, loom_value_id_t initial,
-                       Boundary boundary) {
+                       Boundary boundary,
+                       const loom_cfg_graph_t* retained_graph = nullptr) {
     std::vector<loom_type_t> carriers(plan.value_count);
     std::vector<uint8_t> erased(plan.value_count, 0);
     for (loom_value_ordinal_t i = 0; i < plan.value_count; ++i) {
@@ -229,10 +230,13 @@ class ChannelMaterializationTest : public ::testing::Test {
     loom_rewriter_t rewriter;
     loom_rewriter_initialize(&rewriter, module_, &arena_);
     loom_cfg_graph_t graph;
-    IREE_ASSERT_OK(loom_cfg_graph_build(module_, plan.value_domain->region,
-                                        &arena_, &graph));
+    if (!retained_graph) {
+      IREE_ASSERT_OK(loom_cfg_graph_build(module_, plan.value_domain->region,
+                                          &arena_, &graph));
+      retained_graph = &graph;
+    }
     IREE_ASSERT_OK(
-        loom_channel_materialize(&rewriter, &plan, &graph, &options));
+        loom_channel_materialize(&rewriter, &plan, retained_graph, &options));
     loom_rewriter_deinitialize(&rewriter);
   }
 
@@ -440,12 +444,14 @@ TEST_F(ChannelMaterializationTest, ClonedAdmissionsBelongToTheirInstance) {
   loom_rewriter_t rewriter;
   loom_rewriter_initialize(&rewriter, module_, &arena_);
   loom_builder_set_block(&rewriter.builder, loom_module_block(module_));
+  loom_cfg_graph_t graph;
+  IREE_ASSERT_OK(loom_cfg_graph_build(module_, region_, &arena_, &graph));
   loom_channel_materialization_instance_t instances[2];
   const char* names[] = {"first_reader", "second_reader"};
   for (size_t i = 0; i < 2; ++i) {
     IREE_ASSERT_OK(loom_channel_materialization_clone(
-        &rewriter, loom_func_like_cast(module_, function_), &plan,
-        Symbol(names[i]), &instances[i]));
+        &rewriter, loom_func_like_cast(module_, function_), &plan, &graph,
+        Symbol(names[i]), {}, &instances[i]));
   }
   loom_rewriter_deinitialize(&rewriter);
   loom_local_value_domain_release(&domain_);
@@ -523,6 +529,8 @@ TEST_F(ChannelMaterializationTest, ClonedOccurrencesKeepLoopOwnershipSeparate) {
   // The same source argument is bound by two different constructions. Their
   // identities remain distinct even when the callable and storage could alias.
   const loom_channel_identity_t identities[] = {{channel_}, {channel_}};
+  loom_cfg_graph_t graph;
+  IREE_ASSERT_OK(loom_cfg_graph_build(module_, region_, &arena_, &graph));
   loom_channel_materialization_instance_t instances[2];
   loom_channel_plan_t plans[2];
   loom_rewriter_t rewriter;
@@ -537,8 +545,8 @@ TEST_F(ChannelMaterializationTest, ClonedOccurrencesKeepLoopOwnershipSeparate) {
                                            &arena_, &plans[i], &rejection));
     ASSERT_EQ(rejection.kind, LOOM_CHANNEL_PLAN_REJECTION_NONE);
     IREE_ASSERT_OK(loom_channel_materialization_clone(
-        &rewriter, loom_func_like_cast(module_, function_), &plans[i],
-        Symbol(names[i]), &instances[i]));
+        &rewriter, loom_func_like_cast(module_, function_), &plans[i], &graph,
+        Symbol(names[i]), {}, &instances[i]));
     EXPECT_TRUE(loom_local_value_domain_is_acquired(&domain_));
     EXPECT_FALSE(
         loom_local_value_domain_is_acquired(&instances[i].value_domain));
@@ -578,7 +586,21 @@ TEST_F(ChannelMaterializationTest, ClonedOccurrencesKeepLoopOwnershipSeparate) {
     EXPECT_EQ(loom_channel_plan_channel(&instance.plan, write), &identities[i]);
     EXPECT_EQ(loom_channel_plan_admission(&instance.plan, write),
               LOOM_VALUE_ID_INVALID);
-    MaterializePlan(instance.plan, initial, Boundary::Execution);
+    EXPECT_EQ(instance.graph.predecessor_indices, graph.predecessor_indices);
+    EXPECT_EQ(instance.graph.reverse_postorder.values,
+              graph.reverse_postorder.values);
+    EXPECT_EQ(instance.value_domain.arena, &arena_);
+    for (size_t e = 0; e < graph.edge_count; ++e) {
+      const auto& edge = instance.graph.edges[e];
+      EXPECT_EQ(edge.terminator,
+                body->blocks[edge.source_block_index]->last_op);
+      EXPECT_NE(edge.terminator, graph.edges[e].terminator);
+      if (edge.selector_value_id != LOOM_VALUE_ID_INVALID) {
+        EXPECT_EQ(edge.selector_value_id, entry->arg_ids[1]);
+      }
+    }
+    MaterializePlan(instance.plan, initial, Boundary::Execution,
+                    &instance.graph);
     loom_local_value_domain_release(&instance.value_domain);
     ExpectCall(entry->first_op, admission_, {initial});
     ExpectCall(body->blocks[2]->first_op, publication_, {write});

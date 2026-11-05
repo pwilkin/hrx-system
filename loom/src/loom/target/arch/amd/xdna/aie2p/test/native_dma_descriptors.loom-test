@@ -330,33 +330,33 @@ pipeline.def<kernel> public retain target(@device) @fixed_snapshot() run(%output
 // ----
 low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_11() asm {
   %135 = mov.short 1
-  %56 = mov.short -1
-  %39 = mov.local-address 458752
-  acq %56, 48
+  %55 = mov.short -1
+  %38 = mov.local-address 458752
+  acq %55, 48
   %initial = mov.short 11
-  st %initial, %39, 0
+  st %initial, %38, 0
   rel %135, 49
-  acq %56, 49
-  %40 = mov.short 0
-  %41 = mov.i32 -2147483648
-  %43 = mov.i32 -2147364348
+  acq %55, 49
+  %39 = mov.short 0
+  %40 = mov.i32 -2147483648
+  %42 = mov.i32 -2147364348
   mov.ms %135
-  mov.ms %43
-  mov.ms.last %41
-  %45 = mov.i32 122388
-  mov.ms %41
-  mov.ms %45
+  mov.ms %42
   mov.ms.last %40
-  %46 = mov.ss
+  %44 = mov.i32 122388
+  mov.ms %40
+  mov.ms %44
+  mov.ms.last %39
+  %45 = mov.ss
   %final = mov.short 22
-  st %final, %39, 0
+  st %final, %38, 0
   mov.ms %135
-  mov.ms %43
-  mov.ms.last %41
-  mov.ms %41
-  mov.ms %45
+  mov.ms %42
   mov.ms.last %40
-  %53 = mov.ss
+  mov.ms %40
+  mov.ms %44
+  mov.ms.last %39
+  %52 = mov.ss
   rel %135, 48
   rel %135, 50
   low.br ^_bb1

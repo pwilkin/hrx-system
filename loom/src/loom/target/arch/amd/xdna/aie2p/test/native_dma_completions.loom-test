@@ -53,54 +53,54 @@ pipeline.def<kernel> public retain target(@device) @mixed_arrivals() run(%input_
 // ----
 low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_15() asm {
   %219 = mov.short 1
-  %106 = mov.short -1
-  %75 = mov.local-address 458752
-  acq %106, 48
-  %76 = mov.short 0
-  %78 = mov.i32 -2147483648
-  %79 = mov.i32 -2147361276
-  mov.ms %78
-  mov.ms %79
-  mov.ms.last %76
-  %81 = mov.i32 119316
+  %104 = mov.short -1
+  %73 = mov.local-address 458752
+  acq %104, 48
+  %74 = mov.short 0
+  %76 = mov.i32 -2147483648
+  %77 = mov.i32 -2147361276
+  mov.ms %76
+  mov.ms %77
+  mov.ms.last %74
+  %79 = mov.i32 119316
   mov.ms %219
-  mov.ms %81
-  mov.ms.last %76
-  acq %106, 51
-  %saved = lda %75, 0
-  mov.ms %78
   mov.ms %79
+  mov.ms.last %74
+  acq %104, 51
+  %saved = lda %73, 0
+  mov.ms %76
+  mov.ms %77
   mov.ms.last %219
   mov.ms %219
-  mov.ms %81
-  mov.ms.last %219
-  acq %106, 51
-  %saved_pair = lda %75, 8
-  %90 = mov.short 2
-  mov.ms %78
   mov.ms %79
-  mov.ms.last %90
+  mov.ms.last %219
+  acq %104, 51
+  %saved_pair = lda %73, 8
+  %88 = mov.short 2
+  mov.ms %76
+  mov.ms %77
+  mov.ms.last %88
   mov.ms %219
-  mov.ms %81
-  mov.ms.last %90
-  acq %106, 51
-  %value = lda %75, 0
+  mov.ms %79
+  mov.ms.last %88
+  acq %104, 51
+  %value = lda %73, 0
   %partial_sum = add.nc %saved, %value
   %sum = add.nc %partial_sum, %saved_pair
-  st %sum, %75, 0
+  st %sum, %73, 0
   rel %219, 49
-  acq %106, 49
-  %97 = mov.short 4
-  %98 = mov.i32 -2147483644
-  %100 = mov.i32 -2147364348
+  acq %104, 49
+  %95 = mov.short 4
+  %96 = mov.i32 -2147483644
+  %98 = mov.i32 -2147364348
   mov.ms %219
+  mov.ms %98
+  mov.ms.last %96
+  %100 = mov.i32 122388
+  mov.ms %76
   mov.ms %100
-  mov.ms.last %98
-  %102 = mov.i32 122388
-  mov.ms %78
-  mov.ms %102
-  mov.ms.last %97
-  %103 = mov.ss
+  mov.ms.last %95
+  %101 = mov.ss
   rel %219, 48
   rel %219, 50
   low.br ^_bb1
