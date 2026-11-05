@@ -10,6 +10,35 @@
 #include "loom/ops/view/ops.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 
+// Selects a compact descriptor's slot after all preceding reads retire.
+// Query payloads and credit completions have already drained the reply stream.
+static iree_status_t loom_aie2p_native_input_select_slot(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    loom_region_t* region, const loom_aie2p_native_input_t* input,
+    uint32_t register_offset, uint32_t geometry_word, loom_value_id_t slot) {
+  loom_aie2p_worker_builder_t* code = &context->code;
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
+      context, builder, region, input->shim, input->input_engine,
+      LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, input->control_packet,
+      input->completion_packet));
+  const loom_xdna_register_field_info_t current = loom_xdna_register_field_info(
+      LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT);
+  loom_value_id_t shift, current_slot, geometry, iteration;
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
+      code, builder, current.least_significant_bit, &shift));
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
+      code, builder, AIE2P_CORE_DESCRIPTOR_REF_LSHL_I32, slot, shift,
+      &current_slot));
+  IREE_RETURN_IF_ERROR(
+      loom_aie2p_worker_constant(code, builder, geometry_word, &geometry));
+  IREE_RETURN_IF_ERROR(
+      loom_aie2p_worker_binary(code, builder, AIE2P_CORE_DESCRIPTOR_REF_OR_I32,
+                               geometry, current_slot, &iteration));
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
+      code, builder, input->control_packet, register_offset, &iteration, 1));
+  return iree_ok_status();
+}
+
 static iree_status_t loom_aie2p_native_input_begin(
     loom_aie2p_native_context_t* context, loom_aie2p_native_input_t* input) {
   loom_aie2p_worker_builder_t* code = &context->code;
@@ -40,15 +69,22 @@ static iree_status_t loom_aie2p_native_input_begin(
         values[input->binding ? 2 : 0], zero, &first));
     loom_op_t* op;
     if (input->binding) {
-      loom_value_id_t ready_base, ready;
+      loom_value_id_t ready;
       IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
-          code, &builder, input->ready_descriptor, &ready_base));
-      IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
-          code, &builder, AIE2P_CORE_DESCRIPTOR_REF_ADD_I32, ready_base,
-          values[0], &ready));
+          code, &builder, input->ready_descriptor, &ready));
+      if (input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+        IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
+            code, &builder, AIE2P_CORE_DESCRIPTOR_REF_ADD_I32, ready, values[0],
+            &ready));
+      }
       IREE_RETURN_IF_ERROR(loom_low_cond_br_build(
           &builder, first, poll, payload, LOOM_LOCATION_UNKNOWN, &op));
       loom_builder_set_block(&builder, poll);
+      if (input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+        IREE_RETURN_IF_ERROR(loom_aie2p_native_input_select_slot(
+            context, &builder, body, input, input->ready_iteration_register,
+            input->ready_iteration, values[0]));
+      }
       IREE_RETURN_IF_ERROR(
           loom_aie2p_worker_control_write(code, &builder, input->control_packet,
                                           input->input_queue, &ready, 1));
@@ -91,6 +127,14 @@ static iree_status_t loom_aie2p_native_input_begin(
   }
   const loom_aie2p_native_input_phase_t* phase =
       &input->phases[input->source->phase_count - 1];
+  if (input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD &&
+      phase->source->period != phase->source->transfers) {
+    // One lease may replay its address period. Automatic slot stepping alone
+    // would read the next record before the current lease's last use.
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_input_select_slot(
+        context, &builder, body, input, input->payload_iteration_register,
+        phase->words[6], values[0]));
+  }
   const uint32_t word =
       phase->descriptor |
       loom_xdna_register_field_encode(
@@ -98,7 +142,7 @@ static iree_status_t loom_aie2p_native_input_begin(
           phase->repetitions - 1);
   loom_value_id_t task;
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(code, &builder, word, &task));
-  if (input->binding) {
+  if (input->binding && input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD) {
     IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
         code, &builder, AIE2P_CORE_DESCRIPTOR_REF_ADD_I32, task, values[0],
         &task));
@@ -119,12 +163,14 @@ static iree_status_t loom_aie2p_native_input_complete(
       code, arguments, 3, NULL, 0, &builder, &input->complete, &function));
   loom_region_t* body = loom_low_func_def_body(function);
   const loom_value_id_t* values = loom_region_entry_block(body)->arg_ids;
-  loom_value_id_t base, descriptor, task;
+  loom_value_id_t descriptor, task;
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
-      code, &builder, input->credit_descriptor, &base));
-  IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
-      code, &builder, AIE2P_CORE_DESCRIPTOR_REF_ADD_I32, base, values[0],
-      &descriptor));
+      code, &builder, input->credit_descriptor, &descriptor));
+  if (input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_binary(
+        code, &builder, AIE2P_CORE_DESCRIPTOR_REF_ADD_I32, descriptor,
+        values[0], &descriptor));
+  }
   IREE_RETURN_IF_ERROR(
       loom_aie2p_worker_binary(code, &builder, AIE2P_CORE_DESCRIPTOR_REF_OR_I32,
                                descriptor, values[2], &task));
@@ -142,6 +188,16 @@ static iree_status_t loom_aie2p_native_input_complete(
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_op(
       code, &builder, AIE2P_CORE_DESCRIPTOR_REF_STREAM_WRITE_LAST_I32,
       &values[1], 1, loom_named_attr_slice_empty(), NULL, NULL));
+  if (input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+    // Source capacity no longer bounds outstanding writes to the credit queue.
+    // One completion per record bounds the queue and drains the shared reply
+    // stream before the next ready-descriptor retirement query.
+    loom_value_id_t completed;
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_op(
+        code, &builder, AIE2P_CORE_DESCRIPTOR_REF_STREAM_READ_I32, NULL, 0,
+        loom_named_attr_slice_empty(), &code->scalar_type, &completed));
+    return loom_aie2p_worker_return(&builder, NULL, 0);
+  }
   loom_block_t *wait, *done;
   IREE_RETURN_IF_ERROR(loom_region_append_block(code->module, body, &wait));
   IREE_RETURN_IF_ERROR(loom_region_append_block(code->module, body, &done));
@@ -366,51 +422,61 @@ iree_status_t loom_aie2p_native_emit_input(
   const loom_builder_ip_t saved = loom_builder_enter_region(
       builder, branch, loom_scf_if_then_region(branch));
   const uint64_t capacity = input->binding->protocol->payload.capacity;
-  const uint64_t last = input->source->admissions - 1;
-  loom_value_id_t last_slot, last_generation, token;
-  if (input->cursor_index == UINT32_MAX) {
-    IREE_RETURN_IF_ERROR(
-        loom_aie2p_native_input_constant(builder, last % capacity, &last_slot));
+  loom_value_id_t token;
+  if (input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+    const uint64_t last = input->source->admissions - 1;
+    loom_value_id_t last_slot, last_generation;
+    if (input->cursor_index == UINT32_MAX) {
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+          builder, last % capacity, &last_slot));
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+          builder, last / capacity + 1, &last_generation));
+    } else {
+      loom_value_id_t slots;
+      IREE_RETURN_IF_ERROR(
+          loom_aie2p_native_input_constant(builder, capacity, &slots));
+      IREE_RETURN_IF_ERROR(loom_scalar_subi_build(
+          builder, 0, values[3], one, type, LOOM_LOCATION_UNKNOWN, &op));
+      const loom_value_id_t last_ordinal = loom_scalar_subi_result(op);
+      IREE_RETURN_IF_ERROR(loom_scalar_remui_build(
+          builder, last_ordinal, slots, type, LOOM_LOCATION_UNKNOWN, &op));
+      last_slot = loom_scalar_remui_result(op);
+      IREE_RETURN_IF_ERROR(loom_scalar_divui_build(
+          builder, last_ordinal, slots, type, LOOM_LOCATION_UNKNOWN, &op));
+      IREE_RETURN_IF_ERROR(
+          loom_scalar_addi_build(builder, 0, loom_scalar_divui_result(op), one,
+                                 type, LOOM_LOCATION_UNKNOWN, &op));
+      last_generation = loom_scalar_addi_result(op);
+    }
     IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
-        builder, last / capacity + 1, &last_generation));
+        builder,
+        loom_xdna_register_field_encode(
+            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_ENABLE_TOKEN_ISSUE,
+            1),
+        &token));
+    IREE_RETURN_IF_ERROR(loom_scalar_cmpi_build(
+        builder, LOOM_SCALAR_CMPI_PREDICATE_EQ, values[0], last_slot,
+        LOOM_LOCATION_UNKNOWN, &op));
+    const loom_value_id_t slot_matches = loom_scalar_cmpi_result(op);
+    IREE_RETURN_IF_ERROR(loom_scalar_cmpi_build(
+        builder, LOOM_SCALAR_CMPI_PREDICATE_EQ, values[1], last_generation,
+        LOOM_LOCATION_UNKNOWN, &op));
+    IREE_RETURN_IF_ERROR(loom_scalar_andi_build(
+        builder, slot_matches, loom_scalar_cmpi_result(op),
+        loom_type_scalar(LOOM_SCALAR_TYPE_I1), LOOM_LOCATION_UNKNOWN, &op));
+    IREE_RETURN_IF_ERROR(
+        loom_scf_select_build(builder, loom_scalar_andi_result(op), token, zero,
+                              type, LOOM_LOCATION_UNKNOWN, &op));
+    token = loom_scf_select_result(op);
   } else {
-    loom_value_id_t slots;
-    IREE_RETURN_IF_ERROR(
-        loom_aie2p_native_input_constant(builder, capacity, &slots));
-    IREE_RETURN_IF_ERROR(loom_scalar_subi_build(
-        builder, 0, values[3], one, type, LOOM_LOCATION_UNKNOWN, &op));
-    const loom_value_id_t last_ordinal = loom_scalar_subi_result(op);
-    IREE_RETURN_IF_ERROR(loom_scalar_remui_build(
-        builder, last_ordinal, slots, type, LOOM_LOCATION_UNKNOWN, &op));
-    last_slot = loom_scalar_remui_result(op);
-    IREE_RETURN_IF_ERROR(loom_scalar_divui_build(
-        builder, last_ordinal, slots, type, LOOM_LOCATION_UNKNOWN, &op));
-    IREE_RETURN_IF_ERROR(
-        loom_scalar_addi_build(builder, 0, loom_scalar_divui_result(op), one,
-                               type, LOOM_LOCATION_UNKNOWN, &op));
-    last_generation = loom_scalar_addi_result(op);
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+        builder,
+        loom_xdna_register_field_encode(
+            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_ENABLE_TOKEN_ISSUE,
+            1),
+        &token));
   }
-  IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
-      builder,
-      loom_xdna_register_field_encode(
-          LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_ENABLE_TOKEN_ISSUE,
-          1),
-      &token));
-  IREE_RETURN_IF_ERROR(
-      loom_scalar_cmpi_build(builder, LOOM_SCALAR_CMPI_PREDICATE_EQ, values[0],
-                             last_slot, LOOM_LOCATION_UNKNOWN, &op));
-  const loom_value_id_t slot_matches = loom_scalar_cmpi_result(op);
-  IREE_RETURN_IF_ERROR(
-      loom_scalar_cmpi_build(builder, LOOM_SCALAR_CMPI_PREDICATE_EQ, values[1],
-                             last_generation, LOOM_LOCATION_UNKNOWN, &op));
-  IREE_RETURN_IF_ERROR(loom_scalar_andi_build(
-      builder, slot_matches, loom_scalar_cmpi_result(op),
-      loom_type_scalar(LOOM_SCALAR_TYPE_I1), LOOM_LOCATION_UNKNOWN, &op));
-  IREE_RETURN_IF_ERROR(
-      loom_scf_select_build(builder, loom_scalar_andi_result(op), token, zero,
-                            type, LOOM_LOCATION_UNKNOWN, &op));
-  const loom_value_id_t arguments[] = {values[0], values[1],
-                                       loom_scf_select_result(op)};
+  const loom_value_id_t arguments[] = {values[0], values[1], token};
   IREE_RETURN_IF_ERROR(loom_low_invoke_build(builder, 0, 0, 0, input->complete,
                                              arguments, 3, NULL, 0, NULL, 0,
                                              LOOM_LOCATION_UNKNOWN, &op));

@@ -220,6 +220,48 @@ static iree_status_t loom_aie2p_native_input_receivers(
   return iree_ok_status();
 }
 
+bool loom_aie2p_native_select_input_slots(const loom_xdna_dma_facts_t* dma,
+                                          uint16_t available_descriptors,
+                                          loom_aie2p_native_input_t* input,
+                                          uint16_t* out_descriptor_count) {
+  *out_descriptor_count = 0;
+  input->slots = LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE;
+  const loom_memory_channel_protocol_t* protocol =
+      input->binding ? input->binding->protocol : NULL;
+  const uint64_t capacity = protocol ? protocol->payload.capacity : 1;
+  if (input->source->phase_count > dma->task_queue_depth ||
+      capacity > (UINT64_C(1) << dma->iteration_bits) ||
+      (protocol &&
+       (protocol->payload.byte_stride % dma->transfer_length_granularity ||
+        protocol->payload.byte_stride / dma->transfer_length_granularity >
+            (UINT64_C(1) << dma->step_size_bits)))) {
+    return false;
+  }
+  uint64_t descriptors =
+      input->source->phase_count - 1 + capacity * (protocol ? 3 : 1);
+  if (protocol && (capacity > dma->task_queue_depth ||
+                   descriptors > available_descriptors)) {
+    if (protocol->notification_byte_stride % dma->transfer_length_granularity ||
+        protocol->notification_byte_stride / dma->transfer_length_granularity >
+            (UINT64_C(1) << dma->step_size_bits)) {
+      return false;
+    }
+    const loom_aie2p_native_input_phase_t* bulk =
+        &input->phases[input->source->phase_count - 1];
+    input->slots = bulk->repetitions == 1
+                       ? LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD
+                       : LOOM_AIE2P_NATIVE_INPUT_SLOTS_NOTIFICATIONS;
+    descriptors =
+        input->source->phase_count + 1 +
+        (input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD ? 1 : capacity);
+  }
+  if (descriptors > available_descriptors) {
+    return false;
+  }
+  *out_descriptor_count = (uint16_t)descriptors;
+  return true;
+}
+
 iree_status_t loom_aie2p_native_route_input(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
@@ -236,25 +278,52 @@ iree_status_t loom_aie2p_native_route_input(
                       context->family->row_count];
   loom_aie2p_native_tile_t* shim = input->shim;
   const loom_xdna_dma_facts_t* dma = &shim->facts->dma;
-  const uint64_t descriptors =
-      input->source->phase_count - 1 + capacity * (protocol ? 3 : 1);
   uint16_t descriptor_base, descriptor_count;
   uint16_t* used = loom_aie2p_native_descriptor_bank(
       shim, shim->next_mm2s, &descriptor_base, &descriptor_count);
   if (shim->next_mm2s == dma->channel_count_per_direction ||
-      (protocol && shim->next_s2mm == dma->channel_count_per_direction) ||
-      descriptors > descriptor_count - *used ||
-      input->source->phase_count > dma->task_queue_depth ||
-      capacity > dma->task_queue_depth ||
-      capacity > (UINT64_C(1) << dma->iteration_bits) ||
-      (protocol &&
-       (protocol->payload.byte_stride % dma->transfer_length_granularity ||
-        protocol->payload.byte_stride / dma->transfer_length_granularity >
-            (UINT64_C(1) << dma->step_size_bits)))) {
+      (protocol && shim->next_s2mm == dma->channel_count_per_direction)) {
+    return loom_aie2p_native_reject(context, declaration,
+                                    IREE_SV("shim queues for phased input"));
+  }
+  // Retain the physical address shape once. A slot iterator is available when
+  // each source address period uses one task. Replayed periods explicitly
+  // restore the lease's slot only after that queue has retired.
+  for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
+    loom_aie2p_native_input_phase_t* phase = &input->phases[i];
+    const loom_pipeline_transport_input_phase_t* plan = phase->source;
+    if (loom_movement_endpoint_minimum_byte_alignment(
+            &plan->transfer->request.source) < dma->address_alignment) {
+      return loom_aie2p_native_reject(
+          context, plan->transfer->request.op,
+          IREE_SV("aligned phased input DMA sources"));
+    }
+    loom_storage_geometry_t geometry;
+    if (!loom_storage_geometry_query(
+            &source->facts.context, context->code.module,
+            plan->transfer->request.source.type, &geometry) ||
+        !loom_aie2p_native_encode_ingress(
+            context->family, &geometry, dma,
+            (uint32_t)plan->transfer->request.transferred_byte_count,
+            (uint32_t)plan->source_byte_stride, (uint32_t)plan->period,
+            phase->words, &phase->repetitions) ||
+        phase->repetitions > dma->maximum_task_repeat_count) {
+      return loom_aie2p_native_reject(
+          context, declaration,
+          IREE_SV(
+              "a phased input address period representable by one shim task"));
+    }
+  }
+  uint16_t selected_descriptors;
+  if (!loom_aie2p_native_select_input_slots(dma, descriptor_count - *used,
+                                            input, &selected_descriptors)) {
     return loom_aie2p_native_reject(
         context, declaration,
-        IREE_SV("shim queues and immutable descriptors for phased input"));
+        IREE_SV(
+            "phased input slot geometry within the shim descriptor budget"));
   }
+  uint16_t next_descriptor = descriptor_base + *used;
+  *used += selected_descriptors;
   input->input_engine = shim->next_mm2s++;
   if (protocol) {
     input->credit_engine = shim->next_s2mm++;
@@ -301,38 +370,19 @@ iree_status_t loom_aie2p_native_route_input(
   for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
     loom_aie2p_native_input_phase_t* phase = &input->phases[i];
     const loom_pipeline_transport_input_phase_t* plan = phase->source;
-    if (loom_movement_endpoint_minimum_byte_alignment(
-            &plan->transfer->request.source) < dma->address_alignment) {
-      return loom_aie2p_native_reject(
-          context, plan->transfer->request.op,
-          IREE_SV("aligned phased input DMA sources"));
-    }
-    loom_storage_geometry_t geometry;
-    if (!loom_storage_geometry_query(
-            &source->facts.context, context->code.module,
-            plan->transfer->request.source.type, &geometry) ||
-        !loom_aie2p_native_encode_ingress(
-            context->family, &geometry, dma,
-            (uint32_t)plan->transfer->request.transferred_byte_count,
-            (uint32_t)plan->source_byte_stride, (uint32_t)plan->period,
-            phase->words, &phase->repetitions) ||
-        phase->repetitions > dma->maximum_task_repeat_count) {
-      return loom_aie2p_native_reject(
-          context, declaration,
-          IREE_SV(
-              "a phased input address period representable by one shim task"));
-    }
     phase->words[2] |=
         loom_xdna_register_field_encode(
             LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD2_ENABLE_PACKET, 1) |
         loom_xdna_register_field_encode(
             LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD2_PACKET_ID,
             input->shared_receiver ? 0 : i);
-    phase->descriptor = descriptor_base + *used;
+    phase->descriptor = next_descriptor;
     const bool prefix = i + 1 < input->source->phase_count;
-    const uint32_t count = prefix ? 1 : (uint32_t)capacity;
-    *used += count;
-    if (prefix && capacity > 1) {
+    const bool iterated =
+        prefix || input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD;
+    const uint32_t count = iterated ? 1 : (uint32_t)capacity;
+    next_descriptor += count;
+    if (iterated && capacity > 1) {
       phase->words[6] =
           loom_xdna_register_field_encode(
               LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_WRAP,
@@ -341,6 +391,15 @@ iree_status_t loom_aie2p_native_route_input(
               LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_STEP_SIZE,
               protocol->payload.byte_stride / dma->transfer_length_granularity -
                   1);
+    }
+    if (!prefix && input->slots == LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD &&
+        plan->period != plan->transfers) {
+      input->payload_iteration_register =
+          (uint32_t)(loom_xdna_register_field_address(
+                         context->family,
+                         LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT,
+                         shim->coordinate, &phase->descriptor) -
+                     origin);
     }
     const uint64_t span =
         (uint64_t)plan->source_byte_stride * (plan->period - 1) +
@@ -374,7 +433,7 @@ iree_status_t loom_aie2p_native_route_input(
       IREE_RETURN_IF_ERROR(loom_aie2p_native_input_descriptor(
           context, shim, phase->descriptor + slot, binding,
           offset + slot * slot_stride,
-          span + (prefix ? (capacity - 1) * slot_stride : 0), phase->words));
+          span + (iterated ? (capacity - 1) * slot_stride : 0), phase->words));
     }
     if ((!input->shared_receiver || !i) &&
         !loom_aie2p_native_input_route(
@@ -422,9 +481,12 @@ iree_status_t loom_aie2p_native_route_input(
         context, declaration,
         IREE_SV("a shared generation credit route from the observing core"));
   }
-  input->ready_descriptor = descriptor_base + *used;
-  input->credit_descriptor = input->ready_descriptor + capacity;
-  *used += capacity * 2;
+  input->ready_descriptor = next_descriptor;
+  const uint32_t count =
+      (input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE)
+          ? 1
+          : (uint32_t)capacity;
+  input->credit_descriptor = input->ready_descriptor + count;
   uint32_t words[8] = {0};
   words[0] =
       protocol->generation_byte_length / dma->transfer_length_granularity -
@@ -435,7 +497,30 @@ iree_status_t loom_aie2p_native_route_input(
       LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD5_AXI_CACHE, 2);
   words[7] = loom_xdna_register_field_encode(
       LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD7_VALID_BD, 1);
-  for (uint32_t slot = 0; slot < capacity; ++slot) {
+  if (input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+    words[6] =
+        loom_xdna_register_field_encode(
+            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_WRAP,
+            capacity - 1) |
+        loom_xdna_register_field_encode(
+            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_STEP_SIZE,
+            protocol->notification_byte_stride /
+                    dma->transfer_length_granularity -
+                1);
+    input->ready_iteration = words[6];
+    input->ready_iteration_register =
+        (uint32_t)(loom_xdna_register_field_address(
+                       context->family,
+                       LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT,
+                       shim->coordinate, &input->ready_descriptor) -
+                   origin);
+  }
+  const uint64_t notification_span =
+      protocol->generation_byte_length +
+      ((input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE)
+           ? (capacity - 1) * protocol->notification_byte_stride
+           : 0);
+  for (uint32_t slot = 0; slot < count; ++slot) {
     words[2] =
         loom_xdna_register_field_encode(
             LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD2_ENABLE_PACKET, 1) |
@@ -446,13 +531,13 @@ iree_status_t loom_aie2p_native_route_input(
         context, shim, input->ready_descriptor + slot,
         input->binding->notification_binding,
         protocol->ready_byte_offset + slot * protocol->notification_byte_stride,
-        protocol->generation_byte_length, words));
+        notification_span, words));
     words[2] = 0;
     IREE_RETURN_IF_ERROR(loom_aie2p_native_input_descriptor(
         context, shim, input->credit_descriptor + slot,
         input->binding->notification_binding,
         protocol->free_byte_offset + slot * protocol->notification_byte_stride,
-        protocol->generation_byte_length, words));
+        notification_span, words));
   }
   context->bindings[input->binding->payload_binding].access |= 1;
   context->bindings[input->binding->notification_binding].access |= 3;
