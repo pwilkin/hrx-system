@@ -1,0 +1,328 @@
+// RUN: emit source-low @conditional_refill target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=module
+
+// Conditional arithmetic does not change the exact input admission count.
+// The same consuming core owns all three DMA refill queues and emits output
+// after the branch reconverges; no additional instruction worker is allocated.
+aie2p.target<array> @device {device_profile = "amd.xdna.strix.17f0_10"}
+
+pipeline.def<kernel> public retain target(@device) @conditional_refill() run(%input_arg: buffer, %output_arg: buffer) {
+  %input_unique, %output_unique = buffer.assume.noalias %input_arg, %output_arg : buffer, buffer
+  %input, %output = buffer.assume.alignment %input_unique, %output_unique {minimum_alignment = 64} : buffer, buffer
+  %origin = index.constant 0 : offset
+  %sram_bytes = index.constant 256 : offset
+  %local_bytes = index.constant 128 : offset
+  %sram_capacity = index.constant 4 : index
+  %local_capacity = index.constant 2 : index
+  %records = index.constant 65536 : index
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %record_bytes = index.constant 64 : offset
+  %sram_memory = pipeline.memory<workgroup>[0, 1] : pool
+  %local_memory = pipeline.memory<workgroup>[0, 2] : pool
+  %sram_storage = buffer.alloca<workgroup> pool(%sram_memory) align(64) %sram_bytes : buffer
+  %sram_slots = buffer.view %sram_storage[%origin] : buffer -> view<4x16xi32>
+  %sram = channel.bind<fifo> %sram_slots, %sram_capacity : view<4x16xi32>, index -> channel<tile<16xi32>>
+  %local_storage = buffer.alloca<workgroup> pool(%local_memory) align(64) %local_bytes : buffer
+  %local_slots = buffer.view %local_storage[%origin] : buffer -> view<2x16xi32>
+  %local = channel.bind<fifo> %local_slots, %local_capacity : view<2x16xi32>, index -> channel<tile<16xi32>>
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    scf.for %record = [%begin to %records step %step] {
+      %offset = index.scale %record, %record_bytes : index, offset -> offset
+      %external = buffer.view %input[%offset] : buffer -> view<16xi32>
+      %write, %payload = channel.reserve %sram : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+      %copy = kernel.async.copy %external to %payload {cache_scope = workgroup, cache_temporal = regular, direction = global_to_workgroup} : view<16xi32> to view<16xi32> -> kernel.async.token
+      %arrival = kernel.async.group %copy : kernel.async.token -> kernel.async.group
+      kernel.async.wait %arrival {newer_groups = 0} : kernel.async.group
+      channel.publish %write : write<tile<16xi32>>
+    }
+  }
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    scf.for %record = [%begin to %records step %step] {
+      %read, %source = channel.acquire %sram : channel<tile<16xi32>> -> (read<tile<16xi32>>, view<16xi32>)
+      %write, %destination = channel.reserve %local : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+      channel.copy %read -> %write : read<tile<16xi32>>, write<tile<16xi32>>
+    }
+  }
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    %bias = vector.splati 17 : vector<16xi32>
+    scf.for %record = [%begin to %records step %step] {
+      %read, %payload = channel.acquire<mutable> %local : channel<tile<16xi32>> -> (read<tile<16xi32>, mutable>, view<16xi32>)
+      %values = vector.load %payload[0] : view<16xi32> -> vector<16xi32>
+      %first = index.cmp eq, %record, %begin : index
+      scf.if %first {
+        %result = vector.addi %values, %bias : vector<16xi32>
+        vector.store %result, %payload[0] : vector<16xi32>, view<16xi32>
+      }
+      %offset = index.scale %record, %record_bytes : index, offset -> offset
+      %external = buffer.view %output[%offset] : buffer -> view<16xi32>
+      %copy = kernel.async.copy %payload to %external {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<16xi32> to view<16xi32> -> kernel.async.token
+      %departure = kernel.async.group %copy : kernel.async.token -> kernel.async.group
+      kernel.async.wait %departure {newer_groups = 0} : kernel.async.group
+      channel.release %read : read<tile<16xi32>, mutable>
+    }
+  }
+}
+
+// ----
+aie2p.target<array> @device {device_profile = "amd.xdna.strix.17f0_10"}
+
+low.func.def target<amd.xdna.aie2p.core>(@__loom_target_context_0_0) @__aie2p_worker_helper_10() asm {
+  %0 = mov.short 1
+  %1 = mov.short -1
+  %2 = mov.short 0
+  %3 = mov.local-address 458752
+  %4 = mov.short 255
+  %5 = mov.i32 65536
+  %6 = mov.short 64
+  %7 = mov.short 17
+  %bias = vbcst.32 %7
+  low.br ^_bb1(%2: reg<aie2p.er>, %2: reg<aie2p.er>, %2: reg<aie2p.er>, %4: reg<aie2p.er>)
+^_bb1(%record: reg<aie2p.er>, %read: reg<aie2p.er>, %11: reg<aie2p.er>, %12: reg<aie2p.er>):
+  %13 = lt %record, %5
+  low.cond_br %13, ^_bb2, ^_bb11 : reg<aie2p.er>
+^_bb2:
+  acq %1, 49
+  %14 = eqz %11
+  low.cond_br %14, ^_bb3, ^_bb7 : reg<aie2p.er>
+^_bb3:
+  %15 = nez %12
+  low.cond_br %15, ^_bb4, ^_bb5 : reg<aie2p.er>
+^_bb4:
+  %16 = mov.i32 16711680
+  %17 = mov.i32 -2147483648
+  %18 = mov.i32 -2147361276
+  mov.ms %17
+  mov.ms %18
+  mov.ms.last %16
+  %19 = mov.i32 16711681
+  %20 = mov.short 2
+  %21 = mov.i32 656948
+  mov.ms %20
+  mov.ms %21
+  mov.ms.last %19
+  %22 = mov.i32 656900
+  mov.ms %20
+  mov.ms %22
+  mov.ms.last %16
+  %23 = add.nc %12, %1
+  low.br ^_bb6(%23: reg<aie2p.er>)
+^_bb5:
+  low.br ^_bb6(%2: reg<aie2p.er>)
+^_bb6(%24: reg<aie2p.er>):
+  low.br ^_bb8(%4: reg<aie2p.er>, %24: reg<aie2p.er>)
+^_bb7:
+  %25 = add.nc %11, %1
+  low.br ^_bb8(%25: reg<aie2p.er>, %12: reg<aie2p.er>)
+^_bb8(%26: reg<aie2p.er>, %27: reg<aie2p.er>):
+  %28 = mov.short 128
+  %29 = add.nc %read, %6
+  %30 = eq %29, %28
+  %31 = copy %30 : reg<aie2p.er> -> reg<aie2p.mr27_select>
+  %32 = sel.nez %2, %29, %31
+  %33 = mov.address-index %read
+  %values = vlda.512.i32x16.index %3, %33
+  %first = eqz %record
+  low.cond_br %first, ^_bb9, ^_bb10 : reg<aie2p.er>
+^_bb9:
+  %result = vadd.32 %values, %bias
+  vst.512.i32x16.index %result, %3, %33
+  low.br ^_bb10
+^_bb10:
+  %offset = mul %record, %6
+  %38 = mov.short 12
+  %39 = lshl %read, %38
+  %40 = mov.short 16
+  %41 = or %39, %40
+  %42 = mov.local-address 458880
+  %43 = lda %42, 0
+  %44 = lda %42, 4
+  %45 = add.rr %43, %offset
+  %46 = ltu %45, %43
+  %47 = add.rr %44, %46
+  %48 = mov.i32 -2147483648
+  %49 = mov.i32 118816
+  mov.ms %48
+  mov.ms %49
+  mov.ms.last %41
+  %50 = mov.i32 1167396
+  mov.ms %0
+  mov.ms %50
+  mov.ms %45
+  mov.ms.last %47
+  %51 = mov.i32 -2147483647
+  %52 = mov.i32 -2147364348
+  mov.ms %0
+  mov.ms %52
+  mov.ms.last %51
+  %53 = mov.i32 122388
+  mov.ms %48
+  mov.ms %53
+  mov.ms.last %0
+  %54 = mov.ss
+  rel %0, 48
+  %55 = add.nc %record, %0
+  low.br ^_bb1(%55: reg<aie2p.er>, %32: reg<aie2p.er>, %26: reg<aie2p.er>, %27: reg<aie2p.er>)
+^_bb11:
+  rel %0, 50
+  low.br ^_bb12
+^_bb12:
+  %56 = mov.ss
+  low.br ^_bb12
+}
+
+aie2p.target<configuration> @__aie2p_worker_helper_11 {device_profile = "amd.xdna.strix.17f0_10"}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_11) @__aie2p_worker_helper_12() asm {
+  %57 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  %58 = constant 3 : reg<aie2p.config.scalar : i64>
+  %59 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %57, %58, %59
+  %60 = constant 0 : reg<aie2p.config.scalar : i64>
+  program.load %60, %59, @__aie2p_worker_helper_10
+  %61 = constant 1 : reg<aie2p.config.scalar : i64>
+  %62 = constant 256 : reg<aie2p.config.scalar : i64>
+  data.reserve %60, %61, %60, %62
+  %63 = constant 136 : reg<aie2p.config.scalar : i64>
+  data.reserve %60, %59, %60, %63
+  %64 = constant 258048 : reg<aie2p.config.scalar : i64>
+  %65 = constant 3221225480 : reg<aie2p.config.scalar : i64>
+  %66 = constant 2147483662 : reg<aie2p.config.scalar : i64>
+  %67 = constant 2147483653 : reg<aie2p.config.scalar : i64>
+  %68 = constant 3221225481 : reg<aie2p.config.scalar : i64>
+  write.block32(%64)[%65, %60, %60, %60, %66, %60, %60, %60, %60, %60, %60, %60, %67, %68, %60, %60, %60, %60, %60, %60, %60, %60]
+  %69 = constant 258304 : reg<aie2p.config.scalar : i64>
+  %70 = constant 3221225472 : reg<aie2p.config.scalar : i64>
+  %71 = constant 2147483648 : reg<aie2p.config.scalar : i64>
+  write.block32(%69)[%70, %60, %60, %60, %60, %71, %60, %60, %60, %60, %60, %60, %60, %60, %71, %70, %60, %60, %60, %60, %60, %60, %60]
+  %72 = constant 258560 : reg<aie2p.config.scalar : i64>
+  %73 = constant 18809089 : reg<aie2p.config.scalar : i64>
+  %74 = constant 18809088 : reg<aie2p.config.scalar : i64>
+  write.block32(%72)[%73, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %74, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60]
+  %75 = constant 1769472 : reg<aie2p.config.scalar : i64>
+  %76 = constant 2147483655 : reg<aie2p.config.scalar : i64>
+  %77 = constant 3221225482 : reg<aie2p.config.scalar : i64>
+  %78 = constant 2147483661 : reg<aie2p.config.scalar : i64>
+  write.block32(%75)[%76, %60, %60, %60, %60, %60, %77, %78, %65, %60, %60, %71, %68, %60, %60, %60, %60]
+  %79 = constant 1769728 : reg<aie2p.config.scalar : i64>
+  write.block32(%79)[%71, %60, %60, %60, %60, %60, %60, %71, %70, %60, %60, %60, %60, %71, %70, %60, %60, %60]
+  %80 = constant 1769984 : reg<aie2p.config.scalar : i64>
+  %81 = constant 35586306 : reg<aie2p.config.scalar : i64>
+  write.block32(%80)[%60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %73, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %74, %81, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60]
+  %82 = constant 2355200 : reg<aie2p.config.scalar : i64>
+  %83 = constant 2147483649 : reg<aie2p.config.scalar : i64>
+  write.block32(%82)[%77, %67, %60, %65, %60, %83, %68, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60]
+  %84 = constant 2355456 : reg<aie2p.config.scalar : i64>
+  write.block32(%84)[%70, %71, %60, %60, %60, %71, %70, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60]
+  %85 = constant 2355712 : reg<aie2p.config.scalar : i64>
+  %86 = constant 2031872 : reg<aie2p.config.scalar : i64>
+  %87 = constant 35586305 : reg<aie2p.config.scalar : i64>
+  %88 = constant 18809090 : reg<aie2p.config.scalar : i64>
+  write.block32(%85)[%86, %73, %87, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %88, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60, %60]
+  %89 = constant 126976 : reg<aie2p.config.scalar : i64>
+  %90 = constant 3072 : reg<aie2p.config.scalar : i64>
+  %91 = constant 1024 : reg<aie2p.config.scalar : i64>
+  write.mask32 %89, %90, %91
+  %92 = constant 126980 : reg<aie2p.config.scalar : i64>
+  %93 = constant 48 : reg<aie2p.config.scalar : i64>
+  %94 = constant 16 : reg<aie2p.config.scalar : i64>
+  write.mask32 %92, %93, %94
+  %95 = constant 1705472 : reg<aie2p.config.scalar : i64>
+  write32 %95, %59
+  write32 %95, %60
+  %96 = constant 119312 : reg<aie2p.config.scalar : i64>
+  write32 %96, %60
+  %97 = constant 1703936 : reg<aie2p.config.scalar : i64>
+  %98 = constant 131072 : reg<aie2p.config.scalar : i64>
+  %99 = constant 393231 : reg<aie2p.config.scalar : i64>
+  %100 = constant 2168586048 : reg<aie2p.config.scalar : i64>
+  write.block32(%97)[%94, %98, %60, %60, %60, %60, %99, %100]
+  %101 = constant 118784 : reg<aie2p.config.scalar : i64>
+  %102 = constant 1048576 : reg<aie2p.config.scalar : i64>
+  %103 = constant 33554432 : reg<aie2p.config.scalar : i64>
+  write.block32(%101)[%102, %60, %60, %60, %70, %103, %60, %103]
+  %104 = constant 1705520 : reg<aie2p.config.scalar : i64>
+  write32 %104, %59
+  write32 %104, %60
+  %105 = constant 1703968 : reg<aie2p.config.scalar : i64>
+  %106 = constant 2168520513 : reg<aie2p.config.scalar : i64>
+  write.block32(%105)[%94, %98, %60, %60, %60, %60, %99, %106]
+  %107 = constant 2219520 : reg<aie2p.config.scalar : i64>
+  write32 %107, %59
+  write32 %107, %60
+  %108 = constant 2215936 : reg<aie2p.config.scalar : i64>
+  %109 = constant 8207 : reg<aie2p.config.scalar : i64>
+  %110 = constant 33832928 : reg<aie2p.config.scalar : i64>
+  write.block32(%108)[%94, %60, %60, %60, %109, %110]
+  %111 = constant 2219536 : reg<aie2p.config.scalar : i64>
+  write32 %111, %59
+  write32 %111, %60
+  %112 = constant 119296 : reg<aie2p.config.scalar : i64>
+  write32 %112, %62
+  %113 = constant 2215968 : reg<aie2p.config.scalar : i64>
+  write.block32(%113)[%94, %60, %60, %60, %60, %103]
+  %114 = constant 118816 : reg<aie2p.config.scalar : i64>
+  write.block32(%114)[%94, %60, %60, %60, %70, %103, %60, %103]
+  return
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_11) @__aie2p_worker_helper_13() asm {
+  %115 = constant 0 : reg<aie2p.config.scalar : i64>
+  %116 = constant 1 : reg<aie2p.config.scalar : i64>
+  %117 = constant 4194304 : reg<aie2p.config.scalar : i64>
+  %118 = constant 64 : reg<aie2p.config.scalar : i64>
+  %119 = binding %115, %116, %117, %118
+  %120 = constant 2 : reg<aie2p.config.scalar : i64>
+  %121 = binding %116, %120, %117, %118
+  %122 = range %119, %115, %117
+  %123 = constant 118788 : reg<aie2p.config.scalar : i64>
+  write.address %123, %122
+  %124 = range %121, %115, %117
+  %125 = constant 2097280 : reg<aie2p.config.scalar : i64>
+  write.address %125, %124
+  %126 = constant 1835008 : reg<aie2p.config.scalar : i64>
+  %127 = constant 4 : reg<aie2p.config.scalar : i64>
+  write32 %126, %127
+  %128 = constant 1835024 : reg<aie2p.config.scalar : i64>
+  write32 %128, %115
+  %129 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  write32 %129, %120
+  %130 = constant 2224144 : reg<aie2p.config.scalar : i64>
+  write32 %130, %115
+  %131 = constant 2224160 : reg<aie2p.config.scalar : i64>
+  write32 %131, %115
+  measure.begin
+  %132 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %132, %120, %115
+  write.mask32 %132, %116, %116
+  %133 = constant 1705476 : reg<aie2p.config.scalar : i64>
+  %134 = constant 16711680 : reg<aie2p.config.scalar : i64>
+  write32 %133, %134
+  %135 = constant 119316 : reg<aie2p.config.scalar : i64>
+  write32 %135, %115
+  %136 = constant 2219524 : reg<aie2p.config.scalar : i64>
+  write32 %136, %134
+  %137 = constant 1705524 : reg<aie2p.config.scalar : i64>
+  %138 = constant 16711681 : reg<aie2p.config.scalar : i64>
+  write32 %137, %138
+  %139 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %131, %139, %116
+  %140 = constant 2219776 : reg<aie2p.config.scalar : i64>
+  %141 = constant 7864380 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %140, %141, %115
+  %142 = constant 1705600 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %142, %141, %115
+  %143 = constant 1705568 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %143, %141, %115
+  measure.end
+  %144 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %132, %144, %120
+  return
+}
+
+low.func.def public retain target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_11) abi(array_program) @conditional_refill() asm {
+  %145 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %145, @__aie2p_worker_helper_12, @__aie2p_worker_helper_13
+  return
+}
+
+aie2p.target<core> @__loom_target_context_0_0 {device_profile = "amd.xdna.strix.17f0_10"}

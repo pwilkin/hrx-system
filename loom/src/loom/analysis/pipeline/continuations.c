@@ -74,10 +74,11 @@ static bool loom_pipeline_continuation_scope(
     const loom_pipeline_worker_t* worker, const loom_cfg_loop_nest_t* loops,
     uint16_t* scope) {
   while (*scope != LOOM_CFG_LOOP_NEST_NONE) {
+    const uint16_t header = loops->loops[*scope].header_index;
     const uint64_t trips = worker->loop_trip_counts[*scope];
-    const uint64_t headers =
-        worker->block_execution_counts[loops->loops[*scope].header_index];
-    if (trips && trips != UINT64_MAX && headers % (trips + 1) == 0 &&
+    const uint64_t headers = worker->execution_counts.values[header];
+    if (loom_cfg_execution_count_is_exact(&worker->execution_counts, header) &&
+        trips && trips != UINT64_MAX && headers % (trips + 1) == 0 &&
         input->admissions % trips == 0 &&
         headers / (trips + 1) == input->admissions / trips) {
       return true;
@@ -130,12 +131,16 @@ iree_status_t loom_pipeline_continuations_select(
         const loom_pipeline_progress_site_t* site =
             &sites[population->channels[i]];
         const loom_pipeline_worker_t* worker = &workers[site->worker];
-        if (!worker->block_execution_counts || !worker->block_order) {
+        if (!worker->block_order) {
           continue;
         }
         const uint16_t block = worker->channels.actions[site->action]
                                    .op->parent_block->region_index;
-        const uint64_t reads = worker->block_execution_counts[block];
+        if (!loom_cfg_execution_count_is_exact(&worker->execution_counts,
+                                               block)) {
+          continue;
+        }
+        const uint64_t reads = worker->execution_counts.values[block];
         if (!input->admissions || reads % input->admissions ||
             reads / input->admissions != input->phases[phase].transfers) {
           continue;

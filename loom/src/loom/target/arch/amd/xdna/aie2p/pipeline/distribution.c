@@ -678,7 +678,7 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
           receiver->wait_for_idle =
               ordered || reader->worker == UINT32_MAX ||
               reader->maximum_admissions != distribution->repetitions ||
-              !realization->workers[reader->worker].block_execution_counts ||
+              !reader->exact_admissions ||
               context->workers[reader->worker].execution ==
                   LOOM_AIE2P_NATIVE_EXECUTION_DISTRIBUTION;
           distribution->sender.wait_for_idle |= receiver->wait_for_idle;

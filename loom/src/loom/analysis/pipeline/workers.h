@@ -273,9 +273,10 @@ typedef struct loom_pipeline_worker_t {
   loom_pipeline_transport_t transport;
   // CFG topology retained for scheduling and handoff analysis.
   const loom_cfg_graph_t* graph;
-  // Structural execution order retained while selecting communication steps.
-  // Includes arithmetic workers even when residual effects prevent a complete
-  // transport plan. NULL when control prevents a single-path ordering.
+  // Structural block order, with loop bodies before their continuations.
+  // Conditional alternatives retain structural order, not a promise of visits;
+  // execution_counts qualifies which sites have an exact dynamic frequency.
+  // NULL when cyclic control has no bounded loop structure.
   const uint16_t* block_order;
   // Exact invocation execution counts per CFG block, or NULL when conditional
   // control or unknown recurrence prevents a complete count proof.

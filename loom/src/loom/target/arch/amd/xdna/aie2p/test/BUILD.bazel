@@ -174,6 +174,7 @@ loom_check_test_suite(
         "native_child_dma.loom-test",
         "native_completion.loom-test",
         "native_composition.loom-test",
+        "native_conditional_refill.loom-test",
         "native_constant_captures.loom-test",
         "native_dma_completions.loom-test",
         "native_dma_descriptors.loom-test",

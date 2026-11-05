@@ -686,16 +686,7 @@ static iree_status_t loom_pipeline_worker_transport(
       arena, capacity, sizeof(*steps), (void**)&steps));
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       arena, graph->block_count, sizeof(*streams), (void**)&streams));
-  const uint16_t* order = graph->reverse_postorder.values;
-  if (graph->has_cycles) {
-    uint16_t* loop_order;
-    IREE_RETURN_IF_ERROR(
-        iree_arena_allocate_array(arena, graph->reverse_postorder.count,
-                                  sizeof(*loop_order), (void**)&loop_order));
-    loom_cfg_loop_nest_order_blocks(&structure->loops, loop_order);
-    order = loop_order;
-  }
-  worker->block_order = order;
+  const uint16_t* order = worker->block_order;
   iree_host_size_t count = 0, stream_count = 0;
   for (iree_host_size_t b = 0; b < graph->reverse_postorder.count; ++b) {
     const uint16_t block_index = order[b];
@@ -944,6 +935,22 @@ static iree_status_t loom_pipeline_worker_build(
     status = loom_channel_completion_analyze(&worker->channels, worker->graph,
                                              view_regions, execution_bounds,
                                              arena, &worker->completion);
+  }
+  if (iree_status_is_ok(status) &&
+      rejection.kind == LOOM_CHANNEL_PLAN_REJECTION_NONE &&
+      worker->asynchronous.error_count == 0) {
+    if (!worker->graph->has_cycles) {
+      worker->block_order = worker->graph->reverse_postorder.values;
+    } else if (worker->execution_counts.values) {
+      uint16_t* order = NULL;
+      status = iree_arena_allocate_array(arena,
+                                         worker->graph->reverse_postorder.count,
+                                         sizeof(*order), (void**)&order);
+      if (iree_status_is_ok(status)) {
+        loom_cfg_loop_nest_order_blocks(&structure->loops, order);
+        worker->block_order = order;
+      }
+    }
   }
   if (iree_status_is_ok(status) &&
       rejection.kind == LOOM_CHANNEL_PLAN_REJECTION_NONE &&

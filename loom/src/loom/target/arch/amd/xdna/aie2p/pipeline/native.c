@@ -420,6 +420,7 @@ static iree_status_t loom_aie2p_native_claim_transport_cursor(
   cursor->worker = worker_index;
   cursor->transport_batch = batch_index;
   cursor->maximum_admissions += (uint32_t)admissions;
+  cursor->exact_admissions = true;
   cursor->advances = channel->source->capacity > 1 &&
                      (cursor->shared || cursor->maximum_admissions > 1);
   *out_valid = true;
@@ -623,8 +624,7 @@ static bool loom_aie2p_native_can_repeat(
   if (channel->cursor.reader.worker == UINT32_MAX ||
       channel->cursor.reader.shared || channel->cursor.writer.shared ||
       channel->cursor.reader.maximum_admissions != transport->repetitions ||
-      !realization->workers[channel->cursor.reader.worker]
-           .block_execution_counts) {
+      !channel->cursor.reader.exact_admissions) {
     return false;
   }
   const int64_t begin = phase->source_byte_offset;
@@ -898,9 +898,14 @@ static iree_status_t loom_aie2p_native_select(
                 ? iree_max(cursor->maximum_admissions,
                            source->completion.actions[j].maximum_admissions)
                 : source->completion.actions[j].maximum_admissions;
+        const bool exact_admissions =
+            loom_cfg_execution_count_is_exact(&source->execution_counts,
+                                              op->parent_block->region_index) &&
+            (cursor->worker != i || cursor->exact_admissions);
         *cursor = (loom_aie2p_native_cursor_t){
             .worker = (uint32_t)i,
             .maximum_admissions = maximum_admissions,
+            .exact_admissions = exact_admissions,
             .shared = shared,
             .advances =
                 channel->source->capacity > 1 &&

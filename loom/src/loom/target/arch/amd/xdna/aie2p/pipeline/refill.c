@@ -81,12 +81,12 @@ iree_status_t loom_aie2p_native_select_progress(
         .writes = channel->cursor.writer.shared
                       ? 0
                       : channel->cursor.writer.maximum_admissions,
-        .observer =
-            !channel->replay.record_count && !channel->cursor.reader.shared &&
-            !channel->cursor.writer.shared && reader != UINT32_MAX &&
-            context->workers[reader].execution ==
-                LOOM_AIE2P_NATIVE_EXECUTION_CORE &&
-            realization->workers[reader].block_execution_counts != NULL};
+        .observer = !channel->replay.record_count &&
+                    !channel->cursor.reader.shared &&
+                    !channel->cursor.writer.shared && reader != UINT32_MAX &&
+                    context->workers[reader].execution ==
+                        LOOM_AIE2P_NATIVE_EXECUTION_CORE &&
+                    channel->cursor.reader.exact_admissions};
   }
   loom_pipeline_progress_site_t* sites;
   uint32_t *inputs, *phases;
