@@ -17,6 +17,97 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/sharing.h"
 #include "loom/transforms/pipeline/channel_materialization.h"
 
+iree_status_t loom_aie2p_native_select_channels(
+    loom_aie2p_native_context_t* context,
+    const loom_pipeline_realization_t* realization, bool* out_valid) {
+  *out_valid = false;
+  const loom_pipeline_invocations_t* invocations = &realization->invocations;
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      context->pass->arena, invocations->channel_count,
+      sizeof(*context->channels), (void**)&context->channels));
+  for (iree_host_size_t i = 0; i < invocations->channel_count; ++i) {
+    const loom_pipeline_invocation_channel_t* occurrence =
+        &invocations->channels[i];
+    const loom_pipeline_resource_channel_t* source = occurrence->source;
+    const loom_pipeline_resource_allocation_t* allocation =
+        occurrence->allocation;
+    // Allocation ownership establishes a lifetime, not a transport. A parent
+    // may own the external payload while this occurrence imports its protocol.
+    const loom_memory_channel_binding_t* external =
+        realization->memory_bindings ? realization->memory_bindings[i] : NULL;
+    if (external) {
+      const loom_memory_channel_protocol_t* protocol = external->protocol;
+      if (protocol->payload.byte_stride > UINT32_MAX ||
+          source->geometry->record_bit_span / 8 > UINT32_MAX ||
+          protocol->generation_byte_length != 4) {
+        return loom_aie2p_native_reject(
+            context, source->binding,
+            IREE_SV(
+                "native byte-addressable slots and 32-bit shared generations"));
+      }
+      context->channels[i] = (loom_aie2p_native_channel_t){
+          .source = source,
+          .external = external,
+          .pool_index = UINT32_MAX,
+          .byte_stride = (uint32_t)protocol->payload.byte_stride,
+          .record_byte_length =
+              (uint32_t)(source->geometry->record_bit_span / 8),
+          .record_dense = source->geometry->record_dense,
+          .cursor = {.reader = {.worker = UINT32_MAX},
+                     .writer = {.worker = UINT32_MAX}},
+      };
+      continue;
+    }
+    if (!allocation || source->storage.memory_space !=
+                           LOOM_VALUE_FACT_MEMORY_SPACE_WORKGROUP) {
+      return loom_aie2p_native_reject(
+          context, source->binding,
+          IREE_SV("on-chip storage or a jointly selected external channel "
+                  "protocol"));
+    }
+    loom_aie2p_native_tile_t* owner =
+        context->pool_tiles[allocation->pool_index];
+    const loom_pipeline_channel_geometry_t* geometry = source->geometry;
+    int64_t offset = 0;
+    uint64_t extent = 0;
+    if (!geometry ||
+        !loom_value_facts_as_exact_i64(source->storage.base_byte_offset,
+                                       &offset) ||
+        offset < 0 || geometry->slot_bit_stride % 8 ||
+        geometry->record_bit_span % 8 ||
+        !iree_checked_mul_u64(source->capacity - 1,
+                              geometry->slot_bit_stride / 8, &extent) ||
+        !iree_checked_add_u64(extent, geometry->record_bit_span / 8, &extent) ||
+        (uint64_t)offset > allocation->byte_length ||
+        extent > allocation->byte_length - (uint64_t)offset ||
+        geometry->slot_bit_stride / 8 > UINT32_MAX ||
+        allocation->byte_offset > UINT32_MAX - (uint64_t)offset) {
+      return loom_aie2p_native_reject(
+          context, source->binding,
+          IREE_SV("specialized byte-addressable channel slot geometry"));
+    }
+    if (source->capacity > (uint64_t)owner->facts->lock_value_maximum ||
+        owner->next_lock + 2 > owner->facts->lock_count) {
+      return loom_aie2p_native_reject(
+          context, source->binding,
+          IREE_SV("a hardware semaphore pair with enough slot credits"));
+    }
+    context->channels[i] = (loom_aie2p_native_channel_t){
+        .source = source,
+        .pool_index = allocation->pool_index,
+        .byte_offset = (uint32_t)(allocation->byte_offset + (uint64_t)offset),
+        .byte_stride = (uint32_t)(geometry->slot_bit_stride / 8),
+        .record_byte_length = (uint32_t)(geometry->record_bit_span / 8),
+        .record_dense = geometry->record_dense,
+        .free_lock = owner->next_lock++,
+        .ready_lock = owner->next_lock++,
+        .cursor = {.reader = {.worker = UINT32_MAX},
+                   .writer = {.worker = UINT32_MAX}}};
+  }
+  *out_valid = true;
+  return iree_ok_status();
+}
+
 typedef struct loom_aie2p_native_endpoint_t {
   // Physical channel access and lock selectors from this worker's tile.
   const loom_aie2p_native_channel_access_t* access;

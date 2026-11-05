@@ -13,6 +13,24 @@ package(
 )
 
 loom_cc_test(
+    name = "channels_test",
+    srcs = ["channels_test.cc"],
+    deps = [
+        ":native",
+        "//loom/src/loom/analysis/pipeline:resources",
+        "//loom/src/loom/pass:types",
+        "//loom/src/loom/target/arch/amd/xdna/array:facts",
+        "//loom/src/loom/testing:diagnostic_matchers",
+        "//loom/src/loom/transforms/pipeline:memory_channel",
+        "//loom/src/loom/util:fact_table",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+loom_cc_test(
     name = "sharing_test",
     srcs = ["sharing_test.cc"],
     deps = [

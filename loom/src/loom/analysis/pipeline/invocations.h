@@ -100,7 +100,8 @@ typedef struct loom_pipeline_invocation_channel_t {
   const loom_pipeline_invocation_t* invocation;
   // Fresh protocol, independent of source value IDs in other occurrences.
   const loom_pipeline_resource_channel_t* source;
-  // Backing placement, or NULL for caller-owned external storage.
+  // Visible backing allocation, or NULL when owned outside this construction
+  // graph. Allocation ownership does not select local or external transport.
   const loom_pipeline_resource_allocation_t* allocation;
 } loom_pipeline_invocation_channel_t;
 

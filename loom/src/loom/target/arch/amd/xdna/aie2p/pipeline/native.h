@@ -18,6 +18,10 @@
 #include "loom/target/arch/amd/xdna/array/registers.h"
 #include "loom/transforms/pipeline/realization.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // One endpoint's admitted cursor behavior for this execution occurrence.
 typedef struct loom_aie2p_native_cursor_t {
   // Representative strand owning the cursor, or UINT32_MAX until selected.
@@ -671,6 +675,13 @@ iree_status_t loom_aie2p_native_reject(
     const loom_aie2p_native_context_t* context, const loom_op_t* op,
     iree_string_view_t requirement);
 
+// Selects channel storage and credit mechanics from the retained occurrence.
+// An admitted external protocol is independent of the allocation's lifetime
+// owner and consumes neither a local pool nor a hardware semaphore pair.
+iree_status_t loom_aie2p_native_select_channels(
+    loom_aie2p_native_context_t* context,
+    const loom_pipeline_realization_t* realization, bool* out_valid);
+
 // Resolves a construction-owned protocol in the admitted execution inventory.
 // The channel plan retains this identity through captures and child calls.
 static inline loom_aie2p_native_channel_t* loom_aie2p_native_channel(
@@ -836,5 +847,8 @@ iree_status_t loom_aie2p_native_collective_end(
     void* user_data, loom_builder_t* builder, iree_host_size_t engine,
     const loom_pipeline_invocation_schedule_t* scope,
     const loom_pipeline_collective_t* collective, loom_value_id_t* values);
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 #endif  // LOOM_TARGET_ARCH_AMD_XDNA_AIE2P_PIPELINE_NATIVE_H_
