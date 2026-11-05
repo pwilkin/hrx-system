@@ -152,10 +152,10 @@ static uint32_t loom_aie2p_native_endpoint_register(
                     origin);
 }
 
-static iree_status_t loom_aie2p_native_endpoint_start(
+iree_status_t loom_aie2p_native_endpoint_start(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
-    const loom_aie2p_native_distribution_command_t* command, uint8_t packet) {
-  const loom_aie2p_native_distribution_endpoint_t* endpoint = command->endpoint;
+    const loom_aie2p_native_distribution_endpoint_t* endpoint,
+    loom_xdna_dma_direction_t direction, uint8_t packet) {
   const loom_aie2p_native_memory_layout_t* layout =
       endpoint->tile->memory_layout;
   const loom_aie2p_native_dma_sequence_t* sequence = &endpoint->sequence;
@@ -170,7 +170,7 @@ static iree_status_t loom_aie2p_native_endpoint_start(
         &context->code, builder, packet, address, &word, 1));
   }
   const uint32_t address = loom_aie2p_native_endpoint_register(
-      context, endpoint, layout->directions[command->direction - 1].start,
+      context, endpoint, layout->directions[direction - 1].start,
       endpoint->engine);
   for (uint8_t i = 0; i < sequence->task_count; ++i) {
     loom_value_id_t task;
@@ -258,8 +258,9 @@ iree_status_t loom_aie2p_native_distribution_boundary(
     const iree_host_size_t tile = command->endpoint->tile - context->tiles;
     if (before) {
       IREE_RETURN_IF_ERROR(loom_aie2p_native_endpoint_start(
-          context, &helper, command, owner->control_packets[tile]));
-    } else {
+          context, &helper, command->endpoint, command->direction,
+          owner->control_packets[tile]));
+    } else if (command->retire) {
       // All async groups in the child have retired before its return. No
       // distribution task emits tokens, so only this explicit register-read
       // response can reach the scalar stream until the next child starts.

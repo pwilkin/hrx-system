@@ -429,6 +429,8 @@ typedef struct loom_aie2p_native_distribution_command_t {
   loom_xdna_dma_direction_t direction;
   // Selected reuse group for this controller's status observation.
   loom_aie2p_native_retirement_t* retirement;
+  // The last phase observes idle for the complete shared endpoint sequence.
+  bool retire;
 } loom_aie2p_native_distribution_command_t;
 
 typedef enum loom_aie2p_native_execution_e {
@@ -771,6 +773,14 @@ iree_status_t loom_aie2p_native_distribution_boundary(
     iree_host_size_t worker_index, const loom_pipeline_invocation_t* invocation,
     bool before);
 
+// Publishes a selected finite endpoint sequence from a resident controller.
+// Iteration state is rewound only when the sequence's retained plan requires
+// it.
+iree_status_t loom_aie2p_native_endpoint_start(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    const loom_aie2p_native_distribution_endpoint_t* endpoint,
+    loom_xdna_dma_direction_t direction, uint8_t packet);
+
 // Shared physical descriptor allocation for external and on-chip transport.
 uint16_t* loom_aie2p_native_descriptor_bank(loom_aie2p_native_tile_t* tile,
                                             uint8_t engine, uint16_t* out_base,
@@ -793,12 +803,14 @@ loom_aie2p_native_queue_status_t loom_aie2p_native_queue_status(
 // Selects startup tasks and, when required, a retained reader continuation.
 // progress_channel is NULL for queues without an equal-ordinal channel proof,
 // including queues whose admission belongs to an ordered distribution phase.
+// reserved_tasks excludes slots owned by other phases of that same queue.
 iree_status_t loom_aie2p_native_select_sequence(
     loom_aie2p_native_context_t* context, loom_aie2p_native_tile_t* tile,
     uint8_t engine, loom_xdna_dma_direction_t direction,
     const loom_aie2p_native_channel_t* progress_channel, uint32_t repetitions,
     uint32_t capacity, uint32_t byte_offset, uint32_t byte_stride,
-    uint32_t credit_interval, const uint32_t template_words[8],
+    uint32_t credit_interval, uint32_t reserved_tasks,
+    const uint32_t template_words[8],
     loom_aie2p_native_dma_sequence_t* out_sequence,
     iree_string_view_t* out_reason, bool* out_valid);
 
@@ -808,7 +820,7 @@ iree_status_t loom_aie2p_native_select_channel_endpoint(
     loom_aie2p_native_context_t* context,
     const loom_aie2p_native_channel_t* channel,
     loom_xdna_dma_direction_t direction, uint32_t repetitions,
-    uint32_t credit_interval,
+    uint32_t credit_interval, uint32_t reserved_tasks,
     const loom_aie2p_native_distribution_endpoint_t* shared,
     loom_aie2p_native_distribution_endpoint_t* out_endpoint,
     iree_string_view_t* out_reason, bool* out_valid);

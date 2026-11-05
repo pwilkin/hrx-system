@@ -19,6 +19,10 @@ typedef struct loom_pipeline_continuation_candidate_t {
   uint32_t phase;
   // Exact read action, independent of the phase's record count.
   uint32_t action;
+  // Exact arrivals in this source lifetime, retained for emission.
+  uint64_t read_count;
+  // Record-ordinal or complete finite-batch observation.
+  loom_pipeline_progress_observation_kind_t kind;
   // Structural execution position of the read's block.
   uint16_t position;
 } loom_pipeline_continuation_candidate_t;
@@ -42,7 +46,10 @@ static bool loom_pipeline_continuation_less(
   if (lhs->position != rhs->position) {
     return lhs->position < rhs->position;
   }
-  return lhs->action < rhs->action;
+  if (lhs->action != rhs->action) {
+    return lhs->action < rhs->action;
+  }
+  return lhs->kind < rhs->kind;
 }
 LOOM_DEFINE_ADAPTIVE_SORT(loom_pipeline_continuation_sort,
                           loom_pipeline_continuation_candidate_t,
@@ -128,8 +135,10 @@ iree_status_t loom_pipeline_continuations_select(
       const loom_pipeline_progress_observations_t* population =
           &observations[channel];
       for (iree_host_size_t i = 0; i < population->count; ++i) {
+        const loom_pipeline_progress_observation_t* observation =
+            &population->values[i];
         const loom_pipeline_progress_site_t* site =
-            &sites[population->channels[i]];
+            &sites[observation->channel];
         const loom_pipeline_worker_t* worker = &workers[site->worker];
         if (!worker->block_order) {
           continue;
@@ -141,8 +150,20 @@ iree_status_t loom_pipeline_continuations_select(
           continue;
         }
         const uint64_t reads = worker->execution_counts.values[block];
-        if (!input->admissions || reads % input->admissions ||
-            reads / input->admissions != input->phases[phase].transfers) {
+        if (!input->admissions || !reads || reads % input->admissions) {
+          continue;
+        }
+        if (observation->kind ==
+            LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH) {
+          // First-arrival proof covers one finite source publication. The
+          // whole source address period must be submitted before any replay
+          // can be observed; no downstream read sequences another period.
+          if (input->admissions != 1 ||
+              input->phases[phase].period != input->phases[phase].transfers) {
+            continue;
+          }
+        } else if (reads / input->admissions !=
+                   input->phases[phase].transfers) {
           continue;
         }
         IREE_RETURN_IF_ERROR(loom_pipeline_continuation_control(
@@ -151,6 +172,8 @@ iree_status_t loom_pipeline_continuations_select(
             .worker = site->worker,
             .phase = (uint32_t)phase,
             .action = site->action,
+            .read_count = reads / input->admissions,
+            .kind = observation->kind,
             .position = controls[site->worker].positions[block],
         };
       }
@@ -209,17 +232,20 @@ iree_status_t loom_pipeline_continuations_select(
       begin = end;
     }
     if (best != IREE_HOST_SIZE_MAX) {
-      uint32_t* actions;
+      loom_pipeline_continuation_phase_t* phases;
       IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
-          arena, input->phase_count, sizeof(*actions), (void**)&actions));
+          arena, input->phase_count, sizeof(*phases), (void**)&phases));
       for (iree_host_size_t phase = 0; phase < input->phase_count; ++phase) {
-        actions[phase] = candidates[best].action;
+        phases[phase] = (loom_pipeline_continuation_phase_t){
+            .action = candidates[best].action,
+            .read_count = candidates[best].read_count,
+            .kind = candidates[best].kind};
         do {
           ++best;
         } while (best < count && candidates[best].worker == selection->worker &&
                  candidates[best].phase == phase);
       }
-      selection->phase_actions = actions;
+      selection->phases = phases;
     }
   }
   *out_selections = selections;

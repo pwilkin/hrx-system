@@ -9,7 +9,7 @@
 #include "loom/ops/index/ops.h"
 #include "loom/ops/scalar/ops.h"
 #include "loom/ops/view/ops.h"
-#include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/transforms/pipeline/control.h"
 
 iree_status_t loom_aie2p_native_cursor_view(loom_builder_t* builder,
@@ -114,8 +114,18 @@ static iree_status_t loom_aie2p_native_program_frame(
     for (uint32_t direction = 0; direction < 2; ++direction) {
       const loom_aie2p_native_cursor_t* cursor =
           direction ? &channel->cursor.writer : &channel->cursor.reader;
-      if (!cursor->advances || cursor->worker == UINT32_MAX ||
-          context->core_engines[cursor->worker] != engine) {
+      if (cursor->worker == UINT32_MAX) {
+        continue;
+      }
+      const loom_aie2p_native_input_t* input =
+          !direction && channel->external
+              ? context->workers[cursor->worker].input
+              : NULL;
+      const uint32_t owner =
+          input ? input->continuation.worker : cursor->worker;
+      const bool persistent =
+          input ? input->cursor_index != UINT32_MAX : cursor->advances;
+      if (!persistent || context->core_engines[owner] != engine) {
         continue;
       }
       loom_value_id_t view = LOOM_VALUE_ID_INVALID;
@@ -161,6 +171,8 @@ iree_status_t loom_aie2p_native_emit_programs(
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       context->pass->arena, context->execution.engine_count,
       sizeof(*context->programs), (void**)&context->programs));
+  uint16_t source_argument_count;
+  loom_func_like_arg_ids(realization->function, &source_argument_count);
   for (iree_host_size_t engine = 0; engine < context->execution.engine_count;
        ++engine) {
     context->programs[engine] = (loom_func_like_t){0};
@@ -173,7 +185,7 @@ iree_status_t loom_aie2p_native_emit_programs(
     // their metadata still requires a caller value that this entry cannot
     // supply. Never substitute private cursor storage for that buffer.
     if (projected->argument_count &&
-        projected->arguments[0] < context->binding_count) {
+        projected->arguments[0] < source_argument_count) {
       return loom_aie2p_native_reject(
           context, realization->function.op,
           IREE_SV("external buffer arguments used only through DMA endpoints"));

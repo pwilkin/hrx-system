@@ -7,7 +7,7 @@
 #include "iree/base/internal/math.h"
 #include "loom/analysis/storage_geometry.h"
 #include "loom/ops/channel/ops.h"
-#include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/switch.h"
 #include "loom/target/arch/amd/xdna/array/registers.h"
@@ -16,7 +16,7 @@ iree_status_t loom_aie2p_native_select_channel_endpoint(
     loom_aie2p_native_context_t* context,
     const loom_aie2p_native_channel_t* channel,
     loom_xdna_dma_direction_t direction, uint32_t repetitions,
-    uint32_t credit_interval,
+    uint32_t credit_interval, uint32_t reserved_tasks,
     const loom_aie2p_native_distribution_endpoint_t* shared,
     loom_aie2p_native_distribution_endpoint_t* out_endpoint,
     iree_string_view_t* out_reason, bool* out_valid) {
@@ -25,11 +25,12 @@ iree_status_t loom_aie2p_native_select_channel_endpoint(
   const loom_xdna_dma_facts_t* dma = &tile->facts->dma;
   const loom_aie2p_native_memory_layout_t* layout = tile->memory_layout;
   const bool sender = direction == LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM;
-  const uint32_t batch_records = sender ? channel->replay.record_count : 0;
+  const uint32_t batch_records = channel->replay.record_count;
   // Receiver lengths delimit their records independently of the sender's
   // packet boundary. A retained contiguous batch therefore needs one complete
   // transfer per replay. A single retained lifetime brackets the whole finite
-  // sequence; autonomous repeated lifetimes use one credit per replay.
+  // sequence; autonomous repeated lifetimes use one credit per replay. A
+  // retained input receiver publishes only after that whole batch arrives.
   const uint64_t transfer_bytes = (uint64_t)channel->record_byte_length *
                                   (batch_records ? batch_records : 1);
   if (!channel->record_dense ||
@@ -102,7 +103,7 @@ iree_status_t loom_aie2p_native_select_channel_endpoint(
       context, tile, out_endpoint->engine, direction,
       shared || batch_records ? NULL : channel,
       batch_records ? repetitions / batch_records : repetitions, capacity,
-      channel->byte_offset, byte_stride, credit_interval, words,
+      channel->byte_offset, byte_stride, credit_interval, reserved_tasks, words,
       &out_endpoint->sequence, out_reason, out_valid);
 }
 
@@ -320,7 +321,7 @@ static iree_status_t loom_aie2p_native_select_packet_distribution(
     bool valid = false;
     IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
         context, receiver_channel, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
-        totals[i], 1, path ? &path->receivers[ordinal] : NULL,
+        totals[i], 1, 0, path ? &path->receivers[ordinal] : NULL,
         &distribution->receivers[ordinal], &reason, &valid));
     if (!valid) {
       return loom_aie2p_native_reject(context, first->admission->op, reason);
@@ -636,6 +637,15 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
   // this worker uses that endpoint in more than one phase. Independent
   // distributions retain their autonomous paths.
   const bool packet_program = owner->distribution_packets;
+  uint32_t* queued_tasks = NULL;
+  if (child && !packet_program) {
+    const iree_host_size_t endpoint_count =
+        source->transport.batches[0].records->destination_count + 1;
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        context->pass->arena, endpoint_count, sizeof(*queued_tasks),
+        (void**)&queued_tasks));
+    memset(queued_tasks, 0, endpoint_count * sizeof(*queued_tasks));
+  }
   bool ordered = child || (packet_program && source->transport.batch_count > 1);
   for (iree_host_size_t i = 0; i < source->transport.batch_count; ++i) {
     const loom_pipeline_transport_batch_t* batch =
@@ -745,6 +755,7 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
             context, source_channel, LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM,
             windows ? (bulk ? windows[0] : 1) : distribution->repetitions,
             (uint32_t)(cohort->admissions == 1 ? batch->replays : 1),
+            child ? queued_tasks[0] + source->transport.batch_count - i - 1 : 0,
             path ? &path->sender : NULL, &distribution->sender, &reason,
             &valid));
         if (!valid) {
@@ -776,7 +787,11 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
               context, destination_channel,
               LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
               windows ? (bulk ? windows[j + 1] : 1) : distribution->repetitions,
-              1, path ? &path->receivers[j] : NULL, &distribution->receivers[j],
+              1,
+              child
+                  ? queued_tasks[j + 1] + source->transport.batch_count - i - 1
+                  : 0,
+              path ? &path->receivers[j] : NULL, &distribution->receivers[j],
               &reason, &valid));
           if (!valid) {
             return loom_aie2p_native_reject(context, destination->copy, reason);
@@ -831,6 +846,19 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
       *tail = distribution;
       tail = &distribution->next;
     }
+    if (queued_tasks) {
+      for (iree_host_size_t j = 0; j <= distribution->receiver_count; ++j) {
+        const loom_aie2p_native_distribution_endpoint_t* endpoint =
+            j ? &distribution->receivers[j - 1] : &distribution->sender;
+        queued_tasks[j] += endpoint->sequence.task_count;
+        // Reused geometry may have been selected for a less occupied queue.
+        if (queued_tasks[j] > endpoint->tile->facts->dma.task_queue_depth) {
+          return loom_aie2p_native_reject(
+              context, cohort->admission->op,
+              IREE_SV("complete child phase tasks within DMA queue capacity"));
+        }
+      }
+    }
     if (windows) {
       if (!first_phase) {
         first_phase = distribution;
@@ -877,6 +905,13 @@ iree_status_t loom_aie2p_native_bind_distribution_phases(
   const loom_aie2p_native_distribution_phase_t** next;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(context->pass->arena, count,
                                                  sizeof(*next), (void**)&next));
+  loom_aie2p_native_distribution_command_t*** command_tails;
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(context->pass->arena, count,
+                                                 sizeof(*command_tails),
+                                                 (void**)&command_tails));
+  for (iree_host_size_t i = 0; i < count; ++i) {
+    command_tails[i] = &context->workers[i].distribution_commands;
+  }
   for (iree_host_size_t i = 0; i < count; ++i) {
     next[i] = context->workers[i].distribution_phases;
     const loom_pipeline_invocation_t* invocation =
@@ -884,68 +919,69 @@ iree_status_t loom_aie2p_native_bind_distribution_phases(
     if (!invocation->ordinal || !next[i]) {
       continue;
     }
-    const loom_aie2p_native_distribution_phase_t* phase = next[i];
-    if (phase->next) {
-      return loom_aie2p_native_reject(
-          context, phase->source->records->admission->op,
-          IREE_SV("one complete retained distribution lifetime per child"));
-    }
-    const loom_aie2p_native_distribution_t* distribution = phase->distribution;
-    for (iree_host_size_t j = 0; j <= distribution->receiver_count; ++j) {
-      const bool sender = j == 0;
-      const loom_aie2p_native_distribution_endpoint_t* endpoint =
-          sender ? &distribution->sender : &distribution->receivers[j - 1];
-      const uint32_t cursor = sender ? endpoint->channel->cursor.writer.worker
-                                     : endpoint->channel->cursor.reader.worker;
-      iree_host_size_t engine = cursor == UINT32_MAX
-                                    ? IREE_HOST_SIZE_MAX
-                                    : context->core_engines[cursor];
-      // An autonomous distributor has no instruction cursor owner. Its
-      // compute-memory endpoint can instead be controlled by that tile's core.
-      if (engine == IREE_HOST_SIZE_MAX &&
-          endpoint->tile->facts->kind == LOOM_XDNA_TILE_KIND_COMPUTE) {
-        engine = (iree_host_size_t)(endpoint->tile - context->tiles);
-      }
-      iree_host_size_t controller =
-          engine == IREE_HOST_SIZE_MAX
-              ? IREE_HOST_SIZE_MAX
-              : context->execution.workers[invocation->ordinal *
-                                               context->execution.engine_count +
-                                           engine];
-      if (controller == IREE_HOST_SIZE_MAX && engine != IREE_HOST_SIZE_MAX &&
-          invocation->schedule) {
-        controller =
-            context->execution.workers[invocation->parent->ordinal *
-                                           context->execution.engine_count +
-                                       engine];
-        if (controller != IREE_HOST_SIZE_MAX &&
-            realization->invocations.workers[controller].invocation !=
-                invocation->parent) {
-          controller = IREE_HOST_SIZE_MAX;
+    for (const loom_aie2p_native_distribution_phase_t* phase = next[i]; phase;
+         phase = phase->next) {
+      const loom_aie2p_native_distribution_t* distribution =
+          phase->distribution;
+      for (iree_host_size_t j = 0; j <= distribution->receiver_count; ++j) {
+        const bool sender = j == 0;
+        const loom_aie2p_native_distribution_endpoint_t* endpoint =
+            sender ? &distribution->sender : &distribution->receivers[j - 1];
+        uint32_t cursor = sender ? endpoint->channel->cursor.writer.worker
+                                 : endpoint->channel->cursor.reader.worker;
+        if (cursor != UINT32_MAX && context->workers[cursor].input) {
+          cursor = context->workers[cursor].input->continuation.worker;
         }
+        iree_host_size_t engine = cursor == UINT32_MAX
+                                      ? IREE_HOST_SIZE_MAX
+                                      : context->core_engines[cursor];
+        // An autonomous distributor has no instruction cursor owner. Its
+        // compute-memory endpoint is controlled by that tile's core.
+        if (engine == IREE_HOST_SIZE_MAX &&
+            endpoint->tile->facts->kind == LOOM_XDNA_TILE_KIND_COMPUTE) {
+          engine = (iree_host_size_t)(endpoint->tile - context->tiles);
+        }
+        iree_host_size_t controller =
+            engine == IREE_HOST_SIZE_MAX
+                ? IREE_HOST_SIZE_MAX
+                : context->execution
+                      .workers[invocation->ordinal *
+                                   context->execution.engine_count +
+                               engine];
+        if (controller == IREE_HOST_SIZE_MAX && engine != IREE_HOST_SIZE_MAX &&
+            invocation->schedule) {
+          controller =
+              context->execution.workers[invocation->parent->ordinal *
+                                             context->execution.engine_count +
+                                         engine];
+          if (controller != IREE_HOST_SIZE_MAX &&
+              realization->invocations.workers[controller].invocation !=
+                  invocation->parent) {
+            controller = IREE_HOST_SIZE_MAX;
+          }
+        }
+        // Nested phase controllers also execute the child's outer boundary.
+        if (controller == IREE_HOST_SIZE_MAX) {
+          return loom_aie2p_native_reject(
+              context, phase->source->records->admission->op,
+              IREE_SV("a producer and each receiver controlled by the complete "
+                      "child or its concurrent parent invocation"));
+        }
+        context->distribution_controllers[invocation->ordinal *
+                                              context->execution.engine_count +
+                                          engine] = controller;
+        loom_aie2p_native_distribution_command_t* command;
+        IREE_RETURN_IF_ERROR(iree_arena_allocate(
+            context->pass->arena, sizeof(*command), (void**)&command));
+        *command = (loom_aie2p_native_distribution_command_t){
+            .invocation = invocation,
+            .endpoint = endpoint,
+            .direction = sender ? LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM
+                                : LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+            .retire = phase->next == NULL};
+        *command_tails[controller] = command;
+        command_tails[controller] = &command->next;
       }
-      // The execution row includes every nested phase of this child. Those
-      // controllers execute its outer start/retirement boundary as well.
-      if (controller == IREE_HOST_SIZE_MAX) {
-        return loom_aie2p_native_reject(
-            context, phase->source->records->admission->op,
-            IREE_SV("a producer and each receiver controlled by the complete "
-                    "child or its concurrent parent invocation"));
-      }
-      context->distribution_controllers[invocation->ordinal *
-                                            context->execution.engine_count +
-                                        engine] = controller;
-      loom_aie2p_native_distribution_command_t* command;
-      IREE_RETURN_IF_ERROR(iree_arena_allocate(
-          context->pass->arena, sizeof(*command), (void**)&command));
-      loom_aie2p_native_worker_t* worker = &context->workers[controller];
-      *command = (loom_aie2p_native_distribution_command_t){
-          .next = worker->distribution_commands,
-          .invocation = invocation,
-          .endpoint = endpoint,
-          .direction = sender ? LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM
-                              : LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY};
-      worker->distribution_commands = command;
     }
     next[i] = NULL;
   }

@@ -48,6 +48,11 @@ typedef struct loom_aie2p_native_input_phase_t {
 typedef struct loom_aie2p_native_input_t {
   // Communication-only source worker.
   uint32_t worker;
+  // Resident invocation owning receiver startup and source completion.
+  const loom_pipeline_invocation_t* invocation;
+  // Ancestor-owned external read cursor, or UINT32_MAX for invocation-local
+  // source state. Its private frame cell stores the absolute read ordinal.
+  uint32_t cursor_index;
   // Shared parent-selected payload and notification binding, or NULL when
   // common analysis proves enclosing caller storage stable for the invocation.
   const loom_memory_channel_binding_t* binding;
@@ -80,11 +85,14 @@ typedef struct loom_aie2p_native_input_t {
   // Tile-relative credit task publication register.
   uint32_t credit_queue;
   // First private SSA value. Shared leases retain slot, generation, and bulk
-  // position; stable enclosing storage retains only bulk position. Assigned
-  // during worker materialization.
+  // position; stable enclosing storage retains only bulk position. An inherited
+  // external cursor adds its terminal absolute read ordinal for frame
+  // writeback. Assigned during worker materialization.
   iree_host_size_t state_index;
   // Generated admission and arrival helpers in the observing worker's context.
   loom_symbol_ref_t begin;
+  // Child-entry receiver publication; root receivers start in configuration.
+  loom_symbol_ref_t start;
   // Generated source reclamation helper in that same context.
   loom_symbol_ref_t complete;
   // Next input whose continuation runs on the same existing core.
@@ -110,6 +118,15 @@ iree_status_t loom_aie2p_native_route_input(
 // Emits ordinary helpers and consuming channel actions for selected inputs.
 iree_status_t loom_aie2p_native_prepare_input(
     loom_aie2p_native_context_t* context, loom_aie2p_native_input_t* input);
+static inline iree_host_size_t loom_aie2p_native_input_state_count(
+    const loom_aie2p_native_input_t* input) {
+  return (input->binding ? 3 : 1) + (input->cursor_index != UINT32_MAX);
+}
+// Starts child receivers and initializes source state from its owning frame.
+iree_status_t loom_aie2p_native_initialize_input(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    const loom_aie2p_native_input_t* input, loom_value_id_t* frame_argument,
+    loom_value_id_t* state, loom_value_id_t* state_views);
 iree_status_t loom_aie2p_native_emit_input(
     loom_builder_t* builder, const loom_aie2p_native_input_t* input,
     iree_host_size_t action, bool after, loom_value_id_t* state);

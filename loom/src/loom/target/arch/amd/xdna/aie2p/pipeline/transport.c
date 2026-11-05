@@ -478,7 +478,7 @@ static iree_status_t loom_aie2p_native_select_task_descriptors(
         IREE_RETURN_IF_ERROR(loom_aie2p_native_select_sequence(
             context, tile, task->path->shim_engine,
             LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, NULL,
-            worker->repetition.shim_repetitions, 1, 0, 0, 1,
+            worker->repetition.shim_repetitions, 1, 0, 0, 1, 0,
             transfer->shim_words, &descriptor->sequence, &reason, &valid));
       } else {
         IREE_RETURN_IF_ERROR(loom_aie2p_native_select_sequence(
@@ -490,7 +490,7 @@ static iree_status_t loom_aie2p_native_select_task_descriptors(
                 : transfer->local_channel->source->capacity,
             transfer->local_channel->byte_offset +
                 (uint32_t)transfer->local_view->projection_byte_offset.constant,
-            transfer->local_channel->byte_stride, 1, transfer->local_words,
+            transfer->local_channel->byte_stride, 1, 0, transfer->local_words,
             &descriptor->sequence, &reason, &valid));
       }
       if (!valid) {
@@ -546,19 +546,26 @@ iree_status_t loom_aie2p_native_select_sequence(
     uint8_t engine, loom_xdna_dma_direction_t direction,
     const loom_aie2p_native_channel_t* progress_channel, uint32_t repetitions,
     uint32_t capacity, uint32_t byte_offset, uint32_t byte_stride,
-    uint32_t credit_interval, const uint32_t template_words[8],
+    uint32_t credit_interval, uint32_t reserved_tasks,
+    const uint32_t template_words[8],
     loom_aie2p_native_dma_sequence_t* out_sequence,
     iree_string_view_t* out_reason, bool* out_valid) {
   uint16_t descriptor_base, descriptor_count;
   uint16_t* next_descriptor = loom_aie2p_native_descriptor_bank(
       tile, engine, &descriptor_base, &descriptor_count);
+  if (reserved_tasks >= tile->facts->dma.task_queue_depth) {
+    *out_reason = IREE_SV("available DMA task slots for the ordered phases");
+    *out_valid = false;
+    return iree_ok_status();
+  }
+  loom_xdna_dma_facts_t dma = tile->facts->dma;
+  dma.task_queue_depth -= reserved_tasks;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_build_sequence(
-      &tile->facts->dma, tile->memory_layout,
-      descriptor_base + *next_descriptor, descriptor_count - *next_descriptor,
-      direction, repetitions, capacity, byte_offset, byte_stride,
-      credit_interval, template_words, context->pass->arena, out_sequence,
+      &dma, tile->memory_layout, descriptor_base + *next_descriptor,
+      descriptor_count - *next_descriptor, direction, repetitions, capacity,
+      byte_offset, byte_stride, credit_interval, template_words, context->pass->arena, out_sequence,
       out_reason, out_valid));
-  if (!*out_valid) {
+  if (!*out_valid && !reserved_tasks) {
     IREE_RETURN_IF_ERROR(loom_aie2p_native_select_refill(
         context, tile, engine, direction, progress_channel, repetitions,
         capacity, byte_offset, byte_stride, credit_interval,
@@ -1197,8 +1204,8 @@ static iree_status_t loom_aie2p_native_select_worker_transfers(
         continue;
       }
       const uint32_t sites[] = {
-          input->continuation.phase_actions[input->continuation.first_phase],
-          input->continuation.phase_actions[input->source->phase_count - 1]};
+          input->continuation.phases[input->continuation.first_phase].action,
+          input->continuation.phases[input->source->phase_count - 1].action};
       for (iree_host_size_t site = 0; site < IREE_ARRAYSIZE(sites); ++site) {
         const loom_op_t* action = source->channels.actions[sites[site]].op;
         const loom_op_t* issue = transfer->source->request.op;

@@ -594,7 +594,7 @@ static iree_status_t loom_aie2p_native_config_bindings(
   }
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     const loom_aie2p_native_worker_t* worker = &context->workers[i];
-    if (worker->input) {
+    if (worker->input && !worker->input->invocation->ordinal) {
       for (iree_host_size_t j = 0; j < worker->input->source->phase_count;
            ++j) {
         const loom_aie2p_native_distribution_endpoint_t* endpoint =
@@ -1108,7 +1108,7 @@ iree_status_t loom_aie2p_native_emit_configuration(
       IREE_RETURN_IF_ERROR(loom_aie2p_native_config_submit_ingress(
           &config, worker->transfer_tasks));
     }
-    if (worker->input) {
+    if (worker->input && !worker->input->invocation->ordinal) {
       for (iree_host_size_t j = 0; j < worker->input->source->phase_count;
            ++j) {
         IREE_RETURN_IF_ERROR(

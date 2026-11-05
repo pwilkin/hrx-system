@@ -7,6 +7,7 @@
 #include "iree/base/internal/math.h"
 #include "loom/ops/scalar/ops.h"
 #include "loom/ops/scf/ops.h"
+#include "loom/ops/view/ops.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 
 static iree_status_t loom_aie2p_native_input_begin(
@@ -144,6 +145,24 @@ static iree_status_t loom_aie2p_native_input_complete(
 
 iree_status_t loom_aie2p_native_prepare_input(
     loom_aie2p_native_context_t* context, loom_aie2p_native_input_t* input) {
+  if (input->invocation->ordinal) {
+    const loom_aie2p_native_worker_t* owner =
+        &context
+             ->workers[context->execution.workers
+                           [context->core_engines[input->continuation.worker]]];
+    loom_builder_t builder;
+    loom_op_t* function;
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(
+        &context->code, NULL, 0, NULL, 0, &builder, &input->start, &function));
+    for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
+      const loom_aie2p_native_distribution_endpoint_t* receiver =
+          &input->phases[i].receiver;
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_endpoint_start(
+          context, &builder, receiver, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+          owner->control_packets[receiver->tile - context->tiles]));
+    }
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&builder, NULL, 0));
+  }
   IREE_RETURN_IF_ERROR(loom_aie2p_native_input_begin(context, input));
   return input->binding ? loom_aie2p_native_input_complete(context, input)
                         : iree_ok_status();
@@ -160,14 +179,70 @@ static iree_status_t loom_aie2p_native_input_constant(loom_builder_t* builder,
   return iree_ok_status();
 }
 
+iree_status_t loom_aie2p_native_initialize_input(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    const loom_aie2p_native_input_t* input, loom_value_id_t* frame_argument,
+    loom_value_id_t* state, loom_value_id_t* state_views) {
+  loom_op_t* op;
+  if (input->invocation->ordinal) {
+    IREE_RETURN_IF_ERROR(loom_low_invoke_build(builder, 0, 0, 0, input->start,
+                                               NULL, 0, NULL, 0, NULL, 0,
+                                               LOOM_LOCATION_UNKNOWN, &op));
+  }
+  const uint32_t initial[] = {0, 1, 0};
+  for (iree_host_size_t i = 0; i < (input->binding ? 3 : 1); ++i) {
+    IREE_RETURN_IF_ERROR(
+        loom_aie2p_native_input_constant(builder, initial[i], &state[i]));
+    state_views[i] = LOOM_VALUE_ID_INVALID;
+  }
+  if (input->cursor_index == UINT32_MAX) {
+    return iree_ok_status();
+  }
+  if (*frame_argument == LOOM_VALUE_ID_INVALID) {
+    IREE_RETURN_IF_ERROR(loom_module_define_value(
+        context->code.module, loom_type_buffer(), frame_argument));
+  }
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_cursor_view(
+      builder, *frame_argument, input->cursor_index, false, &state_views[3]));
+  const int64_t origin = 0;
+  const loom_type_t type = loom_type_scalar(LOOM_SCALAR_TYPE_I32);
+  IREE_RETURN_IF_ERROR(loom_view_load_build(builder, 0, 0, state_views[3], NULL,
+                                            0, &origin, 1, 0, 0, type,
+                                            LOOM_LOCATION_UNKNOWN, &op));
+  const loom_value_id_t ordinal = loom_view_load_result(op);
+  const loom_value_id_t one = state[1];
+  loom_value_id_t capacity, admissions;
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+      builder, input->binding->protocol->payload.capacity, &capacity));
+  IREE_RETURN_IF_ERROR(loom_scalar_remui_build(builder, ordinal, capacity, type,
+                                               LOOM_LOCATION_UNKNOWN, &op));
+  state[0] = loom_scalar_remui_result(op);
+  IREE_RETURN_IF_ERROR(loom_scalar_divui_build(builder, ordinal, capacity, type,
+                                               LOOM_LOCATION_UNKNOWN, &op));
+  IREE_RETURN_IF_ERROR(
+      loom_scalar_addi_build(builder, 0, loom_scalar_divui_result(op), one,
+                             type, LOOM_LOCATION_UNKNOWN, &op));
+  state[1] = loom_scalar_addi_result(op);
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+      builder, input->source->admissions, &admissions));
+  IREE_RETURN_IF_ERROR(loom_scalar_addi_build(
+      builder, 0, ordinal, admissions, type, LOOM_LOCATION_UNKNOWN, &op));
+  state[3] = loom_scalar_addi_result(op);
+  return iree_ok_status();
+}
+
 iree_status_t loom_aie2p_native_emit_input(
     loom_builder_t* builder, const loom_aie2p_native_input_t* input,
     iree_host_size_t action, bool after, loom_value_id_t* state) {
   const iree_host_size_t tail = input->source->phase_count - 1;
-  const bool bulk = action == input->continuation.phase_actions[tail];
+  const loom_pipeline_continuation_phase_t* observation =
+      &input->continuation.phases[tail];
+  const bool complete_batch =
+      observation->kind == LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH;
+  const bool bulk = action == observation->action;
   const bool first =
       action ==
-      input->continuation.phase_actions[input->continuation.first_phase];
+      input->continuation.phases[input->continuation.first_phase].action;
   if ((!bulk && !first) || (after && !bulk)) {
     return iree_ok_status();
   }
@@ -183,14 +258,18 @@ iree_status_t loom_aie2p_native_emit_input(
   if (!after) {
     loom_value_id_t predicate = LOOM_VALUE_ID_INVALID;
     if (bulk) {
-      loom_value_id_t period;
-      IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
-          builder, input->source->phases[tail].period, &period));
-      IREE_RETURN_IF_ERROR(loom_scalar_remui_build(
-          builder, position, period, type, LOOM_LOCATION_UNKNOWN, &op));
+      loom_value_id_t phase_position = position;
+      if (!complete_batch) {
+        loom_value_id_t period;
+        IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+            builder, input->source->phases[tail].period, &period));
+        IREE_RETURN_IF_ERROR(loom_scalar_remui_build(
+            builder, position, period, type, LOOM_LOCATION_UNKNOWN, &op));
+        phase_position = loom_scalar_remui_result(op);
+      }
       IREE_RETURN_IF_ERROR(loom_scalar_cmpi_build(
-          builder, LOOM_SCALAR_CMPI_PREDICATE_EQ, loom_scalar_remui_result(op),
-          zero, LOOM_LOCATION_UNKNOWN, &op));
+          builder, LOOM_SCALAR_CMPI_PREDICATE_EQ, phase_position, zero,
+          LOOM_LOCATION_UNKNOWN, &op));
       predicate = loom_scalar_cmpi_result(op);
       if (!first) {
         IREE_RETURN_IF_ERROR(
@@ -233,7 +312,7 @@ iree_status_t loom_aie2p_native_emit_input(
   }
   loom_value_id_t limit;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
-      builder, input->source->phases[tail].transfers, &limit));
+      builder, complete_batch ? 1 : observation->read_count, &limit));
   IREE_RETURN_IF_ERROR(
       loom_scalar_cmpi_build(builder, LOOM_SCALAR_CMPI_PREDICATE_EQ,
                              next_position, limit, LOOM_LOCATION_UNKNOWN, &op));
@@ -246,10 +325,28 @@ iree_status_t loom_aie2p_native_emit_input(
   const uint64_t capacity = input->binding->protocol->payload.capacity;
   const uint64_t last = input->source->admissions - 1;
   loom_value_id_t last_slot, last_generation, token;
-  IREE_RETURN_IF_ERROR(
-      loom_aie2p_native_input_constant(builder, last % capacity, &last_slot));
-  IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
-      builder, last / capacity + 1, &last_generation));
+  if (input->cursor_index == UINT32_MAX) {
+    IREE_RETURN_IF_ERROR(
+        loom_aie2p_native_input_constant(builder, last % capacity, &last_slot));
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
+        builder, last / capacity + 1, &last_generation));
+  } else {
+    loom_value_id_t slots;
+    IREE_RETURN_IF_ERROR(
+        loom_aie2p_native_input_constant(builder, capacity, &slots));
+    IREE_RETURN_IF_ERROR(loom_scalar_subi_build(
+        builder, 0, values[3], one, type, LOOM_LOCATION_UNKNOWN, &op));
+    const loom_value_id_t last_ordinal = loom_scalar_subi_result(op);
+    IREE_RETURN_IF_ERROR(loom_scalar_remui_build(
+        builder, last_ordinal, slots, type, LOOM_LOCATION_UNKNOWN, &op));
+    last_slot = loom_scalar_remui_result(op);
+    IREE_RETURN_IF_ERROR(loom_scalar_divui_build(
+        builder, last_ordinal, slots, type, LOOM_LOCATION_UNKNOWN, &op));
+    IREE_RETURN_IF_ERROR(
+        loom_scalar_addi_build(builder, 0, loom_scalar_divui_result(op), one,
+                               type, LOOM_LOCATION_UNKNOWN, &op));
+    last_generation = loom_scalar_addi_result(op);
+  }
   IREE_RETURN_IF_ERROR(loom_aie2p_native_input_constant(
       builder,
       loom_xdna_register_field_encode(
@@ -292,7 +389,11 @@ iree_status_t loom_aie2p_native_emit_input(
   IREE_RETURN_IF_ERROR(
       loom_scf_select_build(builder, wraps, loom_scalar_addi_result(op),
                             values[1], type, LOOM_LOCATION_UNKNOWN, &op));
-  const loom_value_id_t next[] = {next_slot, loom_scf_select_result(op), zero};
+  // Complete-batch arrival returns the external slot, but local replay still
+  // owns its SRAM. Keep advancing the local observation position so subsequent
+  // replays cannot readmit the next external record.
+  const loom_value_id_t next[] = {next_slot, loom_scf_select_result(op),
+                                  complete_batch ? next_position : zero};
   IREE_RETURN_IF_ERROR(
       loom_scf_yield_build(builder, next, 3, LOOM_LOCATION_UNKNOWN, &op));
   loom_builder_enter_region(builder, branch, loom_scf_if_else_region(branch));

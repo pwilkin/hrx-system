@@ -76,6 +76,27 @@ class ProgressGraph {
     copy.batch = {.records = &copy.cohort, .record_count = 1};
   }
 
+  void RetainBatch(uint32_t source, const std::vector<uint32_t>& destinations,
+                   uint32_t records, uint32_t replays,
+                   uint32_t admissions = 1) {
+    Copy(source, destinations, /*retain_source=*/true);
+    CopyGroup& copy = copies_.back();
+    copy.cohort.admissions = admissions;
+    copy.cohort.transfers = uint64_t{admissions} * replays;
+    copy.retained.assign(records, copy.cohort);
+    copy.batch = {
+        .records = copy.retained.data(),
+        .record_count = records,
+        .replays = replays,
+    };
+    SetReads(source, 0);
+    SetWrites(source, uint64_t{records} * admissions);
+    for (uint32_t destination : destinations) {
+      SetReads(destination, uint64_t{records} * admissions * replays);
+      SetWrites(destination, uint64_t{records} * admissions * replays);
+    }
+  }
+
   void Select(bool retain_observations = true,
               std::vector<uint32_t> observation_sources = {}) {
     if (retain_observations && observation_sources.empty()) {
@@ -85,8 +106,8 @@ class ProgressGraph {
     }
     std::vector<loom_pipeline_worker_t> workers(copies_.size());
     for (size_t i = 0; i < copies_.size(); ++i) {
-      workers[i].transport.cohorts = &copies_[i].cohort;
-      workers[i].transport.cohort_count = 1;
+      workers[i].transport.cohorts = copies_[i].batch.records;
+      workers[i].transport.cohort_count = copies_[i].batch.record_count;
       workers[i].transport.batches = &copies_[i].batch;
       workers[i].transport.batch_count = 1;
     }
@@ -105,12 +126,17 @@ class ProgressGraph {
 
   uint32_t Reader(uint32_t source) const { return readers_[source]; }
 
-  std::vector<uint32_t> Observations(uint32_t source) const {
+  std::vector<uint32_t> Observations(
+      uint32_t source, loom_pipeline_progress_observation_kind_t kind =
+                           LOOM_PIPELINE_PROGRESS_OBSERVATION_RECORD) const {
     const auto& row = observations_[source];
-    if (!row.count) {
-      return {};
+    std::vector<uint32_t> channels;
+    for (size_t i = 0; i < row.count; ++i) {
+      if (row.values[i].kind == kind) {
+        channels.push_back(row.values[i].channel);
+      }
     }
-    return {row.channels, row.channels + row.count};
+    return channels;
   }
 
   size_t Bytes() const { return arena_.used_allocation_size; }
@@ -125,6 +151,8 @@ class ProgressGraph {
     std::vector<loom_pipeline_transport_destination_t> destinations;
     // Equal-record copy group established by the transport analysis.
     loom_pipeline_transport_cohort_t cohort = {};
+    // All source records acquired before the first retained-batch copy.
+    std::vector<loom_pipeline_transport_cohort_t> retained;
     // Complete ownership interval of this one-record group.
     loom_pipeline_transport_batch_t batch = {};
   };
@@ -206,6 +234,67 @@ TEST(PipelineProgressTest, RetainedSourceObligationIsNotCopyCompletion) {
   graph.Select();
   EXPECT_EQ(graph.Reader(0), UINT32_MAX);
   EXPECT_TRUE(graph.Observations(0).empty());
+}
+
+TEST(PipelineProgressTest, CompleteBatchArrivalIsNotEqualRecordProgress) {
+  ProgressGraph graph(5, 48);
+  graph.RetainBatch(0, {1, 2}, 48, 256);
+  graph.SetReads(3, 48 * 256);
+  graph.SetWrites(3, 48 * 256);
+  graph.SetReads(4, 48 * 256);
+  graph.SetWrites(4, 48 * 256);
+  graph.Copy(1, {3, 4});
+  for (uint32_t channel : {2u, 3u, 4u}) {
+    graph.Observe(channel);
+  }
+  graph.Select();
+  EXPECT_EQ(graph.Reader(0), UINT32_MAX);
+  EXPECT_TRUE(graph.Observations(0).empty());
+  EXPECT_EQ(
+      graph.Observations(0, LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH),
+      (std::vector<uint32_t>{2, 3, 4}));
+  EXPECT_EQ(graph.Observations(1), (std::vector<uint32_t>{3, 4}));
+}
+
+TEST(PipelineProgressTest, PartialBatchCannotObserveEveryPublication) {
+  ProgressGraph graph(2, 48);
+  graph.RetainBatch(0, {1}, 48, 256);
+  graph.SetWrites(0, 96);
+  graph.Observe(1);
+  graph.Select();
+  EXPECT_EQ(graph.Reader(0), UINT32_MAX);
+  EXPECT_TRUE(
+      graph.Observations(0, LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH)
+          .empty());
+}
+
+TEST(PipelineProgressTest, RepeatedBatchesNeedAnInterBatchProgressProof) {
+  ProgressGraph graph(2, 48);
+  graph.RetainBatch(0, {1}, 48, 256, 11);
+  graph.Observe(1);
+  graph.Select();
+  EXPECT_TRUE(
+      graph.Observations(0, LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH)
+          .empty());
+}
+
+TEST(PipelineProgressTest, ReplayCountDoesNotExpandBatchObservationStorage) {
+  size_t baseline = 0;
+  for (uint32_t replays : {1u, 256u, 1000000u}) {
+    ProgressGraph graph(3, 96);
+    graph.RetainBatch(0, {1, 2}, 96, replays);
+    graph.Observe(1);
+    graph.Observe(2);
+    graph.Select();
+    EXPECT_EQ(graph.Reader(0), UINT32_MAX);
+    EXPECT_EQ(graph.Observations(
+                  0, LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH),
+              (std::vector<uint32_t>{1, 2}));
+    if (!baseline) {
+      baseline = graph.Bytes();
+    }
+    EXPECT_EQ(graph.Bytes(), baseline);
+  }
 }
 
 TEST(PipelineProgressTest, IndependentPublicationsDoNotShareARecordOrdinal) {

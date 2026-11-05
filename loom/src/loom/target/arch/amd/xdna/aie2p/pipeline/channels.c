@@ -86,8 +86,7 @@ iree_status_t loom_aie2p_native_select_channels(
           context, source->binding,
           IREE_SV("specialized byte-addressable channel slot geometry"));
     }
-    if (source->capacity > (uint64_t)owner->facts->lock_value_maximum ||
-        owner->next_lock + 2 > owner->facts->lock_count) {
+    if (owner->next_lock + 2 > owner->facts->lock_count) {
       return loom_aie2p_native_reject(
           context, source->binding,
           IREE_SV("a hardware semaphore pair with enough slot credits"));
@@ -653,15 +652,20 @@ static iree_status_t loom_aie2p_native_channel_exit(
     if (emitter->state_views[i] == LOOM_VALUE_ID_INVALID) {
       continue;
     }
-    loom_op_t* cast = NULL;
-    IREE_RETURN_IF_ERROR(loom_index_cast_build(
-        &rewriter->builder, state[i], loom_type_scalar(LOOM_SCALAR_TYPE_OFFSET),
-        loom_type_scalar(LOOM_SCALAR_TYPE_I32), LOOM_LOCATION_UNKNOWN, &cast));
+    loom_value_id_t value = state[i];
+    const loom_type_t type = loom_module_value_type(rewriter->module, value);
+    if (loom_type_equal(type, loom_type_scalar(LOOM_SCALAR_TYPE_OFFSET))) {
+      loom_op_t* cast = NULL;
+      IREE_RETURN_IF_ERROR(
+          loom_index_cast_build(&rewriter->builder, value, type,
+                                loom_type_scalar(LOOM_SCALAR_TYPE_I32),
+                                LOOM_LOCATION_UNKNOWN, &cast));
+      value = loom_index_cast_result(cast);
+    }
     loom_op_t* store = NULL;
     IREE_RETURN_IF_ERROR(loom_view_store_build(
-        &rewriter->builder, 0, 0, loom_index_cast_result(cast),
-        emitter->state_views[i], NULL, 0, &zero, 1, 0, 0, LOOM_LOCATION_UNKNOWN,
-        &store));
+        &rewriter->builder, 0, 0, value, emitter->state_views[i], NULL, 0,
+        &zero, 1, 0, 0, LOOM_LOCATION_UNKNOWN, &store));
   }
   return iree_ok_status();
 }
@@ -719,12 +723,14 @@ iree_status_t loom_aie2p_native_emit_worker(
            channels->plan.action_count * sizeof(*emitter.inputs_by_action));
     for (loom_aie2p_native_input_t* input = worker->inputs; input;
          input = input->next) {
-      const uint32_t* actions = input->continuation.phase_actions;
-      emitter.inputs_by_action[actions[input->continuation.first_phase]] =
+      const loom_pipeline_continuation_phase_t* phases =
+          input->continuation.phases;
+      emitter.inputs_by_action[phases[input->continuation.first_phase].action] =
           input;
-      emitter.inputs_by_action[actions[input->source->phase_count - 1]] = input;
+      emitter.inputs_by_action[phases[input->source->phase_count - 1].action] =
+          input;
       IREE_RETURN_IF_ERROR(loom_aie2p_native_prepare_input(context, input));
-      input_state_count += input->binding ? 3 : 1;
+      input_state_count += loom_aie2p_native_input_state_count(input);
     }
   }
   loom_aie2p_worker_builder_t* code = &context->code;
@@ -916,15 +922,10 @@ iree_status_t loom_aie2p_native_emit_worker(
   for (loom_aie2p_native_input_t* input = worker->inputs; input;
        input = input->next) {
     input->state_index = state_count;
-    const uint32_t initial[] = {0, 1, 0};
-    for (iree_host_size_t i = 0; i < (input->binding ? 3 : 1); ++i) {
-      loom_op_t* value;
-      IREE_RETURN_IF_ERROR(loom_scalar_constant_build(
-          &rewriter->builder, loom_attr_i64(initial[i]), delta_type,
-          LOOM_LOCATION_UNKNOWN, &value));
-      state_views[state_count] = LOOM_VALUE_ID_INVALID;
-      state[state_count++] = loom_scalar_constant_result(value);
-    }
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_initialize_input(
+        context, &rewriter->builder, input, &worker->cursor_state_argument,
+        state + state_count, state_views + state_count));
+    state_count += loom_aie2p_native_input_state_count(input);
   }
   loom_type_t* carriers = NULL;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(

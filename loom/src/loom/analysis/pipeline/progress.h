@@ -36,12 +36,27 @@ typedef struct loom_pipeline_progress_callback_t {
   void* user_data;
 } loom_pipeline_progress_callback_t;
 
-// Complete eligible observations of one channel's record ordinal. Joint
+typedef enum loom_pipeline_progress_observation_kind_e {
+  // Each reader admission observes the corresponding source record.
+  LOOM_PIPELINE_PROGRESS_OBSERVATION_RECORD = 0,
+  // The first reader admission observes the complete finite source batch.
+  // It does not retire the source's retained reads or fanout obligations.
+  LOOM_PIPELINE_PROGRESS_OBSERVATION_COMPLETE_BATCH,
+} loom_pipeline_progress_observation_kind_t;
+
+typedef struct loom_pipeline_progress_observation_t {
+  // Canonical channel whose existing reader supplies the observation.
+  uint32_t channel;
+  // Relationship between that reader's arrivals and source publication.
+  loom_pipeline_progress_observation_kind_t kind;
+} loom_pipeline_progress_observation_t;
+
+// Complete eligible observations of one channel's publication. Joint
 // continuation selection intersects endpoint owners across phases while keeping
 // each phase's actual observation channel; equal counts are not identities.
 typedef struct loom_pipeline_progress_observations_t {
-  // Canonical channel ordinals, sorted and unique, owned by the analysis arena.
-  const uint32_t* channels;
+  // Observations sorted by channel and kind, unique and arena-owned.
+  const loom_pipeline_progress_observation_t* values;
   // Number of eligible observations; zero for an unproved or cyclic path.
   iree_host_size_t count;
 } loom_pipeline_progress_observations_t;
@@ -67,6 +82,10 @@ typedef struct loom_pipeline_progress_observations_t {
 // Work follows each requested source's reachable graph, with linear scratch
 // and retained sparse results; epoch length does not expand either. In
 // particular, intermediate channels do not acquire unused transitive sets.
+// Populations also carry complete-batch observations: a retained batch acquires
+// all of its source records before copying any destination. When that batch
+// owns every source publication, its first downstream arrival observes the
+// complete source. This proof never enters the equal-record out_readers map.
 iree_status_t loom_pipeline_progress_select(
     const loom_pipeline_invocations_t* invocations,
     const loom_pipeline_worker_t* workers,

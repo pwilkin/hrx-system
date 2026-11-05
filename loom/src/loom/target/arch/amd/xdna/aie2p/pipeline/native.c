@@ -1021,12 +1021,25 @@ static iree_status_t loom_aie2p_native_select(
   for (iree_host_size_t i = 0; i < realization->invocations.channel_count;
        ++i) {
     const loom_aie2p_native_channel_t* channel = &context->channels[i];
+    // Complete retained batches use one physical credit domain independently
+    // of their logical record count. Ordinary FIFOs retain per-slot credits.
+    if (!channel->external && !channel->replay.record_count &&
+        channel->source->capacity >
+            (uint64_t)context->pool_tiles[channel->pool_index]
+                ->facts->lock_value_maximum) {
+      return loom_aie2p_native_reject(
+          context, channel->source->binding,
+          IREE_SV("a hardware semaphore pair with enough slot credits"));
+    }
     if (channel->replay.record_count &&
         (channel->cursor.writer.worker == UINT32_MAX ||
          (context->workers[channel->cursor.writer.worker].execution !=
               LOOM_AIE2P_NATIVE_EXECUTION_DMA &&
           context->workers[channel->cursor.writer.worker].execution !=
               LOOM_AIE2P_NATIVE_EXECUTION_CONFIGURATION &&
+          !(context->workers[channel->cursor.writer.worker].execution ==
+                LOOM_AIE2P_NATIVE_EXECUTION_INPUT &&
+            channel->replay.credits == 1) &&
           !(context->workers[channel->cursor.writer.worker].execution ==
                 LOOM_AIE2P_NATIVE_EXECUTION_CORE &&
             context->pool_tiles[channel->pool_index]->facts->kind ==
@@ -1054,6 +1067,7 @@ static iree_status_t loom_aie2p_native_select(
   for (iree_host_size_t i = realization->resources.strand_count;
        i < worker_count; ++i) {
     if (context->workers[i].execution != LOOM_AIE2P_NATIVE_EXECUTION_CORE &&
+        context->workers[i].execution != LOOM_AIE2P_NATIVE_EXECUTION_INPUT &&
         !(context->workers[i].execution ==
               LOOM_AIE2P_NATIVE_EXECUTION_DISTRIBUTION &&
           context->workers[i].distribution_phases)) {

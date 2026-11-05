@@ -110,6 +110,14 @@ loom_test_module(
 )
 
 loom_test(
+    name = "retained_input_test",
+    srcs = ["retained_input.loom"],
+    benchmark_smoke = False,
+    execution_profiles = [_XDNA_ONE_COLUMN_PROFILE],
+    target_compatible_with = loom_config_compatible_with(["//loom/config/execute:vm_iree_vm"]),
+)
+
+loom_test(
     name = "rotating_sram_test",
     benchmark_smoke = False,
     case = "rotating_four_row_sram_handoff",

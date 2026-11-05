@@ -76,8 +76,8 @@ low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_20() as
   %462 = mov.short 0
   low.br ^_bb1
 ^_bb1:
-  %463 = mov.short 2
-  %464 = mov.i32 54648576
+  %463 = mov.i32 -2147483648
+  %464 = mov.i32 21628544
   mov.ms %463
   mov.ms.last %464
   %465 = mov.ss
@@ -94,8 +94,8 @@ low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_21() as
   %470 = mov.short 0
   low.br ^_bb1
 ^_bb1:
-  %471 = mov.i32 -2147483648
-  %472 = mov.i32 21628544
+  %471 = mov.short 2
+  %472 = mov.i32 54648576
   mov.ms %471
   mov.ms.last %472
   %473 = mov.ss
@@ -120,20 +120,20 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
 ^_bb2:
   %input_offset = mul %phase, %bytes
   %output_offset = mul %phase, %output_stride
-  %477 = mov.i32 65536
-  %478 = mov.short 2
-  %479 = mov.i32 -2147361276
+  %478 = mov.i32 -2147483648
+  %479 = mov.i32 656948
   mov.ms %478
   mov.ms %479
-  mov.ms.last %477
-  %481 = mov.i32 -2147483648
-  %482 = mov.i32 656948
-  mov.ms %481
-  mov.ms %482
   mov.ms.last %begin
-  mov.ms %481
-  mov.ms %482
+  mov.ms %478
+  mov.ms %479
   mov.ms.last %capacity
+  %483 = mov.i32 65536
+  %484 = mov.short 2
+  %485 = mov.i32 -2147361276
+  mov.ms %484
+  mov.ms %485
+  mov.ms.last %483
   %302 = mov.short -1
   %262 = mov.local-address 458752
   %264 = mov.local-address 458760
@@ -149,39 +149,39 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
   mov.ms.last %269
   %272 = mov.i32 -2147483646
   %275 = mov.i32 656900
-  mov.ms %481
+  mov.ms %478
   mov.ms %275
   mov.ms.last %272
   %277 = mov.i32 119316
   mov.ms %capacity
   mov.ms %277
-  mov.ms.last %481
+  mov.ms.last %478
   %278 = mov.ss
   %279 = mov.ss
   %308 = mov.i32 -2146697216
-  mov.ms %481
+  mov.ms %478
   mov.ms %308
   mov.ms.last %begin
   %311 = mov.i32 786448
-  mov.ms %481
+  mov.ms %478
   mov.ms %311
   mov.ms.last %capacity
   low.br ^_bb4(%begin: reg<aie2p.er>)
 ^_bb3:
-  %452 = mov.i32 65536
-  %453 = mov.short 2
-  %454 = mov.i32 -2147361276
+  %453 = mov.i32 -2147483648
+  %454 = mov.i32 656948
   mov.ms %453
   mov.ms %454
-  mov.ms.last %452
-  %456 = mov.i32 -2147483648
-  %457 = mov.i32 656948
-  mov.ms %456
-  mov.ms %457
   mov.ms.last %begin
-  mov.ms %456
-  mov.ms %457
+  mov.ms %453
+  mov.ms %454
   mov.ms.last %capacity
+  %458 = mov.i32 65536
+  %459 = mov.short 2
+  %460 = mov.i32 -2147361276
+  mov.ms %459
+  mov.ms %460
+  mov.ms.last %458
   %366 = mov.short -1
   %326 = mov.local-address 458752
   %328 = mov.local-address 458760
@@ -197,26 +197,26 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
   mov.ms.last %333
   %336 = mov.i32 -2147483646
   %339 = mov.i32 656900
-  mov.ms %456
+  mov.ms %453
   mov.ms %339
   mov.ms.last %336
   %341 = mov.i32 119316
   mov.ms %capacity
   mov.ms %341
-  mov.ms.last %456
+  mov.ms.last %453
   %342 = mov.ss
   %343 = mov.ss
   %372 = mov.i32 -2146697216
-  mov.ms %456
+  mov.ms %453
   mov.ms %372
   mov.ms.last %begin
   %375 = mov.i32 786448
-  mov.ms %456
+  mov.ms %453
   mov.ms %375
   mov.ms.last %capacity
   low.br ^_bb7(%begin: reg<aie2p.er>)
 ^_bb4(%record$581: reg<aie2p.er>):
-  %595 = lt %record$581, %478
+  %595 = lt %record$581, %484
   low.cond_br %595, ^_bb5, ^_bb6 : reg<aie2p.er>
 ^_bb5:
   acq %302, 49
@@ -242,7 +242,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
   mov.ms %294
   mov.ms.last %292
   %296 = mov.i32 122388
-  mov.ms %478
+  mov.ms %484
   mov.ms %296
   mov.ms.last %capacity
   %297 = mov.ss
@@ -255,7 +255,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
   %601 = add.nc %phase, %capacity
   low.br ^_bb1(%601: reg<aie2p.er>)
 ^_bb7(%record$582: reg<aie2p.er>):
-  %607 = lt %record$582, %453
+  %607 = lt %record$582, %459
   low.cond_br %607, ^_bb8, ^_bb9 : reg<aie2p.er>
 ^_bb8:
   acq %366, 49
@@ -280,7 +280,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
   mov.ms %358
   mov.ms.last %356
   %360 = mov.i32 122388
-  mov.ms %453
+  mov.ms %459
   mov.ms %360
   mov.ms.last %capacity
   %361 = mov.ss

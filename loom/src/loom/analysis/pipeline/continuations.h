@@ -23,14 +23,25 @@ typedef struct loom_pipeline_progress_site_t {
   uint32_t action;
 } loom_pipeline_progress_site_t;
 
+typedef struct loom_pipeline_continuation_phase_t {
+  // Read action in the selected worker's retained channel plan.
+  uint32_t action;
+  // Exact observer reads within one source lifetime, including local replay.
+  uint64_t read_count;
+  // How these arrivals establish source publication, not source retirement.
+  loom_pipeline_progress_observation_kind_t kind;
+} loom_pipeline_continuation_phase_t;
+
 // One existing worker can observe every phase of a borrowed input lifetime.
-// Admission precedes its first dependent read. The final source phase's last
-// arrival proves source reclamation, independently of copied local lifetimes.
+// Admission precedes its first dependent read. The final source phase's
+// selected observation proves source reclamation, independently of copied
+// local lifetimes: its last arrival for record progress, or its first arrival
+// for a complete retained batch.
 typedef struct loom_pipeline_continuation_t {
   // Selected existing worker, or UINT32_MAX when this proof is unavailable.
   uint32_t worker;
-  // Read action per source phase, in the selected worker's channel plan.
-  const uint32_t* phase_actions;
+  // Selected observation for each source phase, in source order.
+  const loom_pipeline_continuation_phase_t* phases;
   // Source phase supplying this worker's first demand within each lifetime.
   uint32_t first_phase;
   // Consumer loop matching one source lifetime, or LOOP_NEST_NONE for a

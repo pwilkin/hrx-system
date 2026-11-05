@@ -20,12 +20,20 @@ iree_status_t loom_aie2p_native_select_input(
     return iree_ok_status();
   }
   const loom_memory_channel_binding_t* binding = NULL;
+  const loom_pipeline_invocation_t* invocation =
+      realization->invocations.workers[worker].invocation;
+  uint32_t cursor_index = UINT32_MAX;
   if (plan->acquisition) {
     binding = loom_aie2p_native_channel(context, realization,
                                         plan->acquisition->channel)
                   ->external;
     if (!binding) {
       return iree_ok_status();
+    }
+    const uint32_t channel = loom_pipeline_invocations_channel_index(
+        &realization->invocations, plan->acquisition->channel);
+    if (realization->invocations.channels[channel].invocation != invocation) {
+      cursor_index = channel;
     }
   } else if (!source->transport.sources_stable || plan->phase_count == 1) {
     // A single stable phase retains the autonomous repeat path. Only phased
@@ -59,6 +67,8 @@ iree_status_t loom_aie2p_native_select_input(
                                            (void**)&input));
   *input = (loom_aie2p_native_input_t){
       .worker = (uint32_t)worker,
+      .invocation = invocation,
+      .cursor_index = cursor_index,
       .binding = binding,
       .source = plan,
   };
@@ -146,13 +156,22 @@ static iree_status_t loom_aie2p_native_input_receivers(
   const iree_host_size_t tail = input->source->phase_count - 1;
   for (iree_host_size_t i = 0; i <= tail; ++i) {
     loom_aie2p_native_input_phase_t* phase = &input->phases[i];
+    if (phase->destination->replay.record_count &&
+        (input->source->admissions != 1 ||
+         phase->source->transfers != phase->destination->replay.record_count ||
+         phase->source->period != phase->source->transfers)) {
+      *reason =
+          IREE_SV("one complete retained input batch per source lifetime");
+      *out_valid = false;
+      return iree_ok_status();
+    }
     const uint32_t repetitions =
         window
             ? (i == tail ? window : 1)
             : (uint32_t)(input->source->admissions * phase->source->transfers);
     IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
         context, phase->destination, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
-        repetitions, 1, window && i ? &input->phases[0].receiver : NULL,
+        repetitions, 1, 0, window && i ? &input->phases[0].receiver : NULL,
         &phase->receiver, reason, out_valid));
     if (!*out_valid) {
       return iree_ok_status();
@@ -358,6 +377,17 @@ iree_status_t loom_aie2p_native_route_input(
       next_source, next_controller, &valid));
   if (!valid) {
     return iree_ok_status();
+  }
+  if (input->invocation->ordinal) {
+    for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_select_control_route(
+          context, realization, input->continuation.worker,
+          input->phases[i].receiver.tile, false, next_source, next_controller,
+          &valid));
+      if (!valid) {
+        return iree_ok_status();
+      }
+    }
   }
   loom_aie2p_native_worker_t* owner =
       &context

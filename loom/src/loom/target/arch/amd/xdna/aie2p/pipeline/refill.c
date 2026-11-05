@@ -160,6 +160,13 @@ iree_status_t loom_aie2p_native_select_progress(
                   "one lifetime"));
     }
     input->continuation = continuations[i];
+    if (input->invocation->ordinal &&
+        realization->invocations.workers[continuations[i].worker].invocation !=
+            input->invocation) {
+      return loom_aie2p_native_reject(
+          context, realization->workers[inputs[i]].source->declaration,
+          IREE_SV("an input continuation within its resident child"));
+    }
     loom_aie2p_native_worker_t* owner =
         &context->workers[continuations[i].worker];
     input->next = owner->inputs;
