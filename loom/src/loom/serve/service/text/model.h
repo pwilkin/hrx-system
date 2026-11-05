@@ -29,7 +29,8 @@ extern "C" {
 #endif
 
 // One packed autoregressive model residency. A single host owner multiplexes
-// retained rows through the same VM process, commands and weights. Private
+// retained rows through the same model-control VM process, commands and
+// weights. Request-local source work uses independent processes. Private
 // command workspace is borrowed from the explicitly bound storage pool.
 // Packed epochs separate submission from successful completion; no row-local
 // VM or thread is required. The owner excludes other model mutation until

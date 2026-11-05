@@ -22,9 +22,7 @@ struct loom_serve_test_text_policy_t {
   iree_tokenizer_t* tokenizer;
   // Owned resolved providers and card configuration borrowed by the program.
   loom_runtime_sources_t* sources;
-  // Owned JIT program and serialized invocation.
-  loom_runtime_program_t* program;
-  // Resolved source functions and owned deployment defaults.
+  // Resolved source policy owning its request-only linked program.
   loom_serve_text_chat_policy_t chat;
 };
 
@@ -33,7 +31,6 @@ void loom_serve_test_text_policy_free(loom_serve_test_text_policy_t* policy) {
     return;
   }
   loom_serve_text_chat_policy_deinitialize(&policy->chat);
-  loom_runtime_program_free(policy->program);
   loom_runtime_sources_free(policy->sources, policy->host_allocator);
   iree_tokenizer_free(policy->tokenizer);
   iree_vm_environment_free(policy->environment);
@@ -101,6 +98,7 @@ iree_status_t loom_serve_test_text_policy_allocate(
       IREE_SVL("complete_text"),     IREE_SVL("request_defaults"),
       IREE_SVL("request_options")};
   loomc_target_environment_t* target_environment = NULL;
+  loom_runtime_program_t* program = NULL;
   if (iree_status_is_ok(status)) {
     status = iree_status_from_loomc(loomc_target_environment_create_vm(
         loomc_allocator_from_iree(host_allocator), &target_environment));
@@ -110,7 +108,7 @@ iree_status_t loom_serve_test_text_policy_allocate(
         target_environment, policy->environment, policy->sources,
         policy->sources->control, IREE_ARRAYSIZE(roots), roots,
         iree_vm_module_span_from_array(libraries), report, host_allocator,
-        &policy->program);
+        &program);
   }
   loomc_target_environment_release(target_environment);
   for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(libraries); ++i) {
@@ -125,8 +123,10 @@ iree_status_t loom_serve_test_text_policy_allocate(
   }
   if (iree_status_is_ok(status)) {
     status = loom_serve_text_chat_policy_initialize(
-        policy->environment, policy->program, options_buffer, &policy->chat);
+        policy->environment, program, options_buffer, &policy->chat);
+    program = NULL;
   }
+  loom_runtime_program_free(program);
   iree_vm_buffer_release(options_buffer);
   if (!iree_status_is_ok(status)) {
     loom_serve_test_text_policy_free(policy);

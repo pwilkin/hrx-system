@@ -32,8 +32,8 @@ iree_status_t loom_serve_test_text_policy_allocate(
 // Every chat and escaped VM reference has retired before destruction.
 void loom_serve_test_text_policy_free(loom_serve_test_text_policy_t* policy);
 
-// Borrowed source binding. The caller serializes policy calls, just as a model
-// does, and preserves this owner through every chat and returned reference.
+// Borrowed immutable source binding. Each initialized chat owns an independent
+// execution and preserves this owner through every returned reference.
 const loom_serve_text_chat_policy_t* loom_serve_test_text_policy_chat(
     const loom_serve_test_text_policy_t* policy);
 

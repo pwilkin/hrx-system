@@ -563,7 +563,7 @@ static iree_status_t loom_serve_text_chat_ordered_content(
 void loom_serve_text_chat_policy_deinitialize(
     loom_serve_text_chat_policy_t* policy) {
   iree_vm_buffer_release(policy->name_storage);
-  iree_vm_buffer_release(policy->defaults);
+  loom_serve_text_request_policy_deinitialize(&policy->request);
   memset(policy, 0, sizeof(*policy));
 }
 
@@ -571,17 +571,15 @@ iree_status_t loom_serve_text_chat_policy_initialize(
     iree_vm_environment_t* environment, loom_runtime_program_t* program,
     iree_vm_buffer_t* options, loom_serve_text_chat_policy_t* out_policy) {
   memset(out_policy, 0, sizeof(*out_policy));
-  IREE_RETURN_IF_ERROR(iree_vm_ref_types_resolve(
-      iree_vm_environment_lookup_ref_type_table(environment, IREE_SV("vm")),
-      &out_policy->types));
-  out_policy->invocation = loom_runtime_program_invocation(program);
-  iree_vm_function_t name_function = {0};
-  iree_vm_function_t defaults_function = {0};
-  iree_vm_function_t image_limits_function = {0};
-  iree_vm_function_t reasoning_function = {0};
+  iree_status_t status = loom_serve_text_request_policy_initialize(
+      environment, program, options, /*known_input=*/false,
+      &out_policy->request);
+  const iree_vm_ref_types_t* types = &out_policy->request.types;
+  iree_vm_function_ref_t name_ref = {0};
+  iree_vm_function_ref_t image_limits_ref = {0};
+  iree_vm_function_ref_t reasoning_ref = {0};
   const iree_vm_signature_type_t buffer = {
-      .kind = IREE_VM_SIGNATURE_TYPE_KIND_REF,
-      .value.ref = out_policy->types.buffer};
+      .kind = IREE_VM_SIGNATURE_TYPE_KIND_REF, .value.ref = types->buffer};
   const iree_vm_signature_type_t i32 = {
       .kind = IREE_VM_SIGNATURE_TYPE_KIND_SCALAR,
       .value.scalar = IREE_VM_SCALAR_TYPE_I32};
@@ -606,16 +604,16 @@ iree_status_t loom_serve_text_chat_policy_initialize(
   const iree_vm_signature_type_t completion_arguments[] = {
       buffer, buffer, buffer, buffer, buffer, i64, i64};
   const iree_vm_signature_type_t completion_results[] = {buffer, i32};
-  const loom_runtime_program_binding_t bindings[] = {
-      {IREE_SVL("model_name"), {NULL, 0}, {&buffer, 1}, &name_function},
+  const loom_runtime_program_export_binding_t bindings[] = {
+      {IREE_SVL("model_name"), {NULL, 0}, {&buffer, 1}, &name_ref},
       {IREE_SVL("chat_reasoning"),
        {NULL, 0},
        {reasoning_results, IREE_ARRAYSIZE(reasoning_results)},
-       &reasoning_function},
+       &reasoning_ref},
       {IREE_SVL("chat_image_limits"),
        {NULL, 0},
        {image_limit_results, IREE_ARRAYSIZE(image_limit_results)},
-       &image_limits_function},
+       &image_limits_ref},
       {IREE_SVL("chat_begin"),
        {buffers, IREE_ARRAYSIZE(buffers)},
        {fragment_results, IREE_ARRAYSIZE(fragment_results)},
@@ -648,47 +646,47 @@ iree_status_t loom_serve_text_chat_policy_initialize(
        {completion_arguments, IREE_ARRAYSIZE(completion_arguments)},
        {completion_results, IREE_ARRAYSIZE(completion_results)},
        &out_policy->complete_text},
-      {IREE_SVL("request_defaults"),
-       {&buffer, 1},
-       {&buffer, 1},
-       &defaults_function},
-      {IREE_SVL("request_options"),
-       {tool_arguments, IREE_ARRAYSIZE(tool_arguments)},
-       {&buffer, 1},
-       &out_policy->request_options},
   };
-  iree_status_t status = loom_runtime_program_bind_service(
-      program, IREE_ARRAYSIZE(bindings), bindings);
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_resolve_service_exports(
+        out_policy->request.program, IREE_ARRAYSIZE(bindings), bindings);
+  }
+  loom_runtime_program_execution_t* execution = NULL;
+  iree_vm_function_t name_function = {0};
+  iree_vm_function_t image_limits_function = {0};
+  iree_vm_function_t reasoning_function = {0};
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_execution_allocate(
+        out_policy->request.program, &execution);
+  }
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_execution_bind(execution, name_ref,
+                                                 &name_function);
+  }
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_execution_bind(execution, reasoning_ref,
+                                                 &reasoning_function);
+  }
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_execution_bind(execution, image_limits_ref,
+                                                 &image_limits_function);
+  }
   iree_vm_variant_t result = {0};
   if (iree_status_is_ok(status)) {
-    status = iree_vm_invoke(out_policy->invocation, name_function,
-                            iree_vm_variant_span_empty(),
-                            iree_vm_variant_span_from_ptr(&result, 1));
+    status =
+        iree_vm_invoke(loom_runtime_program_execution_invocation(execution),
+                       name_function, iree_vm_variant_span_empty(),
+                       iree_vm_variant_span_from_ptr(&result, 1));
   }
   if (iree_status_is_ok(status)) {
-    status = iree_vm_buffer_ptr_from_variant_move(&out_policy->types, &result,
+    status = iree_vm_buffer_ptr_from_variant_move(types, &result,
                                                   &out_policy->name_storage);
-  }
-  iree_const_byte_span_t bytes = iree_const_byte_span_empty();
-  if (iree_status_is_ok(status)) {
-    iree_vm_variant_t argument =
-        iree_vm_buffer_variant_from_ptr_borrowed(&out_policy->types, options);
-    status = iree_vm_invoke(out_policy->invocation, defaults_function,
-                            iree_vm_variant_span_from_ptr(&argument, 1),
-                            iree_vm_variant_span_from_ptr(&result, 1));
-  }
-  if (iree_status_is_ok(status)) {
-    status = iree_vm_buffer_ptr_from_variant_move(&out_policy->types, &result,
-                                                  &out_policy->defaults);
-  }
-  if (iree_status_is_ok(status) && !out_policy->defaults) {
-    status = iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "source request defaults must not be null");
   }
   if (iree_status_is_ok(status) && !out_policy->name_storage) {
     status = iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "source model name is null");
   }
+  iree_const_byte_span_t bytes = iree_const_byte_span_empty();
   if (iree_status_is_ok(status)) {
     status = iree_vm_buffer_map_read(
         out_policy->name_storage, 0,
@@ -706,9 +704,10 @@ iree_status_t loom_serve_text_chat_policy_initialize(
   iree_vm_variant_reset(&result);
   iree_vm_variant_t reasoning_values[3] = {0};
   if (iree_status_is_ok(status)) {
-    status = iree_vm_invoke(out_policy->invocation, reasoning_function,
-                            iree_vm_variant_span_empty(),
-                            iree_vm_variant_span_from_array(reasoning_values));
+    status =
+        iree_vm_invoke(loom_runtime_program_execution_invocation(execution),
+                       reasoning_function, iree_vm_variant_span_empty(),
+                       iree_vm_variant_span_from_array(reasoning_values));
   }
   int32_t reasoning[IREE_ARRAYSIZE(reasoning_values)] = {0};
   for (iree_host_size_t i = 0;
@@ -722,9 +721,10 @@ iree_status_t loom_serve_text_chat_policy_initialize(
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(reasoning_values));
   iree_vm_variant_t image_limits[5] = {0};
   if (iree_status_is_ok(status)) {
-    status = iree_vm_invoke(out_policy->invocation, image_limits_function,
-                            iree_vm_variant_span_empty(),
-                            iree_vm_variant_span_from_array(image_limits));
+    status =
+        iree_vm_invoke(loom_runtime_program_execution_invocation(execution),
+                       image_limits_function, iree_vm_variant_span_empty(),
+                       iree_vm_variant_span_from_array(image_limits));
   }
   int64_t limits[IREE_ARRAYSIZE(image_limits)] = {0};
   for (iree_host_size_t i = 0;
@@ -758,8 +758,46 @@ iree_status_t loom_serve_text_chat_policy_initialize(
     }
   }
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(image_limits));
+  loom_runtime_program_execution_free(execution);
   if (!iree_status_is_ok(status)) {
     loom_serve_text_chat_policy_deinitialize(out_policy);
+  }
+  return status;
+}
+
+static void loom_serve_text_chat_execution_deinitialize(
+    loom_serve_text_chat_execution_t* execution) {
+  loom_serve_text_request_execution_deinitialize(&execution->request);
+  memset(execution, 0, sizeof(*execution));
+}
+
+static iree_status_t loom_serve_text_chat_execution_initialize(
+    const loom_serve_text_chat_policy_t* policy,
+    loom_serve_text_chat_execution_t* out_execution) {
+  memset(out_execution, 0, sizeof(*out_execution));
+  iree_status_t status = loom_serve_text_request_execution_initialize(
+      &policy->request, &out_execution->request);
+  const struct {
+    iree_vm_function_ref_t function_ref;
+    iree_vm_function_t* function;
+  } bindings[] = {
+      {policy->chat_begin, &out_execution->chat_begin},
+      {policy->chat_message, &out_execution->chat_message},
+      {policy->chat_end, &out_execution->chat_end},
+      {policy->parse_tools, &out_execution->parse_tools},
+      {policy->render_tool, &out_execution->render_tool},
+      {policy->prepare_input, &out_execution->prepare_input},
+      {policy->output_next, &out_execution->output_next},
+      {policy->complete_text, &out_execution->complete_text},
+  };
+  for (iree_host_size_t i = 0;
+       i < IREE_ARRAYSIZE(bindings) && iree_status_is_ok(status); ++i) {
+    status = loom_runtime_program_execution_bind(
+        out_execution->request.program_execution, bindings[i].function_ref,
+        bindings[i].function);
+  }
+  if (!iree_status_is_ok(status)) {
+    loom_serve_text_chat_execution_deinitialize(out_execution);
   }
   return status;
 }
@@ -767,11 +805,12 @@ iree_status_t loom_serve_text_chat_policy_initialize(
 // Request fragments never escape this synchronous call. The returned buffer
 // may alias an input; it is appended before argument references are released.
 static iree_status_t loom_serve_text_chat_render(
-    const loom_serve_text_chat_policy_t* policy, iree_vm_function_t function,
+    const loom_serve_text_chat_t* chat, iree_vm_function_t function,
     iree_host_size_t input_count, const iree_string_view_t* inputs,
     iree_host_size_t scalar_count, const int64_t* scalars,
     iree_string_builder_t* output, iree_allocator_t scratch_allocator,
     int64_t* out_state) {
+  const loom_serve_text_request_policy_t* policy = &chat->policy->request;
   iree_vm_variant_t arguments[10] = {0};
   iree_status_t status = iree_ok_status();
   for (iree_host_size_t i = 0; i < input_count && iree_status_is_ok(status);
@@ -792,7 +831,7 @@ static iree_status_t loom_serve_text_chat_render(
   iree_vm_variant_t results[2] = {0};
   if (iree_status_is_ok(status)) {
     status = iree_vm_invoke(
-        policy->invocation, function,
+        chat->execution.request.invocation, function,
         iree_vm_variant_span_from_ptr(arguments, input_count + scalar_count),
         iree_vm_variant_span_from_ptr(results, out_state ? 2 : 1));
   }
@@ -830,10 +869,10 @@ static iree_status_t loom_serve_text_chat_render(
 // Message rendering additionally establishes the exact source marker plan.
 // The plan is checked before either the fragment or rendering state commits.
 static iree_status_t loom_serve_text_chat_render_message(
-    const loom_serve_text_chat_policy_t* policy, iree_host_size_t input_count,
+    loom_serve_text_chat_t* chat, iree_host_size_t input_count,
     const iree_string_view_t* inputs, iree_host_size_t scalar_count,
-    const int64_t* scalars, iree_host_size_t first_image,
-    loom_serve_text_chat_t* chat, int64_t* out_state) {
+    const int64_t* scalars, iree_host_size_t first_image, int64_t* out_state) {
+  const loom_serve_text_request_policy_t* policy = &chat->policy->request;
   iree_vm_variant_t arguments[11] = {0};
   iree_status_t status = iree_ok_status();
   for (iree_host_size_t i = 0; i < input_count && iree_status_is_ok(status);
@@ -854,7 +893,7 @@ static iree_status_t loom_serve_text_chat_render_message(
   iree_vm_variant_t results[4] = {0};
   if (iree_status_is_ok(status)) {
     status = iree_vm_invoke(
-        policy->invocation, policy->chat_message,
+        chat->execution.request.invocation, chat->execution.chat_message,
         iree_vm_variant_span_from_ptr(arguments, input_count + scalar_count),
         iree_vm_variant_span_from_array(results));
   }
@@ -931,7 +970,7 @@ iree_status_t loom_serve_text_chat_prepare_input(
   *out_count = 0;
   *out_media_spans = NULL;
   *out_media_span_count = 0;
-  const loom_serve_text_chat_policy_t* policy = chat->policy;
+  const loom_serve_text_request_policy_t* policy = &chat->policy->request;
   const iree_string_view_t prompt = iree_string_builder_view(&chat->prompt);
   if (prompt_offset > prompt.size) {
     IREE_RETURN_AND_END_ZONE(
@@ -960,7 +999,8 @@ iree_status_t loom_serve_text_chat_prepare_input(
       iree_vm_variant_from_i64(capacity)};
   iree_vm_variant_t results[3] = {0};
   if (iree_status_is_ok(status)) {
-    status = iree_vm_invoke(policy->invocation, policy->prepare_input,
+    status = iree_vm_invoke(chat->execution.request.invocation,
+                            chat->execution.prepare_input,
                             iree_vm_variant_span_from_array(arguments),
                             iree_vm_variant_span_from_array(results));
   }
@@ -1059,9 +1099,10 @@ static iree_status_t loom_serve_text_chat_function_decode(
 // Input wrappers borrow only for this synchronous invocation. Source owns the
 // returned bytes until they are appended; no references escape into a request.
 static iree_status_t loom_serve_text_chat_function_render(
-    const loom_serve_text_chat_policy_t* policy, iree_string_view_t name,
+    loom_serve_text_chat_t* chat, iree_string_view_t name,
     iree_string_view_t arguments, iree_host_size_t ordinal,
     iree_string_builder_t* output, iree_allocator_t scratch_allocator) {
+  const loom_serve_text_request_policy_t* policy = &chat->policy->request;
   const iree_string_view_t inputs[] = {name, arguments};
   iree_vm_variant_t values[3] = {0};
   values[2] = iree_vm_variant_from_i64(ordinal);
@@ -1079,7 +1120,8 @@ static iree_status_t loom_serve_text_chat_function_render(
   }
   iree_vm_variant_t results[2] = {0};
   if (iree_status_is_ok(status)) {
-    status = iree_vm_invoke(policy->invocation, policy->render_tool,
+    status = iree_vm_invoke(chat->execution.request.invocation,
+                            chat->execution.render_tool,
                             iree_vm_variant_span_from_array(values),
                             iree_vm_variant_span_from_array(results));
   }
@@ -1160,8 +1202,8 @@ static iree_status_t loom_serve_text_chat_history_tool(
   iree_string_view_t name, arguments;
   IREE_RETURN_IF_ERROR(loom_serve_text_chat_function_decode(
       fields[2].value, &history->arguments, &name, &arguments));
-  return loom_serve_text_chat_function_render(history->chat->policy, name,
-                                              arguments, index, &history->calls,
+  return loom_serve_text_chat_function_render(history->chat, name, arguments,
+                                              index, &history->calls,
                                               history->chat->host_allocator);
 }
 
@@ -1211,9 +1253,8 @@ static iree_status_t loom_serve_text_chat_history_message(
                                  (fields[4].value.data ? 4 : 0),
                              (int64_t)content_count};
   return loom_serve_text_chat_render_message(
-      history->chat->policy, IREE_ARRAYSIZE(inputs), inputs,
-      IREE_ARRAYSIZE(scalars), scalars, first_image, history->chat,
-      &history->state);
+      history->chat, IREE_ARRAYSIZE(inputs), inputs, IREE_ARRAYSIZE(scalars),
+      scalars, first_image, &history->state);
 }
 
 static iree_status_t loom_serve_text_chat_tool_limit(
@@ -1313,7 +1354,7 @@ static iree_status_t loom_serve_text_chat_request_render(
   const iree_string_view_t inputs[] = {body, history->chat->tool_schemas};
   IREE_TRACE_ZONE_BEGIN_NAMED(z_begin, "loom_serve_text_chat_begin");
   iree_status_t status = loom_serve_text_chat_render(
-      history->chat->policy, history->chat->policy->chat_begin,
+      history->chat, history->chat->execution.chat_begin,
       IREE_ARRAYSIZE(inputs), inputs, 0, NULL, &history->chat->prompt,
       history->chat->host_allocator, &history->state);
   IREE_TRACE_ZONE_END(z_begin);
@@ -1325,7 +1366,7 @@ static iree_status_t loom_serve_text_chat_request_render(
   IREE_RETURN_IF_ERROR(status);
   IREE_TRACE_ZONE_BEGIN_NAMED(z_end, "loom_serve_text_chat_end");
   status = loom_serve_text_chat_render(
-      history->chat->policy, history->chat->policy->chat_end, 0, NULL, 1,
+      history->chat, history->chat->execution.chat_end, 0, NULL, 1,
       &history->state, &history->chat->prompt, history->chat->host_allocator,
       &history->chat->output.initial_state);
   IREE_TRACE_ZONE_END(z_end);
@@ -1337,34 +1378,9 @@ static iree_status_t loom_serve_text_chat_request_render(
 static iree_status_t loom_serve_text_chat_resolve_options(
     loom_serve_text_chat_t* chat, iree_string_view_t body,
     uint64_t request_id) {
-  const loom_serve_text_chat_policy_t* policy = chat->policy;
-  iree_vm_buffer_t* input = NULL;
-  // Source may retain or return this input as its opaque request options.
-  IREE_RETURN_IF_ERROR(
-      iree_vm_buffer_clone(IREE_VM_BUFFER_ACCESS_FLAG_READ,
-                           iree_make_const_byte_span(body.data, body.size), 1,
-                           chat->prompt.allocator, &input));
-  iree_vm_variant_t arguments[] = {
-      iree_vm_buffer_variant_from_ptr_borrowed(&policy->types,
-                                               policy->defaults),
-      iree_vm_buffer_variant_from_ptr_move(&policy->types, &input),
-      iree_vm_variant_from_i64((int64_t)request_id)};
-  iree_vm_variant_t result = {0};
-  iree_status_t status =
-      iree_vm_invoke(policy->invocation, policy->request_options,
-                     iree_vm_variant_span_from_array(arguments),
-                     iree_vm_variant_span_from_ptr(&result, 1));
-  if (iree_status_is_ok(status)) {
-    status = iree_vm_buffer_ptr_from_variant_move(&policy->types, &result,
-                                                  &chat->options);
-  }
-  if (iree_status_is_ok(status) && !chat->options) {
-    status = iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "source request options must not be null");
-  }
-  iree_vm_variant_reset(&result);
-  iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
-  return status;
+  return loom_serve_text_request_options(
+      &chat->policy->request, &chat->execution.request, body, request_id,
+      /*tokens=*/NULL, chat->prompt.allocator, &chat->options);
 }
 
 iree_status_t loom_serve_text_chat_initialize(
@@ -1378,6 +1394,8 @@ iree_status_t loom_serve_text_chat_initialize(
   out_chat->policy = policy;
   out_chat->max_tokens = default_max_tokens;
   out_chat->host_allocator = host_allocator;
+  iree_status_t status =
+      loom_serve_text_chat_execution_initialize(policy, &out_chat->execution);
   iree_string_builder_initialize(host_allocator, &out_chat->prompt);
   iree_string_builder_initialize(host_allocator,
                                  &out_chat->projections.metadata);
@@ -1393,7 +1411,9 @@ iree_status_t loom_serve_text_chat_initialize(
   iree_string_builder_initialize(host_allocator, &history.reasoning);
   iree_string_builder_initialize(host_allocator, &history.calls);
   IREE_TRACE_ZONE_BEGIN_NAMED(z_render, "loom_serve_text_chat_request_render");
-  iree_status_t status = loom_serve_text_chat_request_render(body, &history);
+  if (iree_status_is_ok(status)) {
+    status = loom_serve_text_chat_request_render(body, &history);
+  }
   IREE_TRACE_ZONE_END(z_render);
   if (iree_status_is_ok(status)) {
     IREE_TRACE_ZONE_BEGIN_NAMED(z_options,
@@ -1422,6 +1442,7 @@ void loom_serve_text_chat_deinitialize(loom_serve_text_chat_t* chat) {
   iree_string_builder_deinitialize(&chat->output.reasoning);
   iree_string_builder_deinitialize(&chat->output.content);
   iree_string_builder_deinitialize(&chat->prompt);
+  loom_serve_text_chat_execution_deinitialize(&chat->execution);
   memset(chat, 0, sizeof(*chat));
 }
 
@@ -1430,23 +1451,27 @@ iree_status_t loom_serve_text_chat_output_next(
     loom_serve_text_chat_output_phase_t phase,
     iree_allocator_t scratch_allocator,
     loom_serve_text_chat_output_t* out_output) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+  IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, response.size - chat->output.cursor);
   memset(out_output, 0, sizeof(*out_output));
-  const loom_serve_text_chat_policy_t* policy = chat->policy;
+  const loom_serve_text_request_policy_t* policy = &chat->policy->request;
   iree_vm_buffer_t* input = NULL;
-  IREE_RETURN_IF_ERROR(iree_vm_buffer_wrap(
-      IREE_VM_BUFFER_ACCESS_FLAG_READ,
-      iree_make_byte_span((void*)response.data, response.size),
-      iree_vm_buffer_release_callback_null(), scratch_allocator, &input));
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0,
+      iree_vm_buffer_wrap(
+          IREE_VM_BUFFER_ACCESS_FLAG_READ,
+          iree_make_byte_span((void*)response.data, response.size),
+          iree_vm_buffer_release_callback_null(), scratch_allocator, &input));
   iree_vm_variant_t arguments[] = {
       iree_vm_buffer_variant_from_ptr_move(&policy->types, &input),
       iree_vm_variant_from_i64(chat->output.cursor),
       iree_vm_variant_from_i64(chat->output.state),
       iree_vm_variant_from_i32(phase)};
   iree_vm_variant_t results[4] = {0};
-  iree_status_t status =
-      iree_vm_invoke(policy->invocation, policy->output_next,
-                     iree_vm_variant_span_from_array(arguments),
-                     iree_vm_variant_span_from_array(results));
+  iree_status_t status = iree_vm_invoke(
+      chat->execution.request.invocation, chat->execution.output_next,
+      iree_vm_variant_span_from_array(arguments),
+      iree_vm_variant_span_from_array(results));
   int64_t values[4] = {0};
   for (iree_host_size_t i = 0;
        i < IREE_ARRAYSIZE(values) && iree_status_is_ok(status); ++i) {
@@ -1483,7 +1508,7 @@ iree_status_t loom_serve_text_chat_output_next(
   }
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(results));
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
-  return status;
+  IREE_RETURN_AND_END_ZONE(z0, status);
 }
 
 void loom_serve_text_chat_completion_deinitialize(
@@ -1517,7 +1542,8 @@ static iree_status_t loom_serve_text_chat_checkpoint(
     const loom_serve_text_chat_t* chat, iree_string_view_t response,
     iree_string_view_t tools, iree_allocator_t host_allocator,
     loom_serve_text_chat_completion_t* out_completion) {
-  const loom_serve_text_chat_policy_t* policy = chat->policy;
+  IREE_TRACE_ZONE_BEGIN(z0);
+  const loom_serve_text_request_policy_t* policy = &chat->policy->request;
   const iree_string_view_t inputs[] = {
       iree_string_builder_view(&chat->prompt), response,
       iree_string_builder_view(&chat->output.content),
@@ -1540,7 +1566,8 @@ static iree_status_t loom_serve_text_chat_checkpoint(
   arguments[6] = iree_vm_variant_from_i64(chat->output.state);
   iree_vm_variant_t results[2] = {0};
   if (iree_status_is_ok(status)) {
-    status = iree_vm_invoke(policy->invocation, policy->complete_text,
+    status = iree_vm_invoke(chat->execution.request.invocation,
+                            chat->execution.complete_text,
                             iree_vm_variant_span_from_array(arguments),
                             iree_vm_variant_span_from_array(results));
   }
@@ -1573,14 +1600,14 @@ static iree_status_t loom_serve_text_chat_checkpoint(
   }
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(results));
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
-  return status;
+  IREE_RETURN_AND_END_ZONE(z0, status);
 }
 
 typedef struct loom_serve_text_chat_completion_tools_t {
   // Batch allocator for synchronous VM argument wrappers.
   iree_allocator_t scratch_allocator;
-  // Source policy used for canonical history formatting.
-  const loom_serve_text_chat_policy_t* policy;
+  // Request execution used for canonical history formatting.
+  loom_serve_text_chat_t* chat;
   // Request-unique namespace for transport tool IDs.
   uint64_t request_id;
   // Owned validated records, published only after canonical history succeeds.
@@ -1617,7 +1644,7 @@ static iree_status_t loom_serve_text_chat_completion_tool(
   const loom_serve_text_tool_call_t decoded_call =
       loom_serve_text_tool_calls_at(tools->calls, index);
   return loom_serve_text_chat_function_render(
-      tools->policy, decoded_call.name, decoded_call.arguments, index,
+      tools->chat, decoded_call.name, decoded_call.arguments, index,
       &tools->scratch->rendered, tools->scratch_allocator);
 }
 
@@ -1641,6 +1668,7 @@ iree_status_t loom_serve_text_chat_complete(
     uint64_t request_id, loom_serve_text_tool_calls_t* tool_calls,
     loom_serve_text_chat_scratch_t* scratch, iree_allocator_t scratch_allocator,
     loom_serve_text_chat_completion_t* completion) {
+  IREE_TRACE_ZONE_BEGIN(z0);
   loom_serve_text_tool_calls_reset(tool_calls);
   loom_serve_text_chat_completion_t result = {0};
   iree_string_builder_reset(&scratch->parsed);
@@ -1648,23 +1676,24 @@ iree_status_t loom_serve_text_chat_complete(
   iree_string_builder_reset(&scratch->arguments);
   loom_serve_text_chat_output_t output;
   do {
-    IREE_RETURN_IF_ERROR(loom_serve_text_chat_output_next(
-        chat, response, LOOM_SERVE_TEXT_CHAT_OUTPUT_COMPLETE, scratch_allocator,
-        &output));
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, loom_serve_text_chat_output_next(
+                chat, response, LOOM_SERVE_TEXT_CHAT_OUTPUT_COMPLETE,
+                scratch_allocator, &output));
   } while (output.advanced);
   const iree_string_view_t inputs[] = {
       chat->tool_schemas, iree_string_view_substr(response, chat->output.cursor,
                                                   IREE_HOST_SIZE_MAX)};
   loom_serve_text_chat_completion_tools_t tools = {
       .scratch_allocator = scratch_allocator,
-      .policy = chat->policy,
+      .chat = chat,
       .request_id = request_id,
       .calls = tool_calls,
       .scratch = scratch};
   const int64_t truncated_argument = truncated;
   iree_status_t status = loom_serve_text_chat_render(
-      chat->policy, chat->policy->parse_tools, IREE_ARRAYSIZE(inputs), inputs,
-      1, &truncated_argument, &scratch->parsed, scratch_allocator, NULL);
+      chat, chat->execution.parse_tools, IREE_ARRAYSIZE(inputs), inputs, 1,
+      &truncated_argument, &scratch->parsed, scratch_allocator, NULL);
   if (iree_status_is_ok(status)) {
     status = iree_json_enumerate_array_typed(
         iree_string_builder_view(&scratch->parsed),
@@ -1686,7 +1715,7 @@ iree_status_t loom_serve_text_chat_complete(
     loom_serve_text_tool_calls_reset(tool_calls);
     loom_serve_text_chat_completion_deinitialize(&result);
   }
-  return status;
+  IREE_RETURN_AND_END_ZONE(z0, status);
 }
 
 static iree_status_t loom_serve_text_chat_response_begin(

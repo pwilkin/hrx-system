@@ -9,9 +9,9 @@
 
 #include "iree/base/api.h"
 #include "iree/vm/buffer.h"
-#include "loom/runtime/program/program.h"
 #include "loom/serve/service/reasoning.h"
 #include "loom/serve/service/text/media.h"
+#include "loom/serve/service/text/request_policy.h"
 #include "loom/serve/service/text/tool_calls.h"
 
 #ifdef __cplusplus
@@ -23,23 +23,17 @@ extern "C" {
 // record set created from pathologically small JSON objects.
 #define LOOM_SERVE_TEXT_CHAT_MAX_CONTENT_PART_COUNT 4096
 
-// Cold-resolved chat functions in the model's shared source VM. The model
-// serializes calls and outlives every request borrowing this policy.
+// Immutable source chat policy shared by every request for one model. Export
+// refs borrow the request-only program and bind to each request execution.
 typedef struct loom_serve_text_chat_policy_t {
-  // Canonical buffer identity borrowed from the model environment.
-  iree_vm_ref_types_t types;
-  // Invocation borrowed from the model-wide program.
-  iree_vm_invocation_t* invocation;
+  // Common request program, defaults, types, and request-options export.
+  loom_serve_text_request_policy_t request;
   // Owned source-declared public model identity.
   iree_vm_buffer_t* name_storage;
   // UTF-8 identity borrowing name_storage.
   iree_string_view_t name;
-  // Owned source-validated deployment defaults, opaque to native code.
-  iree_vm_buffer_t* defaults;
   // Cold source declaration from chat_reasoning(), copied at publication.
   loom_serve_reasoning_t reasoning;
-  // Resolves request JSON and nonce against defaults into owned opaque bytes.
-  iree_vm_function_t request_options;
   // chat_image_limits() returns five i64 bounds: occurrence count, compressed
   // bytes, encoded width, encoded height, and pixels. All zero disables images;
   // otherwise each is positive and count is at most MAX_CONTENT_PART_COUNT.
@@ -50,45 +44,67 @@ typedef struct loom_serve_text_chat_policy_t {
     loom_serve_media_image_limits_t limits;
   } images;
   // Initial prompt fragment and opaque rendering state.
-  iree_vm_function_t chat_begin;
+  iree_vm_function_ref_t chat_begin;
   // chat_message(raw, role, text, parts, frames, reasoning, calls, state,
   // ordinal, fields, part_count) returns (fragment, next_state, plan, count).
   // The first seven arguments and fragment/plan are buffers; the others are
   // i64. fields reports reasoning, calls, and tool ID in bits 0, 1, and 2.
   // parts, frames, and plan use the ordered records defined in media.h.
-  iree_vm_function_t chat_message;
+  iree_vm_function_ref_t chat_message;
   // Final prompt fragment, conversation validation and initial output state.
-  iree_vm_function_t chat_end;
+  iree_vm_function_ref_t chat_end;
   // parse_tools(schemas: buffer, response: buffer, truncated: i64) returns
   // standard function-call records, omitting an unfinished call at the limit.
-  iree_vm_function_t parse_tools;
+  iree_vm_function_ref_t parse_tools;
   // Canonical tool formatter shared by input history and generated output.
-  iree_vm_function_t render_tool;
+  iree_vm_function_ref_t render_tool;
   // prepare_input(text, markers, marker_count, format, boundary, capacity)
   // returns (tokens, count, spans). Buffers carry text, the native marker plan,
   // i32 token IDs, and media.h spans. Counts/capacity are i64; format/boundary
   // are i32. Source determines exact logical image rows without token scanning.
-  iree_vm_function_t prepare_input;
+  iree_vm_function_ref_t prepare_input;
   // Next typed output span and opaque parser state.
-  iree_vm_function_t output_next;
+  iree_vm_function_ref_t output_next;
   // complete_text(prompt, response, content, reasoning, tools, initial_state,
   // final_state) returns (owned transcript buffer, reusable i32 boolean).
   // Response preserves the complete decoded output before parsing or
   // normalization. Source authorizes reuse only when its canonical transcript
   // still represents that output; otherwise the next request replays history.
-  iree_vm_function_t complete_text;
+  iree_vm_function_ref_t complete_text;
 } loom_serve_text_chat_policy_t;
 
-// Calls request_defaults(options) once and retains its opaque result. Options
-// has owned backing that source may retain. The program/environment outlive
-// the policy and every chat initialized from it.
+// Takes ownership of |program| on every outcome. Calls cold source declarations
+// once and retains their copied values. Options has owned backing that source
+// may retain. The environment outlives the policy and every initialized chat.
 iree_status_t loom_serve_text_chat_policy_initialize(
     iree_vm_environment_t* environment, loom_runtime_program_t* program,
     iree_vm_buffer_t* options, loom_serve_text_chat_policy_t* out_policy);
 
-// Releases the owned identity/defaults; functions borrow the model program.
+// Releases cold values and the request-only program after every chat retires.
 void loom_serve_text_chat_policy_deinitialize(
     loom_serve_text_chat_policy_t* policy);
+
+// Process-bound chat functions exclusively owned by one request.
+typedef struct loom_serve_text_chat_execution_t {
+  // Common request execution and request-options function.
+  loom_serve_text_request_execution_t request;
+  // Initial prompt fragment and opaque rendering state.
+  iree_vm_function_t chat_begin;
+  // One message fragment and its rendering/media plan.
+  iree_vm_function_t chat_message;
+  // Final prompt fragment and initial output parser state.
+  iree_vm_function_t chat_end;
+  // Generated tool-call parser.
+  iree_vm_function_t parse_tools;
+  // Canonical tool formatter.
+  iree_vm_function_t render_tool;
+  // Prompt tokenization and media-span planning.
+  iree_vm_function_t prepare_input;
+  // Incremental semantic output parser.
+  iree_vm_function_t output_next;
+  // Completed canonical history construction.
+  iree_vm_function_t complete_text;
+} loom_serve_text_chat_execution_t;
 
 // Source input format. Rendered text passes through unchanged; user content
 // receives one user envelope and the assistant generation prefix.
@@ -108,13 +124,15 @@ typedef enum loom_serve_text_chat_boundary_e {
 } loom_serve_text_chat_boundary_t;
 
 // Frames and encodes the rendered prompt suffix beginning at prompt_offset in
-// the shared source VM. Source receives the exact checked marker plan and
-// returns token IDs plus one logical input span per included image. On success,
-// out_tokens owns exact writable native-endian storage for input_shift prefix
-// IDs followed by at most capacity encoded IDs. The caller fills any prefix
-// before publishing immutable input. A null out_tokens validates and counts the
-// same input without copying IDs. All outputs are empty on failure; no source
-// VM references escape. Tokens and media spans use host_allocator.
+// the request-owned source VM. Source receives the exact checked marker plan
+// and returns token IDs plus one logical input span per included image. On
+// success, allocates exact writable VM token backing and any media spans. A
+// null out_tokens validates and counts the same input without retaining IDs. On
+// failure all outputs are empty. input_shift reserves leading token storage and
+// shifts media spans for a retained prediction prepended by native code.
+// Returned token backing is independent of source buffers; no source-owned
+// reference escapes. The caller publishes tokens as immutable after filling the
+// prefix.
 iree_status_t loom_serve_text_chat_prepare_input(
     const loom_serve_text_chat_t* chat, iree_host_size_t prompt_offset,
     loom_serve_text_chat_input_format_t format,
@@ -137,6 +155,8 @@ typedef uint32_t loom_serve_text_chat_flags_t;
 typedef struct loom_serve_text_chat_t {
   // Source policy borrowed from the model for the request lifetime.
   const loom_serve_text_chat_policy_t* policy;
+  // Independent mutable source execution owned by this request.
+  loom_serve_text_chat_execution_t execution;
   // Owned source-validated request parameters, copied to model state at bind.
   iree_vm_buffer_t* options;
   // Source-rendered canonical prompt ending at its generation boundary.

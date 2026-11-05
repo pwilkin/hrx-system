@@ -489,6 +489,17 @@ loom_cc_test(
 )
 
 loom_cc_library(
+    name = "request_policy",
+    srcs = ["request_policy.c"],
+    hdrs = ["request_policy.h"],
+    deps = [
+        "//loom/src/loom/runtime/program",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/vm",
+    ],
+)
+
+loom_cc_library(
     name = "chat",
     srcs = [
         "chat.c",
@@ -502,6 +513,7 @@ loom_cc_library(
     ],
     deps = [
         ":chat_fields",
+        ":request_policy",
         ":tool_schemas",
         "//loom/src/loom/runtime/program",
         "//loom/src/loom/serve/media:digest",
@@ -742,6 +754,7 @@ loom_cc_library(
         ":chat",
         ":epoch_upload",
         ":packing",
+        ":request_policy",
         ":storage",
         ":storage_bounds",
         ":tool_xml",

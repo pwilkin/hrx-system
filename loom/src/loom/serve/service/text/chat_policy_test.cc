@@ -118,7 +118,7 @@ class SourceChatPolicyTest : public ::testing::Test {
       "UDcKV0lEVEggMgpIRUlHSFQgMgpERVBUSCA0Ck1BWFZBTCAyNTUKVFVQTFRZUEUg"
       "UkdCX0FMUEhBCkVOREhEUgoKFB4AKDI8gEZQWv9kbnjI";
 
-  // One source program/tokenizer, shared across serialized policy callers.
+  // One immutable source program/tokenizer shared across request executions.
   inline static loom_serve_test_text_policy_t* policy_owner_ = nullptr;
   // Embedded source namespace retained through policy construction and use.
   inline static loom_runtime_package_t* package_ = nullptr;
@@ -175,6 +175,10 @@ TEST_F(SourceChatPolicyTest, StreamingBatchesReuseScratchWithoutHeapChurn) {
         policy, policy->name, iree_make_cstring_view(body.c_str()), 1, 32,
         allocator.allocator(), &chat));
     IREE_ASSERT_OK(iree_string_builder_reserve(&chat.output.content, 128));
+  }
+  for (size_t i = 1; i < IREE_ARRAYSIZE(chats); ++i) {
+    EXPECT_NE(chats[i].execution.request.program_execution,
+              chats[0].execution.request.program_execution);
   }
   const auto allocation_count = allocator.allocation_count();
   const auto free_count = allocator.free_count();

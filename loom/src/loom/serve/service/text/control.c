@@ -102,42 +102,66 @@ iree_status_t loom_serve_text_control_initialize(
   status = loom_runtime_module_create(&source->types, execution, options,
                                       host_allocator, &control->native_module);
   IREE_RETURN_IF_ERROR(status);
-  iree_vm_module_t* libraries[] = {control->native_module, NULL, NULL, NULL,
-                                   NULL};
+  const bool generates = source->mode == LOOM_SERVE_TEXT_MODE_GENERATE;
+  iree_vm_module_t* control_libraries[] = {control->native_module, NULL, NULL};
   status = loom_runtime_input_module_create(
       source->environment, loom_runtime_tokenizer_value(source->tokenizer),
-      host_allocator, &libraries[1]);
-  if (iree_status_is_ok(status)) {
-    status = loom_runtime_json_module_create(source->environment,
-                                             host_allocator, &libraries[2]);
-  }
-  const bool generates = source->mode == LOOM_SERVE_TEXT_MODE_GENERATE;
+      host_allocator, &control_libraries[1]);
   if (iree_status_is_ok(status)) {
     status = loom_runtime_parameters_module_create(
         source->environment, &source->types, transfer,
-        source->parameter_sources, host_allocator, &libraries[3]);
-  }
-  if (iree_status_is_ok(status) && generates) {
-    status = loom_serve_text_tool_xml_module_create(
-        source->environment, host_allocator, &libraries[4]);
+        source->parameter_sources, host_allocator, &control_libraries[2]);
   }
   if (iree_status_is_ok(status)) {
     status = loom_runtime_program_link_service(
-        source->module, loom_runtime_preparation_card(source->preparation),
+        source->control_module,
+        loom_runtime_preparation_card(source->preparation),
         loom_runtime_preparation_component(source->preparation),
-        iree_vm_module_span_from_ptr(libraries, generates ? 5 : 4),
-        host_allocator, &control->program);
+        iree_vm_module_span_from_array(control_libraries), host_allocator,
+        &control->program);
   }
-  iree_vm_module_release(libraries[4]);
-  iree_vm_module_release(libraries[3]);
-  iree_vm_module_release(libraries[2]);
-  iree_vm_module_release(libraries[1]);
+  iree_vm_module_release(control_libraries[2]);
+  iree_vm_module_release(control_libraries[1]);
+  IREE_RETURN_IF_ERROR(status);
+
+  iree_vm_module_t* request_libraries[3] = {0};
+  status = loom_runtime_input_module_create(
+      source->environment, loom_runtime_tokenizer_value(source->tokenizer),
+      host_allocator, &request_libraries[0]);
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_json_module_create(
+        source->environment, host_allocator, &request_libraries[1]);
+  }
+  if (generates) {
+    if (iree_status_is_ok(status)) {
+      status = loom_serve_text_tool_xml_module_create(
+          source->environment, host_allocator, &request_libraries[2]);
+    }
+  }
+  loom_runtime_program_t* request_program = NULL;
+  if (iree_status_is_ok(status)) {
+    status = loom_runtime_program_link_service(
+        source->request_module,
+        loom_runtime_preparation_card(source->preparation),
+        loom_runtime_preparation_component(source->preparation),
+        iree_vm_module_span_from_ptr(request_libraries, generates ? 3 : 2),
+        host_allocator, &request_program);
+  }
+  for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(request_libraries); ++i) {
+    iree_vm_module_release(request_libraries[i]);
+  }
   IREE_RETURN_IF_ERROR(status);
   if (generates) {
-    IREE_RETURN_IF_ERROR(loom_serve_text_chat_policy_initialize(
-        source->environment, control->program, source->options,
-        &control->chat_policy));
+    status = loom_serve_text_chat_policy_initialize(
+        source->environment, request_program, source->options,
+        &control->chat_policy);
+  } else {
+    status = loom_serve_text_request_policy_initialize(
+        source->environment, request_program, source->options,
+        /*known_input=*/true, &control->request_policy);
   }
+  request_program = NULL;
+  IREE_RETURN_IF_ERROR(status);
   const iree_vm_signature_type_t buffer = {
       .kind = IREE_VM_SIGNATURE_TYPE_KIND_REF,
       .value.ref = source->vm_types.buffer};
@@ -208,46 +232,20 @@ iree_status_t loom_serve_text_control_initialize(
         &control->step};
     return loom_runtime_program_bind_service(control->program, 1, &step);
   }
-  iree_vm_function_t defaults = {0};
   const iree_vm_signature_type_t capture_arguments[] = {buffer, i32, i32,
-                                                        buffer};
-  const iree_vm_signature_type_t options_arguments[] = {buffer, buffer, i64,
                                                         buffer};
   const loom_runtime_program_binding_t encoding_bindings[] = {
       {IREE_SVL("capture_epoch"),
        {capture_arguments, IREE_ARRAYSIZE(capture_arguments)},
        {&buffer, 1},
        &control->capture_epoch},
-      {IREE_SVL("request_defaults"), {&buffer, 1}, {&buffer, 1}, &defaults},
-      {IREE_SVL("prepare_request"),
-       {options_arguments, IREE_ARRAYSIZE(options_arguments)},
-       {&buffer, 1},
-       &control->prepare_request},
   };
-  IREE_RETURN_IF_ERROR(loom_runtime_program_bind_service(
-      control->program, IREE_ARRAYSIZE(encoding_bindings), encoding_bindings));
-  iree_vm_variant_t argument = iree_vm_buffer_variant_from_ptr_borrowed(
-      &source->vm_types, source->options);
-  iree_vm_variant_t result = {0};
-  status = iree_vm_invoke(loom_runtime_program_invocation(control->program),
-                          defaults, iree_vm_variant_span_from_ptr(&argument, 1),
-                          iree_vm_variant_span_from_ptr(&result, 1));
-  if (iree_status_is_ok(status)) {
-    status = iree_vm_buffer_ptr_from_variant_move(&source->vm_types, &result,
-                                                  &control->defaults);
-  }
-  if (iree_status_is_ok(status) && !control->defaults) {
-    status = iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "source request defaults must not be null");
-  }
-  iree_vm_variant_reset(&argument);
-  iree_vm_variant_reset(&result);
-  return status;
+  return loom_runtime_program_bind_service(
+      control->program, IREE_ARRAYSIZE(encoding_bindings), encoding_bindings);
 }
 
 void loom_serve_text_control_unlink(loom_serve_text_control_t* control) {
-  iree_vm_buffer_release(control->defaults);
-  control->defaults = NULL;
+  loom_serve_text_request_policy_deinitialize(&control->request_policy);
   loom_serve_text_chat_policy_deinitialize(&control->chat_policy);
   loom_runtime_program_free(control->program);
   control->program = NULL;
@@ -263,36 +261,19 @@ void loom_serve_text_control_deinitialize(loom_serve_text_control_t* control) {
 }
 
 iree_status_t loom_serve_text_control_prepare_request(
-    loom_serve_text_control_t* control, const loom_serve_text_source_t* source,
-    iree_string_view_t body, uint64_t request_id, iree_vm_buffer_t* tokens,
+    loom_serve_text_control_t* control, iree_string_view_t body,
+    uint64_t request_id, iree_vm_buffer_t* tokens,
     iree_allocator_t host_allocator, iree_vm_buffer_t** out_options) {
   *out_options = NULL;
-  iree_vm_buffer_t* input = NULL;
-  IREE_RETURN_IF_ERROR(
-      iree_vm_buffer_clone(IREE_VM_BUFFER_ACCESS_FLAG_READ,
-                           iree_make_const_byte_span(body.data, body.size), 1,
-                           host_allocator, &input));
-  iree_vm_variant_t arguments[] = {
-      iree_vm_buffer_variant_from_ptr_borrowed(&source->vm_types,
-                                               control->defaults),
-      iree_vm_buffer_variant_from_ptr_move(&source->vm_types, &input),
-      iree_vm_variant_from_i64((int64_t)request_id),
-      iree_vm_buffer_variant_from_ptr_borrowed(&source->vm_types, tokens)};
-  iree_vm_variant_t result = {0};
-  iree_status_t status = iree_vm_invoke(
-      loom_runtime_program_invocation(control->program),
-      control->prepare_request, iree_vm_variant_span_from_array(arguments),
-      iree_vm_variant_span_from_ptr(&result, 1));
+  loom_serve_text_request_execution_t execution;
+  iree_status_t status = loom_serve_text_request_execution_initialize(
+      &control->request_policy, &execution);
   if (iree_status_is_ok(status)) {
-    status = iree_vm_buffer_ptr_from_variant_move(&source->vm_types, &result,
-                                                  out_options);
+    status = loom_serve_text_request_options(
+        &control->request_policy, &execution, body, request_id, tokens,
+        host_allocator, out_options);
   }
-  if (iree_status_is_ok(status) && !*out_options) {
-    status = iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "source request options must not be null");
-  }
-  iree_vm_variant_reset(&result);
-  iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
+  loom_serve_text_request_execution_deinitialize(&execution);
   return status;
 }
 

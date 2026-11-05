@@ -8,6 +8,7 @@
 #define LOOM_SERVE_SERVICE_TEXT_CONTROL_H_
 
 #include "loom/runtime/program/module.h"
+#include "loom/serve/service/text/request_policy.h"
 #include "loom/serve/service/text/source.h"
 #include "loom/serve/service/text/state.h"
 
@@ -39,7 +40,7 @@ enum {
 typedef struct loom_serve_text_control_t {
   // Native stage module retained independently of its linked program.
   iree_vm_module_t* native_module;
-  // Shared VM process; rows hold no private VM instances.
+  // Model-control VM program serialized by the model owner.
   loom_runtime_program_t* program;
   // Source-owned isolated input/decode invocation.
   iree_vm_function_t step;
@@ -57,11 +58,9 @@ typedef struct loom_serve_text_control_t {
   iree_vm_function_t bind_request;
   // Source-owned ranges for independent known-input activation capture.
   iree_vm_function_t capture_epoch;
-  // Source-owned input validation and per-request known-input options.
-  iree_vm_function_t prepare_request;
-  // Owned known-input defaults; generative defaults belong to chat_policy.
-  iree_vm_buffer_t* defaults;
-  // Chat policy borrowing this program and owning its source-returned defaults.
+  // Known-input request policy with independent request executions.
+  loom_serve_text_request_policy_t request_policy;
+  // Generative request policy with independent chat executions.
   loom_serve_text_chat_policy_t chat_policy;
   // Queue-visible host payloads retained until actual device retirement.
   struct {
@@ -90,12 +89,12 @@ void loom_serve_text_control_unlink(loom_serve_text_control_t* control);
 // this call. Both cleanup operations accept partial initialization.
 void loom_serve_text_control_deinitialize(loom_serve_text_control_t* control);
 
-// Validates known tokens and resolves request policy on an exclusive VM loan.
-// Source may retain the cloned body and immutable tokens; returned options are
-// owned. This call has no retained-row mutation authority.
+// Validates immutable known tokens and resolves source request policy through
+// a temporary request-local execution. Concurrent callers share frozen policy;
+// validation completes before admission or retained-row mutation.
 iree_status_t loom_serve_text_control_prepare_request(
-    loom_serve_text_control_t* control, const loom_serve_text_source_t* source,
-    iree_string_view_t body, uint64_t request_id, iree_vm_buffer_t* tokens,
+    loom_serve_text_control_t* control, iree_string_view_t body,
+    uint64_t request_id, iree_vm_buffer_t* tokens,
     iree_allocator_t host_allocator, iree_vm_buffer_t** out_options);
 
 // Evaluates the checked model source against a validated native cohort, then

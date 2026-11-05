@@ -42,8 +42,10 @@ typedef struct loom_serve_text_source_t {
   loom_runtime_preparation_t* preparation;
   // Owned immutable checkpoint indexes shared by resident and demand reads.
   loom_runtime_parameter_sources_t* parameter_sources;
-  // Compiled control bytecode awaiting native capability linking.
-  iree_vm_module_t* module;
+  // Compiled model-control bytecode awaiting device capability linking.
+  iree_vm_module_t* control_module;
+  // Compiled request-policy bytecode awaiting stateless capability linking.
+  iree_vm_module_t* request_module;
   // Opaque source state retained independently of the bootstrap invocation.
   iree_vm_buffer_t* control_state;
   // Owned deployment JSON shared with bootstrap and cold request policy.
@@ -76,12 +78,19 @@ iree_status_t loom_serve_text_source_initialize(
     iree_allocator_t host_allocator, loom_serve_text_source_t* out_source,
     loom_serve_text_storage_t* out_storage);
 
-// Compiles control bytecode after source initialization. Native compilation and
-// parameter preparation may run in parallel; linking and source destruction
-// require this call to retire first. Only module is written. Partial outputs
-// remain owned by source on failure. Options and jit are borrowed through
-// return.
+// Compiles model-control bytecode after source initialization. Native stage
+// compilation, request-policy compilation, and parameter preparation may run
+// in parallel. Linking and source destruction require this call to retire.
+// Only control_module is written. Partial output remains owned by source.
 iree_status_t loom_serve_text_source_compile_control(
+    loom_runtime_jit_t* jit, const loom_serve_text_options_t* options,
+    loom_serve_text_source_t* source);
+
+// Compiles request-policy bytecode after source initialization. The resulting
+// closure contains no device, parameter, or model-control capabilities and may
+// execute through independent request-owned VM processes. Only request_module
+// is written. Partial output remains owned by source.
+iree_status_t loom_serve_text_source_compile_request(
     loom_runtime_jit_t* jit, const loom_serve_text_options_t* options,
     loom_serve_text_source_t* source);
 
