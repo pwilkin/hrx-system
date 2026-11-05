@@ -498,7 +498,7 @@ def _cdna_core_overlays(
         _v_cvt_pkrtz_f16_f32_overlay(),
         _v_pack_b32_f16_overlay(),
         *(
-            _v_cvt_f32_packed8_overlays(packed8_source_semantics)
+            _v_cvt_f32_packed8_sdwa_overlays(packed8_source_semantics)
             if packed8_source_semantics
             else ()
         ),

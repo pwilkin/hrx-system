@@ -33,8 +33,9 @@ typedef enum loom_amdgpu_descriptor_trait_bit_e {
   LOOM_AMDGPU_DESCRIPTOR_TRAIT_DPP = 1u << 4,
   // Descriptor reads one VGPR lane into an SGPR.
   LOOM_AMDGPU_DESCRIPTOR_TRAIT_READFIRSTLANE = 1u << 5,
-  // Descriptor uses an SDWA packet encoding.
-  LOOM_AMDGPU_DESCRIPTOR_TRAIT_SDWA = 1u << 6,
+  // Descriptor has a dynamic SDWA destination selector. Fixed selectors
+  // publish their forwarding behavior directly in the descriptor traits.
+  LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION = 1u << 6,
   // Descriptor implicitly drains gfx125x XCNT before it executes.
   LOOM_AMDGPU_DESCRIPTOR_TRAIT_XCNT_IMPLICIT_DRAIN = 1u << 7,
   // Descriptor issues on an AMDGPU matrix pipeline.

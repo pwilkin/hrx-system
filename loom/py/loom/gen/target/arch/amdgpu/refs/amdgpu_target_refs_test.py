@@ -412,7 +412,7 @@ def test_descriptor_trait_names_include_resource_and_encoding_facts() -> None:
 
     assert amdgpu_target_refs._descriptor_trait_names(trait_context, descriptor_set.descriptors[0]) == (
         "LOOM_AMDGPU_DESCRIPTOR_TRAIT_VECTOR_ALU",
-        "LOOM_AMDGPU_DESCRIPTOR_TRAIT_SDWA",
+        "LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION",
         "LOOM_AMDGPU_DESCRIPTOR_TRAIT_VECTOR_ISSUE",
     )
 
@@ -1040,6 +1040,22 @@ def test_descriptor_immediate_slots_publish_sdwa_dst_sel() -> None:
     trait_names = amdgpu_target_refs._descriptor_trait_names(trait_context, descriptor)
 
     assert amdgpu_target_refs._descriptor_sdwa_dst_sel_immediate_slot(descriptor_set, descriptor, trait_names) == 1
+
+
+def test_fixed_sdwa_destination_selectors_publish_static_forwarding() -> None:
+    for selector in range(7):
+        descriptor = _descriptor(
+            "amdgpu.fixed_sdwa",
+            encoding_format_id=AMDGPU_ENCODING_FORMAT_VOP1_SDWA,
+            schedule_class=_SCHEDULE_VALU,
+            encoding_field_values=(EncodingFieldValue(AMDGPU_ENCODING_FIELD_IDS["DST_SEL"], selector),),
+        )
+        descriptor_set = _descriptor_set(descriptor)
+        context = amdgpu_target_refs._descriptor_trait_context(descriptor_set)
+        traits = amdgpu_target_refs._descriptor_trait_names(context, descriptor)
+        assert "LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION" not in traits
+        assert ("LOOM_AMDGPU_DESCRIPTOR_TRAIT_DESTINATION_SELECTION_FORWARDING" in traits) == (selector != 6)
+        assert amdgpu_target_refs._descriptor_sdwa_dst_sel_immediate_slot(descriptor_set, descriptor, traits) is None
 
 
 def test_descriptor_immediate_slots_reject_duplicate_sdwa_dst_sel() -> None:

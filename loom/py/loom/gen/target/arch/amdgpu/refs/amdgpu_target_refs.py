@@ -640,7 +640,11 @@ def _descriptor_trait_names(
     if (descriptor.semantic_tag or "").startswith("float.div.fmas."):
         trait_names.append("LOOM_AMDGPU_DESCRIPTOR_TRAIT_DIV_FMAS")
     if descriptor.encoding_format_id == AMDGPU_ENCODING_FORMAT_VOP1_SDWA:
-        trait_names.append("LOOM_AMDGPU_DESCRIPTOR_TRAIT_SDWA")
+        fixed_destination = next((field.value for field in descriptor.encoding_field_values if field.encoding_field_id == _DST_SEL_ENCODING_FIELD_ID), None)
+        if fixed_destination is None:
+            trait_names.append("LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION")
+        elif fixed_destination != 6:
+            trait_names.append("LOOM_AMDGPU_DESCRIPTOR_TRAIT_DESTINATION_SELECTION_FORWARDING")
     if descriptor.key in _XCNT_IMPLICIT_DRAIN_DESCRIPTOR_KEYS or descriptor.key.startswith(_XCNT_IMPLICIT_DRAIN_DESCRIPTOR_KEY_PREFIXES):
         trait_names.append("LOOM_AMDGPU_DESCRIPTOR_TRAIT_XCNT_IMPLICIT_DRAIN")
     if any(ResourceFlag.VECTOR_ISSUE in resource.flags for resource in issue_resources) or InstructionClass.LDSDMA in descriptor.instruction_classes:
@@ -741,7 +745,7 @@ def _descriptor_sdwa_dst_sel_immediate_slot(
         "SDWA dst_sel",
         lambda immediate: immediate.encoding_field_id == _DST_SEL_ENCODING_FIELD_ID,
     )
-    if "LOOM_AMDGPU_DESCRIPTOR_TRAIT_SDWA" in trait_names and slot_index is None:
+    if "LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION" in trait_names and slot_index is None:
         raise ValueError(f"AMDGPU descriptor set '{descriptor_set.key}' SDWA descriptor '{descriptor.key}' has no dst_sel immediate")
     return slot_index
 

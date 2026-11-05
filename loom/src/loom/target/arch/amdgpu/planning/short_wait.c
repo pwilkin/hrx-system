@@ -254,7 +254,7 @@ static loom_amdgpu_short_wait_reasons_t loom_amdgpu_short_wait_select_reasons(
   }
   if (iree_any_bit_set(
           traits,
-          LOOM_AMDGPU_DESCRIPTOR_TRAIT_SDWA |
+          LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION |
               LOOM_AMDGPU_DESCRIPTOR_TRAIT_DESTINATION_SELECTION_FORWARDING) &&
       iree_any_bit_set(
           scheduling,

@@ -4682,6 +4682,58 @@ def test_compact_packed8_to_f32_sources_use_low_half_window() -> None:
             assert source.descriptor_operand.addressable_unit_count == 128
 
 
+def test_cdna_packed8_to_f32_selector_family() -> None:
+    for overlays, source_semantics in (
+        (_gfx940_core_overlays(), "fnuz"),
+        (_gfx950_core_overlays(), "ocp"),
+    ):
+        descriptors = {descriptor.descriptor_key: descriptor for descriptor in overlays}
+        for source_type in ("fp8", "bf8"):
+            scalar_prefix = f"amdgpu.v_cvt_f32_{source_type}.{source_semantics}"
+            for byte_selector in range(4):
+                suffix = f".byte{byte_selector}" if byte_selector else ""
+                descriptor = descriptors[scalar_prefix + suffix]
+                assert descriptor.encoding_name == (
+                    "VOP1_VOP_SDWA" if byte_selector else "ENC_VOP1"
+                )
+                if byte_selector:
+                    assert (
+                        dict(descriptor.fixed_encoding_fields)["SRC0_SEL"]
+                        == byte_selector
+                    )
+                    assert dict(descriptor.fixed_encoding_fields)["DST_SEL"] == 6
+                    assert descriptor.operands[1].xml_field_name == "VSRC0"
+                assert descriptor.operands[0].descriptor_operand.unit_count == 1
+                assert (
+                    descriptor.operands[1].descriptor_operand.address_map_kind
+                    is OperandAddressMapKind.DIRECT
+                )
+            pair_prefix = f"amdgpu.v_cvt_pk_f32_{source_type}.{source_semantics}"
+            low_pair = descriptors[pair_prefix]
+            high_pair = descriptors[pair_prefix + ".high"]
+            assert low_pair.operands[0].descriptor_operand.unit_count == 2
+            assert high_pair.operands[0].descriptor_operand.unit_count == 2
+            assert high_pair.encoding_name == "VOP1_VOP_SDWA"
+            assert dict(high_pair.fixed_encoding_fields)["SRC0_SEL"] == 5
+            assert dict(high_pair.fixed_encoding_fields)["DST_SEL"] == 6
+            assert (
+                high_pair.operands[1].descriptor_operand.address_map_kind
+                is OperandAddressMapKind.DIRECT
+            )
+
+    assert not any(
+        descriptor.descriptor_key.startswith(
+            (
+                "amdgpu.v_cvt_f32_fp8.",
+                "amdgpu.v_cvt_f32_bf8.",
+                "amdgpu.v_cvt_pk_f32_fp8.",
+                "amdgpu.v_cvt_pk_f32_bf8.",
+            )
+        )
+        for descriptor in _gfx90a_core_overlays()
+    )
+
+
 def test_packed8_encode_descriptors_own_numeric_and_partial_result_semantics() -> None:
     for descriptor_set, target_semantics, op_sel_field in (
         (_gfx940_core_overlays(), "fnuz", "OP_SEL"),
@@ -6457,6 +6509,30 @@ def test_cdna_buffer_load_lds_descriptors_cover_fixed_lds_rows() -> None:
         },
     ):
         assert "amdgpu.buffer_load_lds_dword" not in descriptors
+
+
+def test_smem_address_immediates_preserve_native_signed_ranges() -> None:
+    for overlays, bit_width in (
+        (_gfx90a_core_overlays(), 21),
+        (_gfx9_4_generic_core_overlays(), 21),
+        (_gfx940_core_overlays(), 21),
+        (_gfx950_core_overlays(), 21),
+        (_gfx11_core_overlays(), 21),
+        (_gfx115x_core_overlays(), 21),
+        (_gfx12_core_overlays(), 24),
+        (_gfx125x_core_overlays(), 24),
+        (_gfx12_5_generic_core_overlays(), 24),
+    ):
+        for overlay in overlays:
+            if overlay.encoding_name != "ENC_SMEM":
+                continue
+            for immediate in overlay.immediates:
+                if immediate.field_name != "offset":
+                    continue
+                assert immediate.kind is ImmediateKind.SIGNED, overlay.descriptor_key
+                assert immediate.bit_width == bit_width, overlay.descriptor_key
+                assert immediate.signed_min == -(1 << (bit_width - 1))
+                assert immediate.unsigned_max == (1 << (bit_width - 1)) - 1
 
 
 def test_smem_dword_width_descriptors_cover_active_xml_families() -> None:

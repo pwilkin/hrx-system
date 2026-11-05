@@ -6363,15 +6363,67 @@ def _v_cvt_scale_pk8_overlay(
     )
 
 
-def _v_cvt_f32_packed8_overlays(
+def _v_cvt_f32_packed8_sdwa_overlays(
     source_semantics: str,
 ) -> tuple[AmdgpuDescriptorOverlay, ...]:
-    return (
-        _v_cvt_f32_packed8_overlay("fp8", source_semantics),
-        _v_cvt_f32_packed8_overlay("bf8", source_semantics),
-        _v_cvt_pk_f32_packed8_overlay("fp8", source_semantics),
-        _v_cvt_pk_f32_packed8_overlay("bf8", source_semantics),
-    )
+    overlays = []
+    for source_type in ("fp8", "bf8"):
+        semantic_prefix = f"convert.float.{source_type}.{source_semantics}"
+        for pair in (False, True):
+            base = (
+                _v_cvt_pk_f32_packed8_overlay(source_type, source_semantics)
+                if pair
+                else _v_cvt_f32_packed8_overlay(source_type, source_semantics)
+            )
+            overlays.append(base)
+            for selector in (5,) if pair else (1, 2, 3):
+                suffix = "high" if pair else f"byte{selector}"
+                selector_name = "WORD_1" if pair else f"BYTE_{selector}"
+                overlays.append(
+                    replace(
+                        base,
+                        descriptor_key=f"{base.descriptor_key}.{suffix}",
+                        mnemonic=f"{base.mnemonic}_{suffix}",
+                        encoding_name="VOP1_VOP_SDWA",
+                        encoding_condition="has_sdwa",
+                        semantic_tag=(
+                            f"{semantic_prefix}x2.high.f32x2"
+                            if pair
+                            else f"{semantic_prefix}.{suffix}.f32"
+                        ),
+                        operands=(
+                            base.operands[0],
+                            AmdgpuOperandOverlay(
+                                "VSRC0",
+                                _vgpr_operand("input"),
+                                size_exception_reason=_PACKED8_SOURCE_SIZE_REASON,
+                            ),
+                        ),
+                        fixed_encoding_fields=(
+                            ("SRC0", 249),
+                            ("DST_SEL", 6),
+                            ("DST_UNUSED", 0),
+                            ("SRC0_SEL", selector),
+                            ("SRC0_SEXT", 0),
+                            ("SRC0_NEG", 0),
+                            ("SRC0_ABS", 0),
+                            ("S0", 0),
+                            ("CLAMP", 0),
+                            ("OMOD", 0),
+                        ),
+                        asm_forms=_asm(
+                            native_assembly_mnemonic=f"{base.mnemonic}_sdwa",
+                            results=("dst",),
+                            operands=("input",),
+                            native_assembly_values=(
+                                _native_result("dst"),
+                                _native_operand("input"),
+                                _native_literal(f"src0_sel:{selector_name}"),
+                            ),
+                        ),
+                    )
+                )
+    return tuple(overlays)
 
 
 def _v_cvt_f32_packed8_selection_overlays(
@@ -8277,8 +8329,8 @@ __all__ = (
     "_v_cvt_integer_f64_overlays",
     "_v_cvt_f64_f32_overlay",
     "_v_cvt_f32_f64_overlay",
-    "_v_cvt_f32_packed8_overlays",
     "_v_cvt_f32_packed8_selection_overlays",
+    "_v_cvt_f32_packed8_sdwa_overlays",
     "_v_cvt_f32_ubyte_overlays",
     "_v_cvt_f32_u32_overlay",
     "_v_cvt_i32_f32_overlay",

@@ -1,0 +1,158 @@
+// RUN: emit amdgpu-assembly @gfx942_packed8_selectors
+
+amdgpu.target<gfx942> @target
+
+low.func.def target<amdgpu.cdna3.core>(@target) @gfx942_packed8_selectors(%input: reg<amdgpu.vgpr>) asm {
+  %fp8_byte0 = v_cvt_f32_fp8 %input
+  %fp8_byte1 = v_cvt_f32_fp8_byte1 %input
+  %fp8_byte2 = v_cvt_f32_fp8_byte2 %input
+  %fp8_byte3 = v_cvt_f32_fp8_byte3 %input
+  %fp8_pair_low = v_cvt_pk_f32_fp8 %input
+  %fp8_pair_high = v_cvt_pk_f32_fp8_high %input
+  %bf8_byte0 = v_cvt_f32_bf8 %input
+  %bf8_byte1 = v_cvt_f32_bf8_byte1 %input
+  %bf8_byte2 = v_cvt_f32_bf8_byte2 %input
+  %bf8_byte3 = v_cvt_f32_bf8_byte3 %input
+  %bf8_pair_low = v_cvt_pk_f32_bf8 %input
+  %bf8_pair_high = v_cvt_pk_f32_bf8_high %input
+  return
+}
+
+// ----
+  v_cvt_f32_fp8 v1, v0
+  v_cvt_f32_fp8_sdwa v1, v0, src0_sel:BYTE_1
+  v_cvt_f32_fp8_sdwa v1, v0, src0_sel:BYTE_2
+  v_cvt_f32_fp8_sdwa v1, v0, src0_sel:BYTE_3
+  v_cvt_pk_f32_fp8 v[2:3], v0
+  v_cvt_pk_f32_fp8_sdwa v[2:3], v0, src0_sel:WORD_1
+  v_cvt_f32_bf8 v1, v0
+  v_cvt_f32_bf8_sdwa v1, v0, src0_sel:BYTE_1
+  v_cvt_f32_bf8_sdwa v1, v0, src0_sel:BYTE_2
+  v_cvt_f32_bf8_sdwa v1, v0, src0_sel:BYTE_3
+  v_cvt_pk_f32_bf8 v[2:3], v0
+  v_cvt_pk_f32_bf8_sdwa v[0:1], v0, src0_sel:WORD_1
+  s_endpgm
+
+// ====
+// RUN: emit amdgpu-native-words @gfx942_packed8_selectors
+
+amdgpu.target<gfx942> @target
+
+low.func.def target<amdgpu.cdna3.core>(@target) @gfx942_packed8_selectors(%input: reg<amdgpu.vgpr>) asm {
+  %fp8_byte0 = v_cvt_f32_fp8 %input
+  %fp8_byte1 = v_cvt_f32_fp8_byte1 %input
+  %fp8_byte2 = v_cvt_f32_fp8_byte2 %input
+  %fp8_byte3 = v_cvt_f32_fp8_byte3 %input
+  %fp8_pair_low = v_cvt_pk_f32_fp8 %input
+  %fp8_pair_high = v_cvt_pk_f32_fp8_high %input
+  %bf8_byte0 = v_cvt_f32_bf8 %input
+  %bf8_byte1 = v_cvt_f32_bf8_byte1 %input
+  %bf8_byte2 = v_cvt_f32_bf8_byte2 %input
+  %bf8_byte3 = v_cvt_f32_bf8_byte3 %input
+  %bf8_pair_low = v_cvt_pk_f32_bf8 %input
+  %bf8_pair_high = v_cvt_pk_f32_bf8_high %input
+  return
+}
+
+// ----
+0x7E02A900
+0x7E02A8F9
+0x00010600
+0x7E02A8F9
+0x00020600
+0x7E02A8F9
+0x00030600
+0x7E04AD00
+0x7E04ACF9
+0x00050600
+0x7E02AB00
+0x7E02AAF9
+0x00010600
+0x7E02AAF9
+0x00020600
+0x7E02AAF9
+0x00030600
+0x7E04AF00
+0x7E00AEF9
+0x00050600
+0xBF810000
+
+// ====
+// RUN: emit amdgpu-assembly @gfx950_packed8_selectors
+
+amdgpu.target<gfx950> @target
+
+low.func.def target<amdgpu.cdna4.core>(@target) @gfx950_packed8_selectors(%input: reg<amdgpu.vgpr>) asm {
+  %fp8_byte0 = v_cvt_f32_fp8 %input
+  %fp8_byte1 = v_cvt_f32_fp8_byte1 %input
+  %fp8_byte2 = v_cvt_f32_fp8_byte2 %input
+  %fp8_byte3 = v_cvt_f32_fp8_byte3 %input
+  %fp8_pair_low = v_cvt_pk_f32_fp8 %input
+  %fp8_pair_high = v_cvt_pk_f32_fp8_high %input
+  %bf8_byte0 = v_cvt_f32_bf8 %input
+  %bf8_byte1 = v_cvt_f32_bf8_byte1 %input
+  %bf8_byte2 = v_cvt_f32_bf8_byte2 %input
+  %bf8_byte3 = v_cvt_f32_bf8_byte3 %input
+  %bf8_pair_low = v_cvt_pk_f32_bf8 %input
+  %bf8_pair_high = v_cvt_pk_f32_bf8_high %input
+  return
+}
+
+// ----
+  v_cvt_f32_fp8 v1, v0
+  v_cvt_f32_fp8_sdwa v1, v0, src0_sel:BYTE_1
+  v_cvt_f32_fp8_sdwa v1, v0, src0_sel:BYTE_2
+  v_cvt_f32_fp8_sdwa v1, v0, src0_sel:BYTE_3
+  v_cvt_pk_f32_fp8 v[2:3], v0
+  v_cvt_pk_f32_fp8_sdwa v[2:3], v0, src0_sel:WORD_1
+  v_cvt_f32_bf8 v1, v0
+  v_cvt_f32_bf8_sdwa v1, v0, src0_sel:BYTE_1
+  v_cvt_f32_bf8_sdwa v1, v0, src0_sel:BYTE_2
+  v_cvt_f32_bf8_sdwa v1, v0, src0_sel:BYTE_3
+  v_cvt_pk_f32_bf8 v[2:3], v0
+  v_cvt_pk_f32_bf8_sdwa v[0:1], v0, src0_sel:WORD_1
+  s_endpgm
+
+// ====
+// RUN: emit amdgpu-native-words @gfx950_packed8_selectors
+
+amdgpu.target<gfx950> @target
+
+low.func.def target<amdgpu.cdna4.core>(@target) @gfx950_packed8_selectors(%input: reg<amdgpu.vgpr>) asm {
+  %fp8_byte0 = v_cvt_f32_fp8 %input
+  %fp8_byte1 = v_cvt_f32_fp8_byte1 %input
+  %fp8_byte2 = v_cvt_f32_fp8_byte2 %input
+  %fp8_byte3 = v_cvt_f32_fp8_byte3 %input
+  %fp8_pair_low = v_cvt_pk_f32_fp8 %input
+  %fp8_pair_high = v_cvt_pk_f32_fp8_high %input
+  %bf8_byte0 = v_cvt_f32_bf8 %input
+  %bf8_byte1 = v_cvt_f32_bf8_byte1 %input
+  %bf8_byte2 = v_cvt_f32_bf8_byte2 %input
+  %bf8_byte3 = v_cvt_f32_bf8_byte3 %input
+  %bf8_pair_low = v_cvt_pk_f32_bf8 %input
+  %bf8_pair_high = v_cvt_pk_f32_bf8_high %input
+  return
+}
+
+// ----
+0x7E02A900
+0x7E02A8F9
+0x00010600
+0x7E02A8F9
+0x00020600
+0x7E02A8F9
+0x00030600
+0x7E04AD00
+0x7E04ACF9
+0x00050600
+0x7E02AB00
+0x7E02AAF9
+0x00010600
+0x7E02AAF9
+0x00020600
+0x7E02AAF9
+0x00030600
+0x7E04AF00
+0x7E00AEF9
+0x00050600
+0xBF810000

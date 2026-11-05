@@ -540,7 +540,9 @@ loom_amdgpu_wait_state_packet_has_destination_selection_forwarding_hazard(
           LOOM_AMDGPU_DESCRIPTOR_TRAIT_DESTINATION_SELECTION_FORWARDING)) {
     return true;
   }
-  if (!iree_any_bit_set(descriptor_traits, LOOM_AMDGPU_DESCRIPTOR_TRAIT_SDWA)) {
+  if (!iree_any_bit_set(
+          descriptor_traits,
+          LOOM_AMDGPU_DESCRIPTOR_TRAIT_DYNAMIC_DESTINATION_SELECTION)) {
     return false;
   }
   const loom_low_descriptor_set_t* descriptor_set = builder->descriptor_set;
