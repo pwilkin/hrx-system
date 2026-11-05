@@ -46,12 +46,7 @@ struct amdf_gpu_umd_memory_t {
   // Owned DMA-BUF for explicit host aliases, or -1 without that requirement.
   int host_mapping_source;
   // Eager source handles for the requested native consumer group.
-  struct {
-    // Borrowed exact render connection, shared by aliases of the same VM.
-    int descriptor;
-    // Owned GEM reference released before the original KFD residency owner.
-    uint32_t handle;
-  } sources[];
+  amdf_gpu_kfd_gem_source_t sources[];
 };
 
 // Native allocation plan derived from one selected memory profile.
@@ -469,23 +464,21 @@ amdf_status_t amdf_gpu_umd_memory_prepare(
       memory->physical_backing_id = info.physical_backing_id;
     }
   }
-  for (size_t i = 0; amdf_status_is_ok(status) && i < source_capacity; ++i) {
-    const int descriptor =
-        (i == 0 ? device : peer_devices[i - 1])->render_descriptor;
-    uint32_t j = 0;
-    while (j < memory->source_count &&
-           memory->sources[j].descriptor != descriptor) {
-      ++j;
+  if (amdf_status_is_ok(status) && source_capacity != 0) {
+    uint32_t source_count = 0;
+    for (size_t i = 0; i < source_capacity; ++i) {
+      const int descriptor =
+          (i == 0 ? device : peer_devices[i - 1])->render_descriptor;
+      uint32_t j = 0;
+      while (j < source_count && memory->sources[j].descriptor != descriptor) {
+        ++j;
+      }
+      if (j == source_count) {
+        memory->sources[source_count++].descriptor = descriptor;
+      }
     }
-    if (j != memory->source_count) {
-      continue;
-    }
-    memory->sources[j].descriptor = descriptor;
-    status = amdf_gpu_kfd_buffer_prepare_gem(memory->buffer, descriptor,
-                                             &memory->sources[j].handle);
-    if (memory->sources[j].handle != 0) {
-      ++memory->source_count;
-    }
+    status = amdf_gpu_kfd_buffer_prepare_gems(
+        memory->buffer, source_count, memory->sources, &memory->source_count);
   }
   if (amdf_status_is_ok(status)) {
     // A subpage registration promises only the alignment shared by the caller

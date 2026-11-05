@@ -344,9 +344,9 @@ size_t amdf_gpu_kfd_buffer_remaining_backing_byte_length(
              : 0;
 }
 
-amdf_status_t amdf_gpu_kfd_buffer_prepare_gem(amdf_gpu_kfd_buffer_t* buffer,
-                                              int render_descriptor,
-                                              uint32_t* handle) {
+amdf_status_t amdf_gpu_kfd_buffer_prepare_gems(
+    amdf_gpu_kfd_buffer_t* buffer, uint32_t source_count,
+    amdf_gpu_kfd_gem_source_t* sources, uint32_t* prepared_count) {
   struct kfd_ioctl_export_dmabuf_args export = {
       .handle = buffer->handle,
       .flags = O_CLOEXEC,
@@ -355,14 +355,19 @@ amdf_status_t amdf_gpu_kfd_buffer_prepare_gem(amdf_gpu_kfd_buffer_t* buffer,
       0) {
     return amdf_linux_error(errno);
   }
-  struct drm_prime_handle import = {.fd = (int)export.dmabuf_fd};
+  int descriptor = (int)export.dmabuf_fd;
   amdf_status_t status = AMDF_STATUS_OK;
-  if (ioctl(render_descriptor, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import) != 0) {
-    status = amdf_linux_error(errno);
-  } else {
-    *handle = import.handle;
+  while (amdf_status_is_ok(status) && *prepared_count < source_count) {
+    amdf_gpu_kfd_gem_source_t* source = &sources[*prepared_count];
+    struct drm_prime_handle import = {.fd = descriptor};
+    if (ioctl(source->descriptor, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import) != 0) {
+      status = amdf_linux_error(errno);
+    } else {
+      source->handle = import.handle;
+      ++*prepared_count;
+    }
   }
-  const amdf_status_t close_status = amdf_linux_file_close(&import.fd);
+  const amdf_status_t close_status = amdf_linux_file_close(&descriptor);
   if (amdf_status_is_ok(status)) {
     status = close_status;
   }

@@ -111,14 +111,23 @@ size_t amdf_gpu_kfd_buffer_byte_length(const amdf_gpu_kfd_buffer_t* buffer);
 size_t amdf_gpu_kfd_buffer_remaining_backing_byte_length(
     const amdf_gpu_kfd_buffer_t* buffer);
 
-// Prepares an owned GEM handle for an existing KFD allocation in the exact
-// acquired render VM. Closing the temporary DMA-BUF leaves the KFD residency
-// owner intact. The caller supplies an empty live handle slot. Acquired GEM
-// ownership remains in that slot even if closing the consumed DMA-BUF fails;
-// the caller releases it during terminal memory cleanup.
-amdf_status_t amdf_gpu_kfd_buffer_prepare_gem(amdf_gpu_kfd_buffer_t* buffer,
-                                              int render_descriptor,
-                                              uint32_t* handle);
+// One render-VM source for an existing KFD allocation.
+typedef struct amdf_gpu_kfd_gem_source_t {
+  // Borrowed exact render connection, shared by aliases of the same VM.
+  int descriptor;
+  // Owned GEM reference released before the original KFD residency owner.
+  uint32_t handle;
+} amdf_gpu_kfd_gem_source_t;
+
+// Prepares GEM handles in distinct acquired render VMs using one temporary
+// DMA-BUF export. The caller supplies at least one source with its descriptor
+// set, its handle empty, and an initially zero prepared_count in a live owner.
+// The successful prefix remains owned on import or temporary-FD close failure;
+// the caller releases those handles before the KFD backing during cleanup.
+// Closing the temporary export leaves KFD residency and acquired GEMs intact.
+amdf_status_t amdf_gpu_kfd_buffer_prepare_gems(
+    amdf_gpu_kfd_buffer_t* buffer, uint32_t source_count,
+    amdf_gpu_kfd_gem_source_t* sources, uint32_t* prepared_count);
 
 // Releases the GPU mapping, allocation, CPU VA reservation, and object.
 // Failure retains the object and unreleased resources with the caller.

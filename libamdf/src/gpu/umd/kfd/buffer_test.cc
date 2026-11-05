@@ -22,6 +22,7 @@
 #include "gtest/gtest.h"
 #include "libamdf/src/allocator.h"
 #include "libamdf/src/gpu/umd/kfd/hdp.h"
+#include "libamdf/src/gpu/umd/kfd/memory.h"
 #include "libamdf/src/gpu/umd/kfd/topology.h"
 #include "libamdf/src/gpu/umd/memory.h"
 #include "libamdf/src/platform/linux/host_cache.h"
@@ -64,10 +65,16 @@ struct NativeBufferState {
   int import_descriptor = -1;
   // Exact failure establishing the render-file source, or zero.
   int prime_error = 0;
+  // One-based failing import attempt, or zero to fail every import.
+  uint32_t prime_error_attempt = 0;
+  // Exact render descriptors admitted by the native dependency.
+  std::vector<int> render_descriptors;
+  // Render descriptors observed in import order, including failed attempts.
+  std::vector<int> prime_descriptors;
   // Exact failure releasing the render-file source, or zero.
   int gem_close_error = 0;
-  // Whether the render-file GEM reference remains live.
-  bool gem_live = false;
+  // Render files with a live GEM reference to the native backing.
+  std::vector<int> gem_descriptors;
   // Number of terminal render-source release attempts.
   uint32_t gem_close_count = 0;
   // Export failure before producing a descriptor, or zero when not exercised.
@@ -156,7 +163,7 @@ extern "C" int __wrap_close(int descriptor) {
   if (native_state != nullptr &&
       descriptor == native_state->export_descriptor) {
     native_state->export_descriptor = -1;
-    if (result == 0 && native_state->gem_live &&
+    if (result == 0 && !native_state->gem_descriptors.empty() &&
         native_state->export_close_error != 0) {
       errno = native_state->export_close_error;
       return -1;
@@ -189,31 +196,43 @@ extern "C" int __wrap_ioctl(int descriptor, unsigned long request, ...) {
   }
   if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE) {
     auto* import = static_cast<drm_prime_handle*>(argument);
-    EXPECT_EQ(descriptor, native_state->import_descriptor);
+    EXPECT_NE(std::find(native_state->render_descriptors.begin(),
+                        native_state->render_descriptors.end(), descriptor),
+              native_state->render_descriptors.end());
     EXPECT_EQ(import->fd, native_state->export_descriptor >= 0
                               ? native_state->export_descriptor
                               : native_state->import_descriptor);
     EXPECT_TRUE(native_state->allocation_live);
-    EXPECT_FALSE(native_state->gem_live);
-    if (native_state->prime_error != 0) {
+    EXPECT_EQ(std::find(native_state->gem_descriptors.begin(),
+                        native_state->gem_descriptors.end(), descriptor),
+              native_state->gem_descriptors.end());
+    native_state->prime_descriptors.push_back(descriptor);
+    if (native_state->prime_error != 0 &&
+        (native_state->prime_error_attempt == 0 ||
+         native_state->prime_error_attempt ==
+             native_state->prime_descriptors.size())) {
       errno = native_state->prime_error;
       return -1;
     }
-    native_state->gem_live = true;
+    native_state->gem_descriptors.push_back(descriptor);
     import->handle = 0x7654;
     return 0;
   }
   if (request == DRM_IOCTL_GEM_CLOSE) {
-    EXPECT_EQ(descriptor, native_state->import_descriptor);
     EXPECT_EQ(static_cast<drm_gem_close*>(argument)->handle, 0x7654u);
     EXPECT_TRUE(native_state->allocation_live);
-    EXPECT_TRUE(native_state->gem_live);
+    const auto source =
+        std::find(native_state->gem_descriptors.begin(),
+                  native_state->gem_descriptors.end(), descriptor);
+    EXPECT_NE(source, native_state->gem_descriptors.end());
     ++native_state->gem_close_count;
     if (native_state->gem_close_error != 0) {
       errno = native_state->gem_close_error;
       return -1;
     }
-    native_state->gem_live = false;
+    if (source != native_state->gem_descriptors.end()) {
+      native_state->gem_descriptors.erase(source);
+    }
     return 0;
   }
   EXPECT_EQ(descriptor, 17);
@@ -325,7 +344,7 @@ extern "C" int __wrap_ioctl(int descriptor, unsigned long request, ...) {
       EXPECT_EQ(release->handle, 0x1234u);
       EXPECT_TRUE(native_state->allocation_live);
       EXPECT_FALSE(native_state->access_live);
-      EXPECT_FALSE(native_state->gem_live);
+      EXPECT_TRUE(native_state->gem_descriptors.empty());
       ++native_state->free_count;
       if (native_state->free_error != 0) {
         errno = native_state->free_error;
@@ -376,6 +395,7 @@ class KfdBufferNativeTest : public ::testing::Test {
     device_.render_descriptor = memfd_create("amdf-kfd-buffer", MFD_CLOEXEC);
     ASSERT_GE(device_.render_descriptor, 0);
     ASSERT_EQ(ftruncate(device_.render_descriptor, 4096), 0);
+    native_.render_descriptors.push_back(device_.render_descriptor);
     device_.page_size = 4096;
     device_.topology.gpu_id = 19;
     device_.topology.virtual_address.end = UINT64_MAX;
@@ -393,9 +413,10 @@ class KfdBufferNativeTest : public ::testing::Test {
     }
     EXPECT_FALSE(native_.allocation_live);
     EXPECT_FALSE(native_.access_live);
+    EXPECT_TRUE(native_.gem_descriptors.empty());
     EXPECT_EQ(native_.metadata_free_count, expected_metadata_free_count_);
-    if (device_.render_descriptor >= 0) {
-      EXPECT_EQ(close(device_.render_descriptor), 0);
+    for (int descriptor : native_.render_descriptors) {
+      EXPECT_EQ(close(descriptor), 0);
     }
     native_state = nullptr;
     EXPECT_FALSE(native_.memory_lock.occupied);
@@ -448,6 +469,46 @@ class KfdBufferNativeTest : public ::testing::Test {
                                               &exported, memory, result);
   }
 
+  void PrepareMappingGroup(uint32_t device_count) {
+    expected_metadata_free_count_ = 2;
+    native_.import_descriptor = device_.render_descriptor;
+    device_.topology.memory_features = AMDF_GPU_DEVICE_FEATURE_LOCAL_MEMORY;
+    peer_devices_.resize(device_count - 1, device_);
+    for (uint32_t i = 0; i < peer_devices_.size(); ++i) {
+      auto& peer = peer_devices_[i];
+      peer.topology.gpu_id = device_.topology.gpu_id + i + 1;
+      peer.render_descriptor = memfd_create("amdf-kfd-peer", MFD_CLOEXEC);
+      ASSERT_GE(peer.render_descriptor, 0);
+      native_.gpu_ids.push_back(peer.topology.gpu_id);
+      native_.render_descriptors.push_back(peer.render_descriptor);
+    }
+  }
+
+  amdf_status_t PrepareMappingSources(amdf_gpu_umd_memory_t** memory,
+                                      amdf_gpu_umd_memory_result_t* result) {
+    // Device aliases share the exact render VM and native GPU identity.
+    // Repeated consumers must not acquire duplicate GEM ownership.
+    std::vector<amdf_gpu_umd_device_t*> peers = {&device_};
+    for (auto& peer : peer_devices_) {
+      peers.push_back(&peer);
+      peers.push_back(&peer);
+    }
+    amdf_memory_native_profile_t profile;
+    const amdf_status_t status =
+        amdf_gpu_umd_device_query_memory_profile(&device_, 2, &profile);
+    if (!amdf_status_is_ok(status)) {
+      return status;
+    }
+    const amdf_memory_native_create_info_t create = {
+        .device_access = AMDF_MEMORY_ACCESS_READ | AMDF_MEMORY_ACCESS_WRITE,
+        .required_flags = AMDF_MEMORY_FLAG_MAPPING_SOURCE,
+        .byte_length = 4096,
+        .minimum_alignment = 4096,
+    };
+    return amdf_gpu_umd_memory_prepare(&device_, peers.size(), peers.data(),
+                                       &profile, &create, memory, result);
+  }
+
   void ReleaseLeakedReservation() {
     // There is no real kernel allocation in this dependency model. Verify that
     // production rollback preserved its reservation, then reclaim the known
@@ -464,6 +525,8 @@ class KfdBufferNativeTest : public ::testing::Test {
   NativeBufferState native_;
   // Borrowed device identity and complete CPU/GPU reservation limits.
   amdf_gpu_umd_device_t device_ = {};
+  // Distinct consumers kept alive through native memory destruction.
+  std::vector<amdf_gpu_umd_device_t> peer_devices_;
   // Ordinary GTT request without a CPU backing mapping.
   amdf_gpu_kfd_buffer_create_info_t create_info_ = {};
   // Published buffer, or NULL before construction and after successful release.
@@ -574,7 +637,7 @@ TEST_F(KfdBufferNativeTest, ImportedSourceReleasesGemBeforeResidency) {
   EXPECT_EQ(result.flags, AMDF_MEMORY_FLAG_MAPPING_SOURCE);
   EXPECT_EQ(result.device_address, 0u);
   EXPECT_EQ(result.byte_length, 4096u);
-  EXPECT_TRUE(native_.gem_live);
+  EXPECT_FALSE(native_.gem_descriptors.empty());
   EXPECT_TRUE(native_.map_progress.empty());
   EXPECT_EQ(amdf_gpu_umd_memory_destroy(memory), AMDF_STATUS_OK);
   EXPECT_EQ(native_.gem_close_count, 1u);
@@ -593,7 +656,7 @@ TEST_F(KfdBufferNativeTest, FailedRenderImportRollsBackKfdOwnership) {
   ASSERT_NE(memory, nullptr);
   EXPECT_EQ(std::memcmp(&result, &original, sizeof(result)), 0);
   EXPECT_TRUE(native_.allocation_live);
-  EXPECT_FALSE(native_.gem_live);
+  EXPECT_TRUE(native_.gem_descriptors.empty());
   EXPECT_EQ(amdf_gpu_umd_memory_destroy(memory), AMDF_STATUS_OK);
   EXPECT_EQ(native_.gem_close_count, 0u);
   EXPECT_EQ(native_.free_count, 1u);
@@ -609,14 +672,14 @@ TEST_F(KfdBufferNativeTest, FailedImportedSourceReleaseRetainsResidency) {
             amdf_make_status(AMDF_STATUS_DOMAIN_ERRNO, EIO));
   EXPECT_EQ(native_.free_count, 0u);
   EXPECT_TRUE(native_.allocation_live);
-  EXPECT_TRUE(native_.gem_live);
+  EXPECT_FALSE(native_.gem_descriptors.empty());
   amdf_gpu_umd_memory_abandon(memory);
   EXPECT_EQ(native_.gem_close_count, 1u);
   EXPECT_EQ(native_.free_count, 0u);
   // These are dependency-model owners, not real native resources. Discard
   // their modeled state after proving that production cleanup retained them.
   native_.allocation_live = false;
-  native_.gem_live = false;
+  native_.gem_descriptors.clear();
 }
 
 TEST_F(KfdBufferNativeTest, CompletesInterruptedAllocationBeforeMapping) {
@@ -1173,7 +1236,7 @@ TEST_F(KfdBufferNativeTest, FailedTransportCloseRetainsAcquiredGemForCleanup) {
   EXPECT_EQ(std::memcmp(&result, &original_result, sizeof(result)), 0);
   EXPECT_EQ(native_.export_count, 2u);
   EXPECT_EQ(native_.export_descriptor, -1);
-  EXPECT_TRUE(native_.gem_live);
+  EXPECT_FALSE(native_.gem_descriptors.empty());
   EXPECT_EQ(native_.gem_close_count, 0u);
   EXPECT_EQ(amdf_gpu_umd_memory_destroy(memory),
             amdf_make_status(AMDF_STATUS_DOMAIN_ERRNO, ENOMEM));
@@ -1181,8 +1244,95 @@ TEST_F(KfdBufferNativeTest, FailedTransportCloseRetainsAcquiredGemForCleanup) {
   EXPECT_EQ(native_.free_count, 0u);
   EXPECT_EQ(amdf_gpu_umd_memory_remaining_backing_byte_length(memory), 4096u);
   amdf_gpu_umd_memory_abandon(memory);
-  native_.gem_live = false;
+  native_.gem_descriptors.clear();
   ReleaseLeakedReservation();
+}
+
+class KfdMappingGroupTest : public KfdBufferNativeTest,
+                            public ::testing::WithParamInterface<uint32_t> {};
+
+TEST_P(KfdMappingGroupTest, ExportsOnceForEveryDistinctRenderVm) {
+  ASSERT_NO_FATAL_FAILURE(PrepareMappingGroup(GetParam()));
+  amdf_gpu_umd_memory_t* memory = nullptr;
+  amdf_gpu_umd_memory_result_t result = {};
+  ASSERT_EQ(PrepareMappingSources(&memory, &result), AMDF_STATUS_OK);
+  EXPECT_EQ(native_.export_count, 1u);
+  EXPECT_EQ(native_.export_descriptor, -1);
+  EXPECT_EQ(native_.prime_descriptors, native_.render_descriptors);
+  EXPECT_EQ(native_.gem_descriptors, native_.render_descriptors);
+  EXPECT_EQ(amdf_gpu_kfd_memory_mapping_handle(memory, &device_), 0x7654u);
+  for (auto& peer : peer_devices_) {
+    EXPECT_EQ(amdf_gpu_kfd_memory_mapping_handle(memory, &peer), 0x7654u);
+  }
+  ASSERT_EQ(amdf_gpu_umd_memory_destroy(memory), AMDF_STATUS_OK);
+  EXPECT_EQ(native_.gem_close_count, GetParam());
+  EXPECT_EQ(native_.free_count, 1u);
+}
+
+TEST_P(KfdMappingGroupTest, FailedImportRetainsOnlyThePreparedPrefix) {
+  ASSERT_NO_FATAL_FAILURE(PrepareMappingGroup(8));
+  native_.prime_error = ENOMEM;
+  native_.prime_error_attempt = GetParam();
+  amdf_gpu_umd_memory_t* memory = nullptr;
+  amdf_gpu_umd_memory_result_t result;
+  std::memset(&result, 0xA5, sizeof(result));
+  const auto original_result = result;
+  EXPECT_EQ(PrepareMappingSources(&memory, &result),
+            amdf_make_status(AMDF_STATUS_DOMAIN_ERRNO, ENOMEM));
+  ASSERT_NE(memory, nullptr);
+  EXPECT_EQ(std::memcmp(&result, &original_result, sizeof(result)), 0);
+  EXPECT_EQ(native_.export_count, 1u);
+  EXPECT_EQ(native_.export_descriptor, -1);
+  EXPECT_EQ(native_.prime_descriptors.size(), GetParam());
+  EXPECT_EQ(
+      native_.gem_descriptors,
+      (std::vector<int>(native_.render_descriptors.begin(),
+                        native_.render_descriptors.begin() + GetParam() - 1)));
+  EXPECT_EQ(native_.gem_close_count, 0u);
+  EXPECT_EQ(native_.free_count, 0u);
+  ASSERT_EQ(amdf_gpu_umd_memory_destroy(memory), AMDF_STATUS_OK);
+  EXPECT_EQ(native_.gem_close_count, GetParam() - 1);
+  EXPECT_EQ(native_.free_count, 1u);
+}
+
+INSTANTIATE_TEST_SUITE_P(DeviceCounts, KfdMappingGroupTest,
+                         ::testing::Values(1u, 2u, 4u, 8u));
+
+TEST_F(KfdBufferNativeTest, FailedBatchExportDoesNotImportAnyRenderSource) {
+  ASSERT_NO_FATAL_FAILURE(PrepareMappingGroup(8));
+  native_.export_error = EIO;
+  amdf_gpu_umd_memory_t* memory = nullptr;
+  amdf_gpu_umd_memory_result_t result;
+  std::memset(&result, 0xA5, sizeof(result));
+  const auto original_result = result;
+  EXPECT_EQ(PrepareMappingSources(&memory, &result),
+            amdf_make_status(AMDF_STATUS_DOMAIN_ERRNO, EIO));
+  ASSERT_NE(memory, nullptr);
+  EXPECT_EQ(std::memcmp(&result, &original_result, sizeof(result)), 0);
+  EXPECT_EQ(native_.export_count, 1u);
+  EXPECT_TRUE(native_.prime_descriptors.empty());
+  ASSERT_EQ(amdf_gpu_umd_memory_destroy(memory), AMDF_STATUS_OK);
+  EXPECT_EQ(native_.gem_close_count, 0u);
+  EXPECT_EQ(native_.free_count, 1u);
+}
+
+TEST_F(KfdBufferNativeTest, FailedBatchCloseRetainsAllAcquiredSources) {
+  ASSERT_NO_FATAL_FAILURE(PrepareMappingGroup(8));
+  native_.export_close_error = EIO;
+  amdf_gpu_umd_memory_t* memory = nullptr;
+  amdf_gpu_umd_memory_result_t result;
+  std::memset(&result, 0xA5, sizeof(result));
+  const auto original_result = result;
+  EXPECT_EQ(PrepareMappingSources(&memory, &result),
+            amdf_make_status(AMDF_STATUS_DOMAIN_ERRNO, EIO));
+  ASSERT_NE(memory, nullptr);
+  EXPECT_EQ(std::memcmp(&result, &original_result, sizeof(result)), 0);
+  EXPECT_EQ(native_.export_count, 1u);
+  EXPECT_EQ(native_.export_descriptor, -1);
+  EXPECT_EQ(native_.gem_descriptors, native_.render_descriptors);
+  ASSERT_EQ(amdf_gpu_umd_memory_destroy(memory), AMDF_STATUS_OK);
+  EXPECT_EQ(native_.gem_close_count, 8u);
+  EXPECT_EQ(native_.free_count, 1u);
 }
 
 TEST_F(KfdBufferNativeTest, FailedHostUnmapDistinguishesBackingFromEmptyVa) {
