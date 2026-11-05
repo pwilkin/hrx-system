@@ -170,7 +170,10 @@ class PipelineRealizationTest : public ::testing::Test {
     auto* self = static_cast<PipelineRealizationTest*>(data);
     EXPECT_TRUE(self->workers_.empty());
     EXPECT_NE(realization->function.op->parent_block, nullptr);
-    EXPECT_EQ(realization->workers, self->source_workers_);
+    EXPECT_EQ(realization->workers,
+              self->source_workers_ + self->worker_offsets_[self->selected_]);
+    EXPECT_EQ(realization->invocations.entries[0]->parent, nullptr);
+    EXPECT_EQ(realization->invocations.entries[0]->first_worker, 0u);
     ++self->selected_;
     *valid = self->selected_ != self->reject_;
     return iree_ok_status();
@@ -225,8 +228,10 @@ class PipelineRealizationTest : public ::testing::Test {
     return iree_ok_status();
   }
 
-  loom_pipeline_realization_request_t Request(loom_symbol_ref_t symbol) {
+  loom_pipeline_realization_request_t Request(loom_symbol_ref_t symbol,
+                                              size_t ordinal = 0) {
     return {&invocations_,
+            invocations_.entries[ordinal],
             source_workers_,
             symbol,
             {Select, HasWorkerBody, Worker, Prepare, Entry, this}};
@@ -269,6 +274,8 @@ class PipelineRealizationTest : public ::testing::Test {
   loom_pass_t pass_ = {};
   // Number of physical selections observed before mutation.
   size_t selected_ = 0;
+  // Canonical worker offsets expected by each requested independent output.
+  size_t worker_offsets_[2] = {0, 0};
   // Entry preparations completed while all source constructions remain live.
   size_t prepared_ = 0;
   // Optional one-based selection rejected by the target admission callback.
@@ -308,6 +315,62 @@ TEST_F(PipelineRealizationTest, IndependentEntriesPreserveSourceAndVersions) {
   EXPECT_EQ(loom_func_like_callee(outputs_[1]->base.function).symbol_id,
             first.symbol_id);
   EXPECT_EQ(versions_.list.count, 6u);
+  Verify();
+}
+
+TEST_F(PipelineRealizationTest, ParentOccurrencesSelectIndependentChildren) {
+  loom_op_t* parent;
+  IREE_ASSERT_OK(loom_pipeline_def_build(
+      &builder_, 0, 0, 0, 0, loom_symbol_ref_null(), Symbol("parent"), nullptr,
+      0, nullptr, 0, nullptr, 0, LOOM_LOCATION_UNKNOWN, &parent));
+  loom_builder_enter_region(&builder_, parent, loom_pipeline_def_body(parent));
+  const auto source = source_version_.base.function;
+  for (size_t i = 0; i < 2; ++i) {
+    loom_op_t* composition;
+    IREE_ASSERT_OK(loom_pipeline_compose_build(
+        &builder_, loom_func_like_callee(source), nullptr, 0, nullptr, 0,
+        LOOM_LOCATION_UNKNOWN, &composition));
+  }
+  loom_op_t* terminator;
+  IREE_ASSERT_OK(loom_pipeline_finish_build(&builder_, LOOM_LOCATION_UNKNOWN,
+                                            &terminator));
+  const auto function = loom_func_like_cast(module_, parent);
+  loom_value_fact_table_t facts;
+  IREE_ASSERT_OK(loom_value_fact_table_initialize(&facts, &arena_, 0));
+  loom_type_registry_configure_fact_context(&facts.context);
+  IREE_ASSERT_OK(loom_value_fact_table_compute(&facts, module_, function));
+  loom_pipeline_resources_t resources;
+  bool valid = false;
+  IREE_ASSERT_OK(loom_pipeline_resources_build(
+      module_, function, &facts, nullptr, 0, nullptr, 0, nullptr, 0, {},
+      &arena_, &resources, &valid));
+  ASSERT_TRUE(valid);
+  IREE_ASSERT_OK(loom_pipeline_invocations_build(
+      module_, function, &facts, &resources, nullptr, 0, {}, {}, &arena_,
+      &invocations_, &valid));
+  ASSERT_TRUE(valid);
+  ASSERT_EQ(invocations_.count, 3u);
+  EXPECT_EQ(invocations_.entries[0]->subtree.invocations, 3u);
+  EXPECT_EQ(invocations_.entries[0]->subtree.workers, 2u);
+  IREE_ASSERT_OK(loom_pipeline_invocations_analyze_workers(
+      module_, &invocations_, nullptr, {}, &arena_, &source_workers_, &valid));
+  ASSERT_TRUE(valid);
+  Verify();
+
+  // Publication order is independent of the parent's construction order.
+  worker_offsets_[0] = 1;
+  const loom_pipeline_realization_request_t requests[] = {
+      Request(Symbol("second"), 2), Request(Symbol("first"), 1)};
+  IREE_ASSERT_OK(
+      loom_pipeline_realize_occurrences(&pass_, module_, requests, 2, &valid));
+  ASSERT_TRUE(valid);
+  ASSERT_EQ(outputs_.size(), 2u);
+  EXPECT_NE(workers_[0], workers_[1]);
+  EXPECT_NE(outputs_[0], outputs_[1]);
+  EXPECT_EQ(source_version_.base.function.op, source.op);
+  EXPECT_NE(source.op->parent_block, nullptr);
+  EXPECT_NE(parent->parent_block, nullptr);
+  EXPECT_EQ(invocations_.entries[2]->first_worker, 1u);
   Verify();
 }
 

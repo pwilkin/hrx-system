@@ -333,6 +333,9 @@ iree_status_t loom_pipeline_invocations_build(
   IREE_RETURN_IF_ERROR(
       loom_pipeline_invocations_bind_allocations(&root->invocation, arena));
   if (!root_resources->composition_count && !root_resources->schedule_count) {
+    root->invocation.subtree.invocations = 1;
+    root->invocation.subtree.workers = out_invocations->worker_count;
+    root->invocation.subtree.channels = out_invocations->channel_count;
     IREE_RETURN_IF_ERROR(
         loom_pipeline_invocations_finish(root, arena, out_invocations));
     *out_valid = true;
@@ -353,6 +356,13 @@ iree_status_t loom_pipeline_invocations_build(
   loom_pipeline_invocation_frame_t* last = root;
   while (frame) {
     if (!frame->first) {
+      loom_pipeline_invocation_t* invocation = &frame->invocation;
+      invocation->subtree.invocations =
+          out_invocations->count - invocation->ordinal;
+      invocation->subtree.workers =
+          out_invocations->worker_count - invocation->first_worker;
+      invocation->subtree.channels =
+          out_invocations->channel_count - invocation->first_channel;
       active[loom_func_like_callee(frame->invocation.function).symbol_id] =
           false;
       frame = frame->parent;
@@ -443,6 +453,7 @@ iree_status_t loom_pipeline_invocations_build(
     IREE_RETURN_IF_ERROR(
         loom_pipeline_invocations_bind_allocations(invocation, arena));
     invocation->first_worker = out_invocations->worker_count;
+    invocation->first_channel = out_invocations->channel_count;
     invocation->ordinal = out_invocations->count++;
     out_invocations->worker_count += resources->strand_count;
     out_invocations->channel_count += resources->channel_count;
@@ -458,6 +469,180 @@ iree_status_t loom_pipeline_invocations_build(
   IREE_RETURN_IF_ERROR(
       loom_pipeline_invocations_finish(root, arena, out_invocations));
   *out_valid = true;
+  return iree_ok_status();
+}
+
+// One retained serial scope awaiting execution-pointer translation. Source CFG
+// and step classifications remain immutable and shared with the original plan.
+typedef struct loom_pipeline_invocation_projection_scope_t {
+  // Original bound scope supplying exact child and nested-scope references.
+  const loom_pipeline_invocation_schedule_t* source;
+  // Arena-owned scope receiving translated execution references.
+  loom_pipeline_invocation_schedule_t* destination;
+  // Next scope in the iterative projection worklist.
+  struct loom_pipeline_invocation_projection_scope_t* next;
+} loom_pipeline_invocation_projection_scope_t;
+
+static bool loom_pipeline_invocations_index_less(
+    const iree_host_size_t* left, const iree_host_size_t* right) {
+  return *left < *right;
+}
+
+LOOM_DEFINE_ADAPTIVE_SORT(loom_pipeline_invocations_sort_indices,
+                          iree_host_size_t,
+                          loom_pipeline_invocations_index_less)
+
+iree_status_t loom_pipeline_invocations_project(
+    const loom_pipeline_invocations_t* invocations,
+    const loom_pipeline_invocation_t* root, iree_arena_allocator_t* arena,
+    loom_pipeline_invocations_t* out_invocations) {
+  if (root == invocations->entries[0]) {
+    *out_invocations = *invocations;
+    return iree_ok_status();
+  }
+  // Captures may repeat the same protocol in several formal positions. Retain
+  // one imported protocol row while preserving those distinct formal bindings.
+  iree_host_size_t* imports = NULL;
+  IREE_RETURN_IF_ERROR(
+      iree_arena_allocate_array(arena, root->arguments.channel_count,
+                                sizeof(*imports), (void**)&imports));
+  for (iree_host_size_t i = 0; i < root->arguments.channel_count; ++i) {
+    imports[i] = loom_pipeline_invocations_channel_index(
+        invocations, &root->arguments.channels[i].channel->identity);
+  }
+  loom_pipeline_invocations_sort_indices(imports,
+                                         root->arguments.channel_count);
+  iree_host_size_t import_count = 0;
+  for (iree_host_size_t i = 0; i < root->arguments.channel_count; ++i) {
+    if (!import_count || imports[import_count - 1] != imports[i]) {
+      imports[import_count++] = imports[i];
+    }
+  }
+  *out_invocations = (loom_pipeline_invocations_t){
+      .count = root->subtree.invocations,
+      .worker_count = root->subtree.workers,
+      .channel_count = import_count + root->subtree.channels};
+  loom_pipeline_invocation_t* projected = NULL;
+  const loom_pipeline_invocation_t** entries = NULL;
+  loom_pipeline_invocation_worker_t* workers = NULL;
+  loom_pipeline_invocation_channel_t* channels = NULL;
+  iree_host_size_t* order = NULL;
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      arena, out_invocations->count, sizeof(*projected), (void**)&projected));
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      arena, out_invocations->count, sizeof(*entries), (void**)&entries));
+  IREE_RETURN_IF_ERROR(
+      iree_arena_allocate_array(arena, out_invocations->worker_count,
+                                sizeof(*workers), (void**)&workers));
+  IREE_RETURN_IF_ERROR(
+      iree_arena_allocate_array(arena, out_invocations->channel_count,
+                                sizeof(*channels), (void**)&channels));
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      arena, out_invocations->channel_count, sizeof(*order), (void**)&order));
+  out_invocations->entries = entries;
+  out_invocations->workers = workers;
+  out_invocations->channels = channels;
+  out_invocations->channel_order = order;
+  loom_pipeline_invocation_projection_scope_t* first = NULL;
+  loom_pipeline_invocation_projection_scope_t** tail = &first;
+  for (iree_host_size_t i = 0; i < out_invocations->count; ++i) {
+    const loom_pipeline_invocation_t* source =
+        invocations->entries[root->ordinal + i];
+    loom_pipeline_invocation_t* destination = &projected[i];
+    *destination = *source;
+    entries[i] = destination;
+    destination->ordinal = i;
+    destination->first_worker -= root->first_worker;
+    destination->first_channel =
+        import_count + source->first_channel - root->first_channel;
+    destination->parent =
+        i ? &projected[source->parent->ordinal - root->ordinal] : NULL;
+    if (!i) {
+      destination->call = NULL;
+      destination->schedule = NULL;
+    }
+    const loom_pipeline_resources_t* resources = source->resources;
+    const loom_pipeline_invocation_t** compositions = NULL;
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        arena, resources->composition_count, sizeof(*compositions),
+        (void**)&compositions));
+    destination->compositions = compositions;
+    for (iree_host_size_t j = 0; j < resources->composition_count; ++j) {
+      compositions[j] =
+          &projected[source->compositions[j]->ordinal - root->ordinal];
+    }
+    loom_pipeline_invocation_schedule_t* schedules = NULL;
+    loom_pipeline_invocation_projection_scope_t* scopes = NULL;
+    IREE_RETURN_IF_ERROR(
+        iree_arena_allocate_array(arena, resources->schedule_count,
+                                  sizeof(*schedules), (void**)&schedules));
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        arena, resources->schedule_count, sizeof(*scopes), (void**)&scopes));
+    destination->schedules = schedules;
+    for (iree_host_size_t j = 0; j < resources->schedule_count; ++j) {
+      scopes[j] = (loom_pipeline_invocation_projection_scope_t){
+          .source = &source->schedules[j], .destination = &schedules[j]};
+      *tail = &scopes[j];
+      tail = &scopes[j].next;
+    }
+  }
+  for (loom_pipeline_invocation_projection_scope_t* scope = first; scope;
+       scope = scope->next) {
+    const loom_pipeline_schedule_t* source = scope->source->source;
+    loom_pipeline_invocation_schedule_t* destination = scope->destination;
+    destination->source = source;
+    const loom_pipeline_invocation_step_t** blocks = NULL;
+    IREE_RETURN_IF_ERROR(
+        iree_arena_allocate_array(arena, source->control->graph.block_count,
+                                  sizeof(*blocks), (void**)&blocks));
+    destination->blocks = blocks;
+    for (iree_host_size_t b = 0; b < source->control->graph.block_count; ++b) {
+      const loom_pipeline_schedule_block_t* block = &source->blocks[b];
+      loom_pipeline_invocation_step_t* bindings = NULL;
+      IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+          arena, block->step_count, sizeof(*bindings), (void**)&bindings));
+      memset(bindings, 0, block->step_count * sizeof(*bindings));
+      blocks[b] = bindings;
+      for (iree_host_size_t i = 0; i < block->step_count; ++i) {
+        const loom_pipeline_invocation_step_t* original =
+            &scope->source->blocks[b][i];
+        if (block->steps[i].kind == LOOM_PIPELINE_SCHEDULE_STEP_COMPOSITION) {
+          bindings[i].child =
+              &projected[original->child->ordinal - root->ordinal];
+        } else if (block->steps[i].kind == LOOM_PIPELINE_SCHEDULE_STEP_SERIAL) {
+          loom_pipeline_invocation_schedule_t* nested = NULL;
+          loom_pipeline_invocation_projection_scope_t* pending = NULL;
+          IREE_RETURN_IF_ERROR(
+              iree_arena_allocate(arena, sizeof(*nested), (void**)&nested));
+          IREE_RETURN_IF_ERROR(
+              iree_arena_allocate(arena, sizeof(*pending), (void**)&pending));
+          bindings[i].nested = nested;
+          *pending = (loom_pipeline_invocation_projection_scope_t){
+              .source = original->nested, .destination = nested};
+          *tail = pending;
+          tail = &pending->next;
+        }
+      }
+    }
+  }
+  for (iree_host_size_t i = 0; i < out_invocations->worker_count; ++i) {
+    workers[i] = invocations->workers[root->first_worker + i];
+    workers[i].invocation =
+        &projected[workers[i].invocation->ordinal - root->ordinal];
+  }
+  for (iree_host_size_t i = 0; i < out_invocations->channel_count; ++i) {
+    if (i < import_count) {
+      channels[i] = invocations->channels[imports[i]];
+    } else {
+      channels[i] =
+          invocations->channels[root->first_channel + i - import_count];
+      channels[i].invocation =
+          &projected[channels[i].invocation->ordinal - root->ordinal];
+    }
+    order[i] = i;
+  }
+  loom_pipeline_invocations_sort_channels(channels, order,
+                                          out_invocations->channel_count);
   return iree_ok_status();
 }
 

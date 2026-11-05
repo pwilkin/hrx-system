@@ -118,9 +118,11 @@ typedef struct loom_pipeline_realization_callback_t {
 // One output requested from a retained occurrence. All requests are selected
 // before any worker is cloned or source definition is retired.
 typedef struct loom_pipeline_realization_request_t {
-  // Immutable source occurrence; its enclosing source proofs are closed.
+  // Complete canonical inventory; its enclosing source proofs are closed.
   const loom_pipeline_invocations_t* invocations;
-  // Immutable worker analyses in this inventory's complete worker order.
+  // Root of the independent execution selected from that inventory.
+  const loom_pipeline_invocation_t* root;
+  // Immutable worker analyses in the complete source inventory's worker order.
   loom_pipeline_worker_t* workers;
   // Distinct destination, or the occurrence's original symbol for replacement.
   loom_symbol_ref_t symbol;
@@ -131,9 +133,11 @@ typedef struct loom_pipeline_realization_request_t {
 // Realizes a complete admitted set with one module/version observation and one
 // generated-symbol namespace. Repeated source definitions may produce distinct
 // entries; their source IR remains intact unless a request replaces its symbol.
-// Every worker is consumed before any replaced construction is retired. Target
-// mechanics consume retained analyses without source rediscovery. Authored
-// rejection is diagnosed before mutation and leaves out_valid false.
+// Each request projects its selected subtree without rebuilding source
+// analyses. Every worker is consumed before any replaced construction is
+// retired. Target mechanics consume retained analyses without source
+// rediscovery. Authored rejection is diagnosed before mutation and leaves
+// out_valid false.
 iree_status_t loom_pipeline_realize_occurrences(
     loom_pass_t* pass, loom_module_t* module,
     const loom_pipeline_realization_request_t* requests,

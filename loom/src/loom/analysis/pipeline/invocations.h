@@ -71,6 +71,17 @@ struct loom_pipeline_invocation_t {
   loom_pipeline_arguments_t arguments;
   // First worker ordinal in the complete resident inventory.
   iree_host_size_t first_worker;
+  // First protocol constructed in this subtree, excluding imported protocols.
+  iree_host_size_t first_channel;
+  // Contiguous preorder extents established while constructing this subtree.
+  struct {
+    // Number of invocations, including this one.
+    iree_host_size_t invocations;
+    // Number of workers in this invocation and its descendants.
+    iree_host_size_t workers;
+    // Number of freshly constructed protocols, excluding imported protocols.
+    iree_host_size_t channels;
+  } subtree;
   // Concurrent children, indexed like resources->compositions.
   const loom_pipeline_invocation_t* const* compositions;
   // Bound schedules, indexed like resources->schedules.
@@ -105,7 +116,9 @@ typedef struct loom_pipeline_invocations_t {
   const loom_pipeline_invocation_worker_t* workers;
   // Number of static worker occurrences, including independent outer strands.
   iree_host_size_t worker_count;
-  // All fresh protocols in construction order.
+  // Distinct protocols visible to this inventory. A child projection retains
+  // imported protocols before its own protocols, in construction order within
+  // each partition. An imported protocol's owner may be outside entries.
   const loom_pipeline_invocation_channel_t* channels;
   // Number of distinct protocol instances.
   iree_host_size_t channel_count;
@@ -174,6 +187,22 @@ iree_status_t loom_pipeline_invocations_analyze_workers(
     const loom_func_like_t* functions,
     iree_diagnostic_emitter_t diagnostic_emitter, iree_arena_allocator_t* arena,
     loom_pipeline_worker_t** out_workers, bool* out_valid);
+
+// Projects a retained subtree for independent physical realization. The root
+// belongs to invocations. Dense execution ordinals and bound schedule edges are
+// translated; source resources, facts, and protocol identities remain borrowed.
+// Imported protocols retain their original construction owners. The complete
+// source inventory and its analyses outlive the projection. Worker analyses are
+// the original contiguous interval beginning at root->first_worker; their
+// source proofs still include concurrent work outside the selected subtree.
+//
+// Selecting entries[0] returns the original inventory without allocation.
+// Other projections visit retained tables only, never source IR or runtime loop
+// iterations. Status carries arena allocation failure.
+iree_status_t loom_pipeline_invocations_project(
+    const loom_pipeline_invocations_t* invocations,
+    const loom_pipeline_invocation_t* root, iree_arena_allocator_t* arena,
+    loom_pipeline_invocations_t* out_invocations);
 
 // Returns the retained placement for a visible root, or NULL for external
 // storage. This lookup does not traverse parents or recompute alias facts.

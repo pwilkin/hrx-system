@@ -515,8 +515,7 @@ iree_status_t loom_pipeline_realize_occurrences(
   // Subsequent cloning never consults this module snapshot again.
   for (iree_host_size_t i = 0; i < request_count; ++i) {
     const loom_pipeline_realization_request_t* request = &requests[i];
-    const loom_pipeline_invocation_t* occurrence =
-        request->invocations->entries[0];
+    const loom_pipeline_invocation_t* occurrence = request->root;
     const loom_symbol_ref_t source =
         loom_func_like_callee(occurrence->function);
     loom_target_function_version_t* entry_version =
@@ -547,13 +546,17 @@ iree_status_t loom_pipeline_realize_occurrences(
                   .version = entry_version},
         .facts = occurrence->facts,
         .resources = *occurrence->resources,
-        .invocations = *request->invocations,
-        .workers = request->workers,
+        .workers = occurrence->first_worker
+                       ? request->workers + occurrence->first_worker
+                       : request->workers,
         .version_owner = owner,
         .entry_target_context =
             (loom_target_context_ordinal_t)(versions.target_context_capacity +
                                             i),
     };
+    IREE_RETURN_IF_ERROR(loom_pipeline_invocations_project(
+        request->invocations, occurrence, pass->arena,
+        &realization->invocations));
     IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
         pass->arena, realization->invocations.worker_count,
         sizeof(*realization->worker_versions),
@@ -646,6 +649,7 @@ iree_status_t loom_pipeline_realize_invocations(
     const loom_pipeline_realization_callback_t* callback) {
   const loom_pipeline_realization_request_t request = {
       .invocations = invocations,
+      .root = invocations->entries[0],
       .workers = workers,
       .symbol = loom_func_like_callee(invocations->entries[0]->function),
       .callback = *callback,
