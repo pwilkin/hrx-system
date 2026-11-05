@@ -18,30 +18,29 @@ extern "C" {
 // little-endian u64 values: parameter byte offset, target byte offset, length.
 // FILE and SPLAT interpretation belongs to the provider. Target ranges must
 // not overlap. The caller keeps descriptor bytes stable until successful
-// readiness and orders target consumers after the returned fence. The call
+// readiness and orders target consumers after signals. The call
 // never waits for descriptors or I/O, and never joins unrelated model work.
-// A zero count returns the incoming dependency set without descriptor/payload
-// access, a snapshot allocation, or queue submission.
+// A zero count joins waits into signals without descriptor/payload access or
+// snapshot allocation. With no signals, an empty gather submits no queue work.
 //
-// Copies key and retains device, provider, descriptors, and target
+// Resolves key and retains device, provider, descriptors, and target
 // independently of the caller. The snapshot is retained by the actual queued
 // download as well as its deferred consumer: failed readiness cannot retire an
 // outstanding host memory borrow. Accepted reads retain file and target
-// references beyond callback completion. Rejection leaves out_ready null, but
-// already accepted operations still own their resources until they retire.
-// Discarding the returned fence does not cancel work or release those
-// resources. On rejection or failed readiness, actual buffer retirement gates
-// reuse of their backing storage.
+// references beyond callback completion. Rejection does not retire already
+// accepted operations. Releasing the caller's signal references does not cancel
+// work or release those resources. On rejection or failed readiness, actual
+// buffer retirement gates reuse of their backing storage.
 //
 // This staged path requires queue download and deferred host-call support.
 // Provider admission controls read concurrency independently of staging.
 iree_status_t loom_runtime_parameter_gather(
     iree_io_parameter_provider_t* provider, iree_hal_device_t* device,
     iree_hal_queue_t* queue, iree_hal_semaphore_list_t waits,
-    iree_string_view_t key, iree_hal_buffer_t* descriptors,
-    iree_device_size_t descriptor_offset, iree_host_size_t count,
-    iree_hal_buffer_t* target, iree_allocator_t host_allocator,
-    iree_hal_fence_t** out_ready);
+    iree_hal_semaphore_list_t signals, iree_string_view_t key,
+    iree_hal_buffer_t* descriptors, iree_device_size_t descriptor_offset,
+    iree_host_size_t count, iree_hal_buffer_t* target,
+    iree_allocator_t host_allocator);
 
 #ifdef __cplusplus
 }  // extern "C"

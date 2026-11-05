@@ -99,7 +99,7 @@ class ExecutablesTest : public loom_runtime::testing::WeightsTest {
     loom_runtime_program_t* program = nullptr;
     if (iree_status_is_ok(status)) {
       status = loom_runtime_preparation_module_create(
-          environment_, nullptr, nullptr, host_allocator_, &capture);
+          environment_, 1, nullptr, nullptr, host_allocator_, &capture);
     }
     if (iree_status_is_ok(status)) {
       loom_runtime_preparation_module_begin(
@@ -214,10 +214,11 @@ class ExecutablesTest : public loom_runtime::testing::WeightsTest {
         &table_));
     const loom_runtime_module_options_t module_options = {
         .binding_capacity = static_cast<uint16_t>(arena_bytes ? 2 : 1),
+        .executions = {1, &execution_},
         .stages = {table_->part_count, table_->parts},
     };
-    IREE_RETURN_IF_ERROR(loom_runtime_module_create(
-        &hal_types_, execution_, module_options, host_allocator_, &runner_));
+    IREE_RETURN_IF_ERROR(loom_runtime_module_create(&hal_types_, module_options,
+                                                    host_allocator_, &runner_));
     options.stages = table_;
     options.runner = runner_;
     IREE_RETURN_IF_ERROR(loom_runtime_parameters_module_create(
@@ -311,8 +312,9 @@ class ExecutablesTest : public loom_runtime::testing::WeightsTest {
             },
     };
     uint64_t completion = 0;
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        execution_, iree_hal_semaphore_list_empty(), 1, &download,
+        &completion));
     IREE_ASSERT_OK(
         loom_runtime_execution_feedback_wait(execution_, completion));
     loom_runtime_residency_release(residency);
@@ -981,8 +983,9 @@ class ArenaExecutablesTest : public ExecutablesTest {
                 .length = sizeof(output_),
             },
     };
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        execution_, iree_hal_semaphore_list_empty(), 1, &download,
+        &completion));
     IREE_ASSERT_OK(
         loom_runtime_execution_feedback_wait(execution_, completion));
     loom_runtime_residency_release(residency);

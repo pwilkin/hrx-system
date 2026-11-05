@@ -628,38 +628,88 @@ bool loom_runtime_workspace_is_pending(loom_runtime_workspace_t* workspace) {
           loom_runtime_virtual_pool_is_pending(workspace->virtual_pool));
 }
 
-iree_status_t loom_runtime_workspace_wait(loom_runtime_workspace_t* workspace,
-                                          iree_hal_semaphore_t* semaphore,
-                                          uint64_t value) {
-  return workspace->virtual_pool
-             ? loom_runtime_virtual_pool_wait(workspace->virtual_pool,
-                                              semaphore, value)
-             : iree_hal_semaphore_wait(semaphore, value,
-                                       iree_infinite_timeout(),
-                                       IREE_ASYNC_WAIT_FLAG_NONE);
+typedef struct loom_runtime_workspace_pools_t {
+  // Number of elastic physical owners in the borrowed workspace span.
+  iree_host_size_t count;
+  // Dense array of borrowed elastic pools, including repeated owners.
+  loom_runtime_virtual_pool_t** values;
+  // Allocation policy for an oversized cold owner span.
+  iree_allocator_t host_allocator;
+  // Inline storage for ordinary single-node deployments.
+  loom_runtime_virtual_pool_t* inline_values[8];
+} loom_runtime_workspace_pools_t;
+
+static iree_status_t loom_runtime_workspace_pools_initialize(
+    iree_host_size_t count, loom_runtime_workspace_t* const* workspaces,
+    loom_runtime_workspace_pools_t* pools) {
+  *pools = (loom_runtime_workspace_pools_t){.values = pools->inline_values};
+  if (count > IREE_ARRAYSIZE(pools->inline_values)) {
+    pools->host_allocator = workspaces[0]->host_allocator;
+    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
+        pools->host_allocator, count, sizeof(*pools->values),
+        (void**)&pools->values));
+  }
+  for (iree_host_size_t i = 0; i < count; ++i) {
+    if (workspaces[i]->virtual_pool) {
+      pools->values[pools->count++] = workspaces[i]->virtual_pool;
+    }
+  }
+  return iree_ok_status();
+}
+
+static void loom_runtime_workspace_pools_deinitialize(
+    loom_runtime_workspace_pools_t* pools) {
+  if (pools->values != pools->inline_values) {
+    iree_allocator_free(pools->host_allocator, pools->values);
+  }
+}
+
+iree_status_t loom_runtime_workspace_wait(
+    iree_host_size_t workspace_count,
+    loom_runtime_workspace_t* const* workspaces,
+    iree_hal_semaphore_t* semaphore, uint64_t value) {
+  loom_runtime_workspace_pools_t pools;
+  IREE_RETURN_IF_ERROR(loom_runtime_workspace_pools_initialize(
+      workspace_count, workspaces, &pools));
+  iree_status_t status =
+      pools.count
+          ? loom_runtime_virtual_pool_wait(pools.count, pools.values, semaphore,
+                                           value)
+          : iree_hal_semaphore_wait(semaphore, value, iree_infinite_timeout(),
+                                    IREE_ASYNC_WAIT_FLAG_NONE);
+  loom_runtime_workspace_pools_deinitialize(&pools);
+  return status;
 }
 
 static bool loom_runtime_workspace_is_retired(void* user_data) {
   return loom_runtime_retirement_is_idle(user_data);
 }
 
-iree_status_t loom_runtime_workspace_await(loom_runtime_workspace_t* workspace,
-                                           iree_notification_t* notification,
-                                           iree_condition_fn_t condition,
-                                           void* user_data) {
-  if (workspace->virtual_pool) {
-    return loom_runtime_virtual_pool_await(workspace->virtual_pool,
-                                           notification, condition, user_data);
+iree_status_t loom_runtime_workspace_await(
+    iree_host_size_t workspace_count,
+    loom_runtime_workspace_t* const* workspaces,
+    iree_notification_t* notification, iree_condition_fn_t condition,
+    void* user_data) {
+  loom_runtime_workspace_pools_t pools;
+  IREE_RETURN_IF_ERROR(loom_runtime_workspace_pools_initialize(
+      workspace_count, workspaces, &pools));
+  iree_status_t status = iree_ok_status();
+  if (pools.count) {
+    status = loom_runtime_virtual_pool_await(
+        pools.count, pools.values, notification, condition, user_data);
+  } else {
+    iree_notification_await(notification, condition, user_data,
+                            iree_infinite_timeout());
   }
-  iree_notification_await(notification, condition, user_data,
-                          iree_infinite_timeout());
-  return iree_ok_status();
+  loom_runtime_workspace_pools_deinitialize(&pools);
+  return status;
 }
 
 iree_status_t loom_runtime_workspace_await_retirement(
-    loom_runtime_workspace_t* workspace,
+    iree_host_size_t workspace_count,
+    loom_runtime_workspace_t* const* workspaces,
     loom_runtime_retirement_t* retirement) {
-  return loom_runtime_workspace_await(workspace, &retirement->notification,
-                                      loom_runtime_workspace_is_retired,
-                                      retirement);
+  return loom_runtime_workspace_await(
+      workspace_count, workspaces, &retirement->notification,
+      loom_runtime_workspace_is_retired, retirement);
 }

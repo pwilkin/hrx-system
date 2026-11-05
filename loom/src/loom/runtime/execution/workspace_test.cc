@@ -162,8 +162,9 @@ class WorkspaceTest : public ::testing::TestWithParam<uint32_t> {
             },
     };
     uint64_t value = 0;
-    IREE_RETURN_IF_ERROR(loom_runtime_execution_feedback(domain.execution, 1,
-                                                         &download, &value));
+    IREE_RETURN_IF_ERROR(loom_runtime_execution_feedback(
+        domain.execution, iree_hal_semaphore_list_empty(), 1, &download,
+        &value));
     auto frontier = loom_runtime_execution_frontier(domain.execution);
     IREE_RETURN_IF_ERROR(loom_runtime_execution_barrier(
         domain.execution, {1, &frontier.semaphores[1], &frontier.values[1]}));

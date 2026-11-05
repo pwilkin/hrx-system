@@ -279,7 +279,7 @@ static iree_status_t loom_serve_image_prepare(
   if (iree_status_is_ok(status)) {
     status = loom_runtime_preparation_allocate_cached(
         model->jit, model->control.environment, &options->sources,
-        options->sources.prepare, IREE_SV("prepare"),
+        options->sources.prepare, IREE_SV("prepare"), 1,
         LOOM_RUNTIME_PREPARATION_FLAG_PARAMETERS |
             LOOM_RUNTIME_PREPARATION_FLAG_PARAMETER_ARENAS,
         iree_vm_variant_span_from_array(arguments),
@@ -397,10 +397,12 @@ static iree_status_t loom_serve_image_create_control(
         tags.data + i * sizeof(int64_t),
         (uint64_t)loom_runtime_preparation_stage(model->preparation, i)->tag);
   }
+  const loom_runtime_module_feedback_t feedback = {0, model->output};
   const loom_runtime_module_options_t options = {
       .binding_capacity = 3,
+      .executions = {1, &model->execution},
       .stages = {model->stages.table->part_count, model->stages.table->parts},
-      .feedback = {1, &model->output},
+      .feedback = {1, &feedback},
   };
   iree_vm_module_t* native_modules[5] = {0};
   iree_vm_buffer_t* read_only_tags = NULL;
@@ -410,9 +412,8 @@ static iree_status_t loom_serve_image_create_control(
   if (iree_status_is_ok(status)) {
     iree_vm_buffer_release(model->control.tags);
     model->control.tags = read_only_tags;
-    status =
-        loom_runtime_module_create(&model->control.hal_types, model->execution,
-                                   options, host_allocator, &native_modules[0]);
+    status = loom_runtime_module_create(&model->control.hal_types, options,
+                                        host_allocator, &native_modules[0]);
   }
   if (iree_status_is_ok(status)) {
     model->control.runner = native_modules[0];
@@ -430,7 +431,7 @@ static iree_status_t loom_serve_image_create_control(
   }
   if (iree_status_is_ok(status)) {
     status = loom_runtime_preparation_module_create(
-        model->control.environment,
+        model->control.environment, 1,
         loom_runtime_preparation_card(model->preparation),
         loom_runtime_preparation_component(model->preparation), host_allocator,
         &native_modules[3]);
@@ -778,7 +779,7 @@ iree_status_t loom_serve_image_load_advance(loom_serve_image_load_t* load,
         load->event.pending = true;
         iree_slim_mutex_unlock(&load->event.mutex);
         status = loom_runtime_stage_set_compile_catalog_async(
-            model->jit, model->preparation, NULL,
+            &model->jit, model->preparation, NULL,
             loom_serve_image_load_compiled, load, load->host_allocator);
         submitted = iree_status_is_ok(status);
         break;

@@ -93,22 +93,26 @@ bool loom_runtime_virtual_pool_is_reclaiming(loom_runtime_virtual_pool_t* pool);
 // progress. Active reservations and idle, retained backing are not pending.
 bool loom_runtime_virtual_pool_is_pending(loom_runtime_virtual_pool_t* pool);
 
-// Blocking outer-owner wait that also advances cold backing. Shared task
-// schedulers use advance and their normal semaphore observation instead.
+// Blocking outer-owner wait that advances every participating cold pool.
+// Repeated pools are permitted; zero pools means no serving-owned cold work.
+// Previous acquisition and capacity observers are restored on return. Shared
+// task schedulers use advance and their normal semaphore observation instead.
 // The caller is the physical owner and excludes concurrent owner operations.
-iree_status_t loom_runtime_virtual_pool_wait(loom_runtime_virtual_pool_t* pool,
-                                             iree_hal_semaphore_t* semaphore,
-                                             uint64_t value);
+iree_status_t loom_runtime_virtual_pool_wait(
+    iree_host_size_t pool_count, loom_runtime_virtual_pool_t* const* pools,
+    iree_hal_semaphore_t* semaphore, uint64_t value);
 
 // Outer ownership join that keeps cold backing progressing after readiness
 // failure. condition observes final retirement and its producer signals
 // notification. Progress errors are returned only after condition is true:
 // they cannot release borrowed payloads early. The exclusive physical owner
 // calls this instead of waiting on notification without servicing cold work.
-iree_status_t loom_runtime_virtual_pool_await(loom_runtime_virtual_pool_t* pool,
-                                              iree_notification_t* notification,
-                                              iree_condition_fn_t condition,
-                                              void* user_data);
+// Observer-storage allocation failure returns before installing observers or
+// joining ownership; the caller retains its outstanding consumers for retry.
+iree_status_t loom_runtime_virtual_pool_await(
+    iree_host_size_t pool_count, loom_runtime_virtual_pool_t* const* pools,
+    iree_notification_t* notification, iree_condition_fn_t condition,
+    void* user_data);
 
 // Outer teardown after all clients and accepted callbacks have retired.
 // Releases backing and addresses; cleanup failure retains ownership for retry.

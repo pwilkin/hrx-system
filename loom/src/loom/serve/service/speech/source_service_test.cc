@@ -312,11 +312,11 @@ class SourceSpeechServiceTest : public ::testing::TestWithParam<bool> {
 
   iree_status_t Wait(const loom_runtime_execution_frontier_t& frontier) {
     iree_status_t status = iree_ok_status();
+    auto* workspace = loom_runtime_pool_workspace(
+        loom_runtime_device_group_pool_at(group_, 0));
     for (size_t i = 0; i < 2 && iree_status_is_ok(status); ++i) {
       status = loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(
-              loom_runtime_device_group_pool_at(group_, 0)),
-          frontier.semaphores[i], frontier.values[i]);
+          1, &workspace, frontier.semaphores[i], frontier.values[i]);
     }
     return status;
   }

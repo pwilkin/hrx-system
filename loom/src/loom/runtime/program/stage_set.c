@@ -27,14 +27,20 @@ struct loom_runtime_stage_set_job_t {
   loomc_task_t task;
   // Owned result transferred at terminal completion, including on failure.
   loom_runtime_stage_set_t* stages;
-  // Borrowed device and compiler host through completion.
-  loom_runtime_device_t* device;
+  // Borrowed ordered devices and their shared compiler host through completion.
+  loom_runtime_device_t* const* devices;
   // Borrowed immutable original declarations and specialization values.
   const loom_runtime_preparation_t* preparation;
   // Borrowed provider namespace through source indexing.
   loom_runtime_sources_t sources;
-  // Retained catalog, either caller-provided or created by source indexing.
-  loom_runtime_jit_t* jit;
+  // Borrowed sanitizer and extension storage through terminal completion.
+  const loomc_sanitizer_options_t* sanitizer;
+  // Number of immutable execution domains retained from source preparation.
+  uint32_t execution_count;
+  // Owned array of retained exact-device catalogs, nullable during indexing.
+  loom_runtime_jit_t** jits;
+  // Independent private-catalog reports, or NULL for caller-owned catalogs.
+  loom_runtime_compilation_report_t* reports;
   // Initial task result consumed only after task release.
   iree_status_t status;
   // Optional immutable layout consumer, independent of native readiness.
@@ -71,12 +77,20 @@ static void loom_runtime_stage_set_job_release(
   for (iree_host_size_t i = 0; i < stages->count; ++i) {
     status = iree_status_join(status, job->entries[i].status);
   }
-  if (job->jit) {
-    loom_runtime_jit_report_snapshot(job->jit, &stages->compilation);
+  for (uint32_t i = 0; i < job->execution_count; ++i) {
+    if (job->jits[i]) {
+      loom_runtime_compilation_report_t report;
+      loom_runtime_jit_report_snapshot(job->jits[i], &report);
+      loom_runtime_compilation_merge(&stages->compilation, &report);
+    } else if (job->reports) {
+      loom_runtime_compilation_merge(&stages->compilation, &job->reports[i]);
+    }
+    loom_runtime_jit_release(job->jits[i]);
   }
-  loom_runtime_jit_release(job->jit);
   const loom_runtime_stage_set_completion_fn_t completion = job->completion;
   void* user_data = job->user_data;
+  iree_allocator_free(stages->host_allocator, job->reports);
+  iree_allocator_free(stages->host_allocator, job->jits);
   iree_allocator_free(stages->host_allocator, job);
   completion(user_data, status, stages);
 }
@@ -112,17 +126,18 @@ static void loom_runtime_stage_set_submit(loom_runtime_stage_set_job_t* job) {
     const loom_runtime_preparation_stage_t* declaration =
         loom_runtime_preparation_stage(job->preparation, i);
     loom_runtime_stage_set_entry_t* entry = &job->entries[i];
+    loom_runtime_jit_t* jit = job->jits[declaration->execution_index];
     iree_atomic_ref_count_inc(&job->ref_count);
-    status = declaration->kind == LOOM_RUNTIME_PREPARATION_STAGE_DISPATCH
-                 ? loom_runtime_jit_compile_dispatch_async(
-                       job->jit, loom_runtime_jit_task_sink(job->jit),
-                       declaration->root, &declaration->config,
-                       loom_runtime_stage_set_compiled, entry)
-                 : loom_runtime_jit_compile_async(
-                       job->jit, loom_runtime_jit_task_sink(job->jit),
-                       declaration->root, &declaration->config,
-                       job->layout ? loom_runtime_stage_set_layout : NULL,
-                       loom_runtime_stage_set_compiled, entry);
+    status =
+        declaration->kind == LOOM_RUNTIME_PREPARATION_STAGE_DISPATCH
+            ? loom_runtime_jit_compile_dispatch_async(
+                  jit, loom_runtime_jit_task_sink(jit), declaration->root,
+                  &declaration->config, loom_runtime_stage_set_compiled, entry)
+            : loom_runtime_jit_compile_async(
+                  jit, loom_runtime_jit_task_sink(jit), declaration->root,
+                  &declaration->config,
+                  job->layout ? loom_runtime_stage_set_layout : NULL,
+                  loom_runtime_stage_set_compiled, entry);
     // The loop retains job even if callbacks finish inline. Rejection owns
     // this outcome and owes no callback; previously accepted stages still join.
     if (!iree_status_is_ok(status)) {
@@ -138,8 +153,9 @@ static void loom_runtime_stage_set_execute(loomc_task_t* task,
       (loom_runtime_stage_set_job_t*)((uint8_t*)task -
                                       offsetof(loom_runtime_stage_set_job_t,
                                                task));
-  job->status = loom_runtime_device_create_jit(
-      job->device, &job->sources, NULL, &job->stages->compilation, &job->jit);
+  job->status = loom_runtime_device_create_jits(
+      job->execution_count, job->devices, &job->sources, job->sanitizer,
+      job->reports, job->jits);
 }
 
 static void loom_runtime_stage_set_release(loomc_task_t* task) {
@@ -184,6 +200,13 @@ static iree_status_t loom_runtime_stage_set_job_create(
                                            sizeof(*job->entries), (void**)&job);
   }
   if (iree_status_is_ok(status)) {
+    job->execution_count =
+        loom_runtime_preparation_execution_count(preparation);
+    status =
+        iree_allocator_malloc_array(host_allocator, job->execution_count,
+                                    sizeof(*job->jits), (void**)&job->jits);
+  }
+  if (iree_status_is_ok(status)) {
     loomc_task_initialize(&loom_runtime_stage_set_vtable, &job->task);
     iree_atomic_ref_count_init(&job->ref_count);
     job->stages = stages;
@@ -196,26 +219,36 @@ static iree_status_t loom_runtime_stage_set_job_create(
     }
     *out_job = job;
   } else {
+    iree_allocator_free(host_allocator, job);
     loom_runtime_stage_set_free(stages);
   }
   return status;
 }
 
 iree_status_t loom_runtime_stage_set_compile_async(
-    loom_runtime_device_t* device,
+    loom_runtime_device_t* const* devices,
     const loom_runtime_preparation_t* preparation,
     const loom_runtime_sources_t* sources,
+    const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_stage_set_completion_fn_t completion, void* user_data,
     iree_allocator_t host_allocator) {
   loom_runtime_stage_set_job_t* job = NULL;
   IREE_RETURN_IF_ERROR(loom_runtime_stage_set_job_create(
       preparation, completion, user_data, host_allocator, &job));
-  job->device = device;
+  job->devices = devices;
   job->sources = *sources;
-  iree_status_t status = iree_status_from_loomc(loomc_task_sink_submit(
-      loom_runtime_host_compiler_sink(loom_runtime_device_host(device)),
-      &job->task));
+  job->sanitizer = sanitizer;
+  iree_status_t status =
+      iree_allocator_malloc_array(host_allocator, job->execution_count,
+                                  sizeof(*job->reports), (void**)&job->reports);
+  if (iree_status_is_ok(status)) {
+    status = iree_status_from_loomc(loomc_task_sink_submit(
+        loom_runtime_host_compiler_sink(loom_runtime_device_host(devices[0])),
+        &job->task));
+  }
   if (!iree_status_is_ok(status)) {
+    iree_allocator_free(host_allocator, job->reports);
+    iree_allocator_free(host_allocator, job->jits);
     loom_runtime_stage_set_free(job->stages);
     iree_allocator_free(host_allocator, job);
   }
@@ -223,16 +256,19 @@ iree_status_t loom_runtime_stage_set_compile_async(
 }
 
 iree_status_t loom_runtime_stage_set_compile_catalog_async(
-    loom_runtime_jit_t* jit, const loom_runtime_preparation_t* preparation,
+    loom_runtime_jit_t* const* jits,
+    const loom_runtime_preparation_t* preparation,
     loom_runtime_stage_set_layout_fn_t layout,
     loom_runtime_stage_set_completion_fn_t completion, void* user_data,
     iree_allocator_t host_allocator) {
   loom_runtime_stage_set_job_t* job = NULL;
   IREE_RETURN_IF_ERROR(loom_runtime_stage_set_job_create(
       preparation, completion, user_data, host_allocator, &job));
-  job->jit = jit;
   job->layout = layout;
-  loom_runtime_jit_retain(jit);
+  for (uint32_t i = 0; i < job->execution_count; ++i) {
+    job->jits[i] = jits[i];
+    loom_runtime_jit_retain(jits[i]);
+  }
   loom_runtime_stage_set_submit(job);
   return iree_ok_status();
 }

@@ -55,10 +55,10 @@ class PixelProjectorExecutionTest : public SourceTextServiceTest,
   }
 
   void Wait(loom_runtime_execution_frontier_t ready) {
+    auto* workspace = loom_runtime_pool_workspace(storage_owner_);
     for (size_t i = 0; i < IREE_ARRAYSIZE(ready.semaphores); ++i) {
       IREE_ASSERT_OK(loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(storage_owner_), ready.semaphores[i],
-          ready.values[i]));
+          1, &workspace, ready.semaphores[i], ready.values[i]));
     }
   }
 

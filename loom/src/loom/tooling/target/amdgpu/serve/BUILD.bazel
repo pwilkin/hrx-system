@@ -184,6 +184,7 @@ loom_cc_test(
         "//loom/src/loom/runtime/program:module",
         "//loom/src/loom/runtime/testing:compiler",
         "//loom/src/loom/runtime/testing:device",
+        "//loom/src/loom/runtime/testing:jit",
         "//runtime/src/iree/async",
         "//runtime/src/iree/async/util:proactor_pool",
         "//runtime/src/iree/base",

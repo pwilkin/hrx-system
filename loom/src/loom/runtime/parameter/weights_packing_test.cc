@@ -77,8 +77,8 @@ class WeightPackingTest : public WeightsTest {
             },
     };
     uint64_t completion = 0;
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(execution, 1, &download, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        execution, iree_hal_semaphore_list_empty(), 1, &download, &completion));
     IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution, completion));
     ASSERT_EQ(program->parameters.count, 6u);
     for (uint32_t i = 0; i < program->parameters.count; ++i) {

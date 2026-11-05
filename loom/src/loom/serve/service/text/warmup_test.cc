@@ -59,8 +59,10 @@ TEST_F(TextWarmupTest, FailedWarmupStillReleasesTheRetiredModel) {
                                IREE_ALL_WAITERS);
       },
       &notification);
+  loom_runtime_workspace_t* workspace =
+      loom_runtime_pool_workspace(storage_owner_);
   IREE_EXPECT_OK(loom_runtime_workspace_await(
-      loom_runtime_pool_workspace(storage_owner_), &notification,
+      1, &workspace, &notification,
       [](void* payload) {
         return loom_serve_text_model_is_retired(
             static_cast<loom_serve_text_model_t*>(payload));

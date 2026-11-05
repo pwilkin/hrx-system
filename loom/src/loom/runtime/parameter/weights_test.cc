@@ -1548,8 +1548,8 @@ TEST_P(WeightsTest, MutableGrowthReclaimsIdleParametersWithoutDiscardingState) {
               .length = sizeof(observed),
           },
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &completion));
   IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution_, completion));
   EXPECT_EQ(observed, value);
   loom_runtime_virtual_buffer_begin_trim(state_);
@@ -1836,8 +1836,8 @@ TEST_P(ArenaWeightsTest, SelectedPreparedBanksShareOneParameterBinding) {
           {workspace_, 0, sizeof(request_offsets)},
           {output_buffer_, 0, sizeof(output_)}};
       IREE_RETURN_IF_ERROR(loom_runtime_execution_execute(
-          execution_, commands_[2], {IREE_ARRAYSIZE(bindings), bindings},
-          &completion));
+          execution_, iree_hal_semaphore_list_empty(), commands_[2],
+          {IREE_ARRAYSIZE(bindings), bindings}, &completion));
       iree_hal_transfer_operation_t download = {
           .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       };
@@ -1845,7 +1845,8 @@ TEST_P(ArenaWeightsTest, SelectedPreparedBanksShareOneParameterBinding) {
       download.download.target = output_.data();
       download.download.length = sizeof(output_);
       IREE_RETURN_IF_ERROR(loom_runtime_execution_feedback(
-          execution_, 1, &download, &completion));
+          execution_, iree_hal_semaphore_list_empty(), 1, &download,
+          &completion));
       return loom_runtime_execution_feedback_wait(execution_, completion);
     };
     auto status = run();

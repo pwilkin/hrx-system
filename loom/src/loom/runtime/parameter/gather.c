@@ -74,11 +74,10 @@ static iree_status_t loom_runtime_parameter_gather_invoke(
 iree_status_t loom_runtime_parameter_gather(
     iree_io_parameter_provider_t* provider, iree_hal_device_t* device,
     iree_hal_queue_t* queue, iree_hal_semaphore_list_t waits,
-    iree_string_view_t key, iree_hal_buffer_t* descriptors,
-    iree_device_size_t descriptor_offset, iree_host_size_t count,
-    iree_hal_buffer_t* target, iree_allocator_t host_allocator,
-    iree_hal_fence_t** out_ready) {
-  *out_ready = NULL;
+    iree_hal_semaphore_list_t signals, iree_string_view_t key,
+    iree_hal_buffer_t* descriptors, iree_device_size_t descriptor_offset,
+    iree_host_size_t count, iree_hal_buffer_t* target,
+    iree_allocator_t host_allocator) {
   if (key.size > IREE_HOST_SIZE_MAX - sizeof(loom_runtime_parameter_gather_t) ||
       count > (IREE_HOST_SIZE_MAX - sizeof(loom_runtime_parameter_gather_t) -
                key.size) /
@@ -96,23 +95,10 @@ iree_status_t loom_runtime_parameter_gather(
                             "parameter gather descriptors exceed the buffer");
   }
   if (!count) {
-    // An empty read still carries its producer dependency, but borrows no
-    // payload or descriptor storage and submits no download or host callback.
-    iree_hal_fence_t* ready = NULL;
-    IREE_RETURN_IF_ERROR(
-        iree_hal_fence_create(waits.count, host_allocator, &ready));
-    iree_status_t status = iree_ok_status();
-    for (iree_host_size_t i = 0; i < waits.count && iree_status_is_ok(status);
-         ++i) {
-      status = iree_hal_fence_insert(ready, waits.semaphores[i],
-                                     waits.payload_values[i]);
-    }
-    if (iree_status_is_ok(status)) {
-      *out_ready = ready;
-    } else {
-      iree_hal_fence_release(ready);
-    }
-    return status;
+    return signals.count
+               ? iree_hal_queue_barrier(queue, waits, signals, NULL,
+                                        IREE_HAL_QUEUE_BARRIER_FLAG_NONE)
+               : iree_ok_status();
   }
   loom_runtime_parameter_gather_t* gather = NULL;
   // Initialize the owner and key here; the download writes every descriptor
@@ -137,20 +123,10 @@ iree_status_t loom_runtime_parameter_gather(
   gather->key = iree_make_string_view(key_storage, key.size);
 
   iree_hal_semaphore_t* downloaded = NULL;
-  iree_hal_semaphore_t* completed = NULL;
-  iree_hal_fence_t* ready = NULL;
   iree_hal_buffer_t* source = NULL;
   iree_status_t status =
       iree_hal_semaphore_create(device, IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY, 0,
                                 IREE_HAL_SEMAPHORE_FLAG_NONE, &downloaded);
-  if (iree_status_is_ok(status)) {
-    status =
-        iree_hal_semaphore_create(device, IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY, 0,
-                                  IREE_HAL_SEMAPHORE_FLAG_NONE, &completed);
-  }
-  if (iree_status_is_ok(status)) {
-    status = iree_hal_fence_create_at(completed, 1, host_allocator, &ready);
-  }
   if (iree_status_is_ok(status)) {
     status = iree_hal_subspan_buffer_create_with_callback(
         descriptors,
@@ -174,20 +150,13 @@ iree_status_t loom_runtime_parameter_gather(
   if (iree_status_is_ok(status)) {
     const uint64_t args[4] = {0};
     status = iree_hal_queue_host_call(
-        queue, (iree_hal_semaphore_list_t){1, &downloaded, &value},
-        iree_hal_fence_semaphore_list(ready),
+        queue, (iree_hal_semaphore_list_t){1, &downloaded, &value}, signals,
         iree_hal_make_host_call_with_resource(
             loom_runtime_parameter_gather_invoke, gather, &gather->resource),
         args, IREE_HAL_HOST_CALL_FLAG_NONE);
   }
   iree_hal_buffer_release(source);
   iree_hal_resource_release(&gather->resource);
-  iree_hal_semaphore_release(completed);
   iree_hal_semaphore_release(downloaded);
-  if (iree_status_is_ok(status)) {
-    *out_ready = ready;
-  } else {
-    iree_hal_fence_release(ready);
-  }
   return status;
 }

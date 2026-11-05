@@ -150,7 +150,7 @@ class ParameterGatherTest : public loom_runtime::testing::ParameterTest {
         0, descriptors, 0, records.size(), nullptr, IREE_HAL_UPDATE_FLAG_NONE));
 
     std::array<iree_hal_semaphore_t*, 2> gates, consumed;
-    std::array<iree_hal_fence_t*, 2> ready = {};
+    std::array<iree_hal_semaphore_t*, 2> ready = {};
     std::array<std::array<uint8_t, kRequests * kLength>, 2> outputs = {};
     std::promise<iree_status_code_t> submitted[2];
     std::promise<void> released[2];
@@ -216,6 +216,7 @@ class ParameterGatherTest : public loom_runtime::testing::ParameterTest {
           &provider));
       iree_io_parameter_index_release(index);
       gates[domain] = Semaphore();
+      ready[domain] = Semaphore();
       consumed[domain] = Semaphore();
       auto* gated = new GatedProvider(provider, gates[domain],
                                       &submitted[domain], &released[domain]);
@@ -224,15 +225,14 @@ class ParameterGatherTest : public loom_runtime::testing::ParameterTest {
       std::string key = "same-key";
       IREE_ASSERT_OK(loom_runtime_parameter_gather(
           gated, device_, queue_, {1, &produced, &one},
+          {1, &ready[domain], &one},
           iree_make_string_view(key.data(), key.size()), descriptors,
-          domain * kRequests * 24, kRequests, target, allocator_,
-          &ready[domain]));
+          domain * kRequests * 24, kRequests, target, allocator_));
       key.assign(key.size(), 'x');
       iree_io_parameter_provider_release(gated);
       IREE_ASSERT_OK(iree_hal_queue_download(
-          queue_, iree_hal_fence_semaphore_list(ready[domain]),
-          {1, &consumed[domain], &one}, target, 0, outputs[domain].data(),
-          outputs[domain].size(), nullptr));
+          queue_, {1, &ready[domain], &one}, {1, &consumed[domain], &one},
+          target, 0, outputs[domain].data(), outputs[domain].size(), nullptr));
       iree_hal_buffer_release(target);
     }
     iree_hal_buffer_release(descriptors);
@@ -265,13 +265,17 @@ class ParameterGatherTest : public loom_runtime::testing::ParameterTest {
     if (!cancelled_producer) {
       EXPECT_FALSE(loom_runtime_retirement_is_idle(&target_retirement[0]));
     }
+    uint64_t ready_value = 0;
     IREE_EXPECT_STATUS_IS(cancelled_producer ? IREE_STATUS_CANCELLED
                           : invalid          ? IREE_STATUS_OUT_OF_RANGE
-                                             : IREE_STATUS_DEFERRED,
-                          iree_hal_fence_query(ready[0]));
+                                             : IREE_STATUS_OK,
+                          iree_hal_semaphore_query(ready[0], &ready_value));
+    if (!cancelled_producer && !invalid) {
+      EXPECT_EQ(ready_value, 0u);
+    }
     if (cancel) {
-      iree_hal_fence_fail(ready[0],
-                          iree_status_from_code(IREE_STATUS_CANCELLED));
+      iree_hal_semaphore_fail(ready[0],
+                              iree_status_from_code(IREE_STATUS_CANCELLED));
       IREE_EXPECT_STATUS_IS(
           IREE_STATUS_CANCELLED,
           iree_hal_semaphore_wait(consumed[0], 1, iree_infinite_timeout(), 0));
@@ -297,7 +301,7 @@ class ParameterGatherTest : public loom_runtime::testing::ParameterTest {
           }
         }
       }
-      iree_hal_fence_release(ready[domain]);
+      iree_hal_semaphore_release(ready[domain]);
       iree_hal_semaphore_release(consumed[domain]);
       iree_hal_semaphore_release(gates[domain]);
       loom_runtime_retirement_deinitialize(&target_retirement[domain]);
@@ -348,31 +352,32 @@ TEST_P(ParameterGatherTest, DescriptorBoundsAndEmptyGather) {
   for (const auto range :
        {InvalidRange{49, 0}, InvalidRange{1, 2}, InvalidRange{UINT64_MAX, 1},
         InvalidRange{0, IREE_HOST_SIZE_MAX}}) {
-    iree_hal_fence_t* ready = nullptr;
     IREE_EXPECT_STATUS_IS(
         IREE_STATUS_OUT_OF_RANGE,
         loom_runtime_parameter_gather(
             provider, device_, queue_, iree_hal_semaphore_list_empty(),
-            IREE_SV("unused"), descriptors, range.offset, range.count, target,
-            allocator_, &ready));
-    EXPECT_EQ(ready, nullptr);
+            iree_hal_semaphore_list_empty(), IREE_SV("unused"), descriptors,
+            range.offset, range.count, target, allocator_));
   }
-  iree_hal_fence_t* empty_ready = nullptr;
+  auto* empty_ready = Semaphore();
   auto* producer = Semaphore();
   uint64_t value = 1;
   IREE_ASSERT_OK(loom_runtime_parameter_gather(
-      provider, device_, queue_, {1, &producer, &value}, IREE_SV("unused"),
-      descriptors, 48, 0, target, allocator_, &empty_ready));
+      provider, device_, queue_, {1, &producer, &value},
+      {1, &empty_ready, &value}, IREE_SV("unused"), descriptors, 48, 0, target,
+      allocator_));
   iree_io_parameter_provider_release(provider);
   iree_hal_buffer_release(descriptors);
   iree_hal_buffer_release(target);
   // No byte storage is retained by an empty gather, but the dependency remains.
   EXPECT_TRUE(loom_runtime_retirement_is_idle(&retirement));
-  IREE_EXPECT_STATUS_IS(IREE_STATUS_DEFERRED,
-                        iree_hal_fence_query(empty_ready));
+  uint64_t ready_value = 0;
+  IREE_ASSERT_OK(iree_hal_semaphore_query(empty_ready, &ready_value));
+  EXPECT_EQ(ready_value, 0u);
   IREE_ASSERT_OK(iree_hal_semaphore_signal(producer, 1, nullptr));
-  IREE_ASSERT_OK(iree_hal_fence_wait(empty_ready, iree_infinite_timeout(), 0));
-  iree_hal_fence_release(empty_ready);
+  IREE_ASSERT_OK(
+      iree_hal_semaphore_wait(empty_ready, 1, iree_infinite_timeout(), 0));
+  iree_hal_semaphore_release(empty_ready);
   iree_hal_semaphore_release(producer);
   loom_runtime_retirement_await(&retirement);
   loom_runtime_retirement_deinitialize(&retirement);

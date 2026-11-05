@@ -233,8 +233,9 @@ iree_status_t loom_serve_text_capture_download(
                      .target = snapshot->ranges + snapshot->span_count,
                      .length = capture->length}};
     uint64_t value = 0;
-    status = loom_runtime_execution_feedback(capture->execution, 1, &download,
-                                             &value);
+    status = loom_runtime_execution_feedback(capture->execution,
+                                             iree_hal_semaphore_list_empty(), 1,
+                                             &download, &value);
   }
   iree_hal_buffer_release(source);
   if (iree_status_is_ok(status)) {

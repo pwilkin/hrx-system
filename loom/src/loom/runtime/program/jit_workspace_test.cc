@@ -27,9 +27,9 @@ class JitWorkspaceTest : public loom_runtime::testing::JitModuleTest {
       IREE_EXPECT_OK(loom_runtime_execution_drain(held_.execution));
     }
     if (held_.completion) {
+      auto* workspace = loom_runtime_pool_workspace(storage_owner_);
       IREE_EXPECT_OK(loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(storage_owner_), held_.completion,
-          held_.completion_value));
+          1, &workspace, held_.completion, held_.completion_value));
     }
     loom_runtime_execution_release(held_.execution);
     iree_hal_semaphore_release(held_.completion);
@@ -105,8 +105,8 @@ TEST_P(JitWorkspaceTest, UnequalPrivateWorkspacesPreservePoolPolicyAndOutput) {
       .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       .download = {buffer_, 0, output_.data(), sizeof(output_)},
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &completion));
   IREE_ASSERT_OK(loom_runtime_execution_drain(execution_));
   const auto statistics =
       loom_runtime_pool_statistics(storage_owner_).workspace;
@@ -230,14 +230,16 @@ TEST_P(JitWorkspaceTest, IndependentModelCompletesWhileSharedWorkspaceGrows) {
   IREE_ASSERT_OK(loom_runtime_execution_barrier(held_.execution,
                                                 {1, &held_.gate, &gate_value}));
   const iree_hal_buffer_binding_t binding = {held_.buffer, 0, sizeof(input_)};
-  IREE_ASSERT_OK(loom_runtime_execution_execute(held_.execution, commands_[0],
-                                                {1, &binding}, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_execute(
+      held_.execution, iree_hal_semaphore_list_empty(), commands_[0],
+      {1, &binding}, &completion));
   iree_hal_transfer_operation_t download = {
       .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       .download = {held_.buffer, 0, held_.output.data(), sizeof(held_.output)},
   };
-  IREE_ASSERT_OK(loom_runtime_execution_feedback(held_.execution, 1, &download,
-                                                 &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      held_.execution, iree_hal_semaphore_list_empty(), 1, &download,
+      &completion));
   auto held_frontier = loom_runtime_execution_frontier(held_.execution);
   // Feedback is an independent branch. Explicitly join its read before freeing
   // storage that another model may immediately reuse.
@@ -273,8 +275,8 @@ TEST_P(JitWorkspaceTest, IndependentModelCompletesWhileSharedWorkspaceGrows) {
   iree_vm_variant_span_reset(iree_vm_variant_span_from_array(results));
   IREE_ASSERT_OK(status);
   download.download = {buffer_, 0, output_.data(), sizeof(output_)};
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &completion));
   IREE_ASSERT_OK(loom_runtime_execution_drain(execution_));
   for (int32_t value : output_) {
     EXPECT_EQ(value, 107);
@@ -393,8 +395,8 @@ TEST_P(JitWorkspaceTest, RetiredModelDoesNotJoinRawQueueAllocationCaptures) {
       .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       .download = {buffer_, 0, output_.data(), sizeof(output_)},
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &value));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &value));
   IREE_ASSERT_OK(loom_runtime_execution_drain(execution_));
   for (int32_t output : output_) {
     EXPECT_EQ(output, 107);

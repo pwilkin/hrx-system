@@ -63,8 +63,9 @@ struct loom_service_finite_model_t {
     iree_host_size_t count;
     // Owned read-only source views; their backing survives accepted downloads.
     iree_vm_buffer_t** buffers;
-    // Borrowed writable backing registered with the runner's feedback branch.
-    iree_byte_span_t* destinations;
+    // Borrowed writable backing and execution ownership registered with the
+    // runner's feedback branches.
+    loom_runtime_module_feedback_t* destinations;
   } feedback;
   // Immutable tokenizer reused by each independent request encoder.
   loom_runtime_tokenizer_t* tokenizer;
@@ -345,7 +346,7 @@ static iree_status_t loom_service_finite_prepare(
   if (iree_status_is_ok(status)) {
     status = loom_runtime_preparation_allocate_cached(
         model->jit, model->control.environment, &options->sources,
-        options->sources.prepare, IREE_SV("prepare"),
+        options->sources.prepare, IREE_SV("prepare"), 1,
         LOOM_RUNTIME_PREPARATION_FLAG_PARAMETERS |
             LOOM_RUNTIME_PREPARATION_FLAG_MEMORY_FORECAST |
             LOOM_RUNTIME_PREPARATION_FLAG_STORAGE,
@@ -469,6 +470,7 @@ static iree_status_t loom_service_finite_create_control(
   }
   const loom_runtime_module_options_t options = {
       .binding_capacity = (uint16_t)(2 + model->storage.count),
+      .executions = {1, &model->execution},
       .stages = {model->stages.table->part_count, model->stages.table->parts},
       .feedback = {model->feedback.count, model->feedback.destinations},
   };
@@ -480,9 +482,8 @@ static iree_status_t loom_service_finite_create_control(
   if (iree_status_is_ok(status)) {
     iree_vm_buffer_release(model->control.tags);
     model->control.tags = read_only_tags;
-    status =
-        loom_runtime_module_create(&model->control.hal_types, model->execution,
-                                   options, host_allocator, &native_modules[0]);
+    status = loom_runtime_module_create(&model->control.hal_types, options,
+                                        host_allocator, &native_modules[0]);
   }
   if (iree_status_is_ok(status)) {
     model->control.runner = native_modules[0];
@@ -500,7 +501,7 @@ static iree_status_t loom_service_finite_create_control(
   }
   if (iree_status_is_ok(status)) {
     status = loom_runtime_preparation_module_create(
-        model->control.environment,
+        model->control.environment, 1,
         loom_runtime_preparation_card(model->preparation),
         loom_runtime_preparation_component(model->preparation), host_allocator,
         &native_modules[3]);
@@ -676,13 +677,14 @@ static iree_status_t loom_service_finite_model_allocate_storage(
   iree_status_t status = iree_ok_status();
   for (iree_host_size_t i = 0; i < feedback_count && iree_status_is_ok(status);
        ++i) {
+    model->feedback.destinations[i].execution_index = 0;
     const iree_host_size_t length =
         loom_runtime_preparation_feedback_capacity(model->preparation, i);
     iree_vm_buffer_t* buffer = NULL;
     status = iree_vm_buffer_create(length, 64, allocator, &buffer);
     if (iree_status_is_ok(status)) {
-      status = iree_vm_buffer_map_write(buffer, 0, length,
-                                        &model->feedback.destinations[i]);
+      status = iree_vm_buffer_map_write(
+          buffer, 0, length, &model->feedback.destinations[i].destination);
     }
     if (iree_status_is_ok(status)) {
       status = iree_vm_buffer_subspan(buffer, 0, length,
@@ -961,7 +963,7 @@ iree_status_t loom_service_finite_load_advance(
         load->event.pending = true;
         iree_slim_mutex_unlock(&load->event.mutex);
         status = loom_runtime_stage_set_compile_catalog_async(
-            model->jit, model->preparation, NULL,
+            &model->jit, model->preparation, NULL,
             loom_service_finite_load_compiled, load, load->host_allocator);
         submitted = iree_status_is_ok(status);
         break;
@@ -1417,7 +1419,7 @@ iree_status_t loom_service_finite_model_advance_batch(
         iree_vm_buffer_length(model->invocation.payload);
     const uint64_t private_bytes =
         input_bytes + iree_min(loom_runtime_module_workspace_requirement(
-                                   model->control.runner)
+                                   model->control.runner, 0)
                                    .allocation_size,
                                UINT64_MAX - input_bytes);
     return loom_runtime_residency_prepare_working_set(

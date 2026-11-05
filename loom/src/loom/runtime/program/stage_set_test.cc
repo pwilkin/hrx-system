@@ -28,17 +28,17 @@ class StageSetTest : public loom_runtime::testing::JitTest {
     IREE_RETURN_IF_ERROR(loom_runtime_preparation_allocate(
         loom_runtime_host_target_environment(
             loom_runtime_device_host(device_owner_)),
-        environment_, &sources, IREE_SV("preparation.loom"), root,
+        environment_, &sources, IREE_SV("preparation.loom"), root, 1,
         LOOM_RUNTIME_PREPARATION_FLAG_PARAMETERS, inputs,
         iree_vm_variant_span_empty(), iree_vm_module_span_empty(),
         &preparation_report, host_allocator_, &preparation_));
     auto status =
         private_catalog
-            ? loom_runtime_stage_set_compile_async(device_owner_, preparation_,
-                                                   &sources, Complete, this,
-                                                   host_allocator_)
+            ? loom_runtime_stage_set_compile_async(&device_owner_, preparation_,
+                                                   &sources, nullptr, Complete,
+                                                   this, host_allocator_)
             : loom_runtime_stage_set_compile_catalog_async(
-                  jit_, preparation_, Layout, Complete, this, host_allocator_);
+                  &jit_, preparation_, Layout, Complete, this, host_allocator_);
     IREE_RETURN_IF_ERROR(status);
     // The final set owns native results independently of either source catalog.
     loom_runtime_jit_release(jit_);

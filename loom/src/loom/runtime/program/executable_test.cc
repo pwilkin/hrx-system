@@ -115,20 +115,22 @@ class ExecutableTest : public JitTest {
       for (size_t i = 0; i < 2; ++i) {
         if (direct) {
           iree_hal_buffer_ref_t scratch;
-          IREE_ASSERT_OK(loom_runtime_dispatch_issue(dispatches_[i], execution_,
-                                                     {1, &binding}, &scratch,
-                                                     &completion));
+          IREE_ASSERT_OK(loom_runtime_dispatch_issue(
+              dispatches_[i], execution_, iree_hal_semaphore_list_empty(),
+              {1, &binding}, &scratch, &completion));
         } else {
           IREE_ASSERT_OK(loom_runtime_execution_execute(
-              execution_, commands_[i], {1, &binding}, &completion));
+              execution_, iree_hal_semaphore_list_empty(), commands_[i],
+              {1, &binding}, &completion));
         }
       }
       const iree_hal_transfer_operation_t download = {
           .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
           .download = {buffer_, 0, output_.data(), sizeof(output_)},
       };
-      IREE_ASSERT_OK(loom_runtime_execution_feedback(execution_, 1, &download,
-                                                     &completion));
+      IREE_ASSERT_OK(loom_runtime_execution_feedback(
+          execution_, iree_hal_semaphore_list_empty(), 1, &download,
+          &completion));
       IREE_ASSERT_OK(
           loom_runtime_execution_feedback_wait(execution_, completion));
       for (size_t i = 0; i < output_.size(); ++i) {

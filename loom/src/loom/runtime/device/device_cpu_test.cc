@@ -138,8 +138,8 @@ TEST_P(CpuDeviceTest, GroupProgressRetiresIndependentElasticPools) {
                 .length = sizeof(work.output),
             },
     };
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(work.execution, 1, &download, &value));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        work.execution, iree_hal_semaphore_list_empty(), 1, &download, &value));
     iree_hal_buffer_release(work.buffer);
     work.buffer = nullptr;
   }

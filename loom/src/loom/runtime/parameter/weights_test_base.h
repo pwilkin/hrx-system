@@ -145,8 +145,9 @@ struct loom_runtime_test_weight_activation_t {
     const iree_hal_buffer_binding_t binding = {self->output, 0,
                                                sizeof(*self->readback)};
     if (iree_status_is_ok(status)) {
-      status = loom_runtime_execution_execute(self->execution, self->command,
-                                              {1, &binding}, &completion);
+      status = loom_runtime_execution_execute(
+          self->execution, iree_hal_semaphore_list_empty(), self->command,
+          {1, &binding}, &completion);
     }
     const iree_hal_transfer_operation_t download = {
         .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
@@ -158,8 +159,9 @@ struct loom_runtime_test_weight_activation_t {
             },
     };
     if (iree_status_is_ok(status)) {
-      status = loom_runtime_execution_feedback(self->execution, 1, &download,
-                                               &completion);
+      status = loom_runtime_execution_feedback(self->execution,
+                                               iree_hal_semaphore_list_empty(),
+                                               1, &download, &completion);
     }
     if (iree_status_is_ok(status)) {
       self->frontier = loom_runtime_execution_frontier(self->execution);
@@ -691,16 +693,17 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
     const iree_hal_buffer_binding_t binding = {output_buffer_, 0,
                                                sizeof(output_)};
     uint64_t completion = 0;
-    IREE_ASSERT_OK(loom_runtime_execution_execute(execution, commands_[index],
-                                                  {1, &binding}, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_execute(
+        execution, iree_hal_semaphore_list_empty(), commands_[index],
+        {1, &binding}, &completion));
     iree_hal_transfer_operation_t download = {
         .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
     };
     download.download.source_buffer = output_buffer_;
     download.download.target = output_.data();
     download.download.length = sizeof(output_);
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(execution, 1, &download, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        execution, iree_hal_semaphore_list_empty(), 1, &download, &completion));
     IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution, completion));
   }
 

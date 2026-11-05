@@ -100,7 +100,7 @@ uint16_t loom_runtime_dispatch_binding_count(
 
 iree_status_t loom_runtime_dispatch_issue(
     const loom_runtime_dispatch_t* dispatch,
-    loom_runtime_execution_t* execution,
+    loom_runtime_execution_t* execution, iree_hal_semaphore_list_t waits,
     iree_hal_buffer_binding_table_t bindings, iree_hal_buffer_ref_t* scratch,
     uint64_t* out_value) {
   for (uint16_t i = 0; i < dispatch->binding_count; ++i) {
@@ -109,7 +109,8 @@ iree_status_t loom_runtime_dispatch_issue(
         binding->buffer, binding->offset, binding->length);
   }
   return loom_runtime_execution_dispatch(
-      execution, dispatch->executable, dispatch->function, dispatch->config,
+      execution, waits, dispatch->executable, dispatch->function,
+      dispatch->config,
       (iree_hal_buffer_ref_list_t){dispatch->binding_count, scratch},
       out_value);
 }

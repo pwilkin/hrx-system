@@ -158,8 +158,8 @@ class TextStateTest : public ::testing::TestWithParam<uint32_t> {
             },
     };
     uint64_t completion = 0;
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(execution, 1, &download, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        execution, iree_hal_semaphore_list_empty(), 1, &download, &completion));
     IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution, completion));
     EXPECT_EQ(actual, expected);
   }

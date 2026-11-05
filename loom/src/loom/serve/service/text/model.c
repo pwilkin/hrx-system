@@ -344,7 +344,7 @@ static iree_status_t loom_serve_text_load_link(loom_serve_text_load_t* load) {
       model->shape_count, model->shapes, model->stage_count,
       model->stage_bindings, model->host_allocator, &model->control));
   model->stage_workspace_bytes =
-      loom_runtime_module_workspace_requirement(model->control.native_module)
+      loom_runtime_module_workspace_requirement(model->control.native_module, 0)
           .allocation_size;
   IREE_RETURN_IF_ERROR(loom_runtime_residency_prepare_working_set(
       model->residency, model->stage_workspace_bytes, 0, 0));
@@ -524,7 +524,7 @@ iree_status_t loom_serve_text_load_advance(loom_serve_text_load_t* load,
         load->event.stages_compiling = true;
         iree_slim_mutex_unlock(&load->event.mutex);
         status = loom_runtime_stage_set_compile_catalog_async(
-            model->jit, model->source.preparation, loom_serve_text_load_layout,
+            &model->jit, model->source.preparation, loom_serve_text_load_layout,
             loom_serve_text_load_compiled, load, load->host_allocator);
         submitted = iree_status_is_ok(status);
         if (!submitted) {
@@ -705,9 +705,10 @@ iree_status_t loom_serve_text_model_allocate(
       host_allocator, &load);
   if (iree_status_is_ok(status)) {
     loom_serve_text_load_wait_t wait = {.load = load};
-    status = loom_runtime_workspace_await(
-        loom_runtime_pool_workspace(pool), &notification,
-        loom_serve_text_load_wait_complete, &wait);
+    loom_runtime_workspace_t* workspace = loom_runtime_pool_workspace(pool);
+    status =
+        loom_runtime_workspace_await(1, &workspace, &notification,
+                                     loom_serve_text_load_wait_complete, &wait);
     status = iree_status_join(status, wait.status);
   }
   if (load) {
@@ -1074,7 +1075,8 @@ static iree_status_t loom_serve_text_submit_step(
   uint64_t completion = 0;
   if (iree_status_is_ok(status)) {
     status = loom_runtime_execution_feedback(
-        model->execution, IREE_ARRAYSIZE(downloads), downloads, &completion);
+        model->execution, iree_hal_semaphore_list_empty(),
+        IREE_ARRAYSIZE(downloads), downloads, &completion);
   }
   if (iree_status_is_ok(status)) {
     *out_frontier = loom_runtime_execution_frontier(model->execution);

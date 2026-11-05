@@ -442,8 +442,8 @@ TEST_F(NativeDecisionServiceTest, DeviceOutputEscapesBeforeServiceRetirement) {
               .length = sizeof(values_),
           },
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(consumer_, 1, &download, &value));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      consumer_, iree_hal_semaphore_list_empty(), 1, &download, &value));
   iree_hal_buffer_release(std::exchange(target_, nullptr));
   for (auto*& call : calls_) {
     loom_service_finite_call_close(std::exchange(call, nullptr));

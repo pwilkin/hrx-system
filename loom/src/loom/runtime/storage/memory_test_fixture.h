@@ -246,7 +246,7 @@ class MemoryTest : public ::testing::Test {
       const auto frontier = loom_runtime_execution_frontier(execution);
       for (size_t i = 0; i < IREE_ARRAYSIZE(frontier.semaphores); ++i) {
         iree_status_ignore(loom_runtime_virtual_pool_wait(
-            virtual_pool, frontier.semaphores[i], frontier.values[i]));
+            1, &virtual_pool, frontier.semaphores[i], frontier.values[i]));
       }
       AwaitVirtualPool();
     }
@@ -420,7 +420,7 @@ class MemoryTest : public ::testing::Test {
     if (virtual_pool && !virtual_workspace) {
       const auto frontier = loom_runtime_execution_frontier(execution);
       IREE_ASSERT_OK(loom_runtime_virtual_pool_wait(
-          virtual_pool, frontier.semaphores[0], completion));
+          1, &virtual_pool, frontier.semaphores[0], completion));
     } else {
       IREE_ASSERT_OK(loom_runtime_execution_wait(execution, completion));
     }

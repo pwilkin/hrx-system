@@ -258,10 +258,10 @@ class FiniteComponentTest : public ::testing::Test {
     IREE_ASSERT_OK(
         loom_service_finite_model_submit(model, &results_[ordinal], &ready));
     EXPECT_GT(ready.values[1], 0u);
+    auto* workspace = loom_runtime_pool_workspace(storage_owner_);
     for (size_t i = 0; i < IREE_ARRAYSIZE(ready.semaphores); ++i) {
       IREE_ASSERT_OK(loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(storage_owner_), ready.semaphores[i],
-          ready.values[i]));
+          1, &workspace, ready.semaphores[i], ready.values[i]));
     }
     IREE_ASSERT_OK(loom_service_finite_model_collect_batch(model, 1, request,
                                                            results_[ordinal]));
@@ -386,10 +386,10 @@ class FiniteComponentTest : public ::testing::Test {
         loom_service_finite_model_submit(model, &results_[ordinal], &frontier));
     EXPECT_EQ(frontier.values[1], 0u);
     // Only this outer application thread joins device completion.
+    auto* workspace = loom_runtime_pool_workspace(storage_owner_);
     for (size_t i = 0; i < IREE_ARRAYSIZE(frontier.semaphores); ++i) {
       IREE_ASSERT_OK(loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(storage_owner_), frontier.semaphores[i],
-          frontier.values[i]));
+          1, &workspace, frontier.semaphores[i], frontier.values[i]));
     }
     loom_service_finite_model_complete(model);
   }
@@ -465,10 +465,10 @@ class FiniteComponentTest : public ::testing::Test {
       IREE_ASSERT_OK(Retire(component_));
       loom_service_finite_component_free(std::exchange(component_, nullptr));
     } else {
+      auto* workspace = loom_runtime_pool_workspace(storage_owner_);
       for (size_t i = 0; i < IREE_ARRAYSIZE(ready.semaphores); ++i) {
         IREE_ASSERT_OK(loom_runtime_workspace_wait(
-            loom_runtime_pool_workspace(storage_owner_), ready.semaphores[i],
-            ready.values[i]));
+            1, &workspace, ready.semaphores[i], ready.values[i]));
       }
       loom_service_finite_model_complete(model);
     }

@@ -40,9 +40,10 @@ uint16_t loom_runtime_dispatch_binding_count(
 // Submits on the model's ordinary work timeline. bindings has exactly the
 // prepared arity; scratch has that many entries and is private to the current
 // invocation. HAL captures scratch and retains resources before returning.
+// Imported waits follow execution_dispatch's submission capture contract.
 iree_status_t loom_runtime_dispatch_issue(
     const loom_runtime_dispatch_t* dispatch,
-    loom_runtime_execution_t* execution,
+    loom_runtime_execution_t* execution, iree_hal_semaphore_list_t waits,
     iree_hal_buffer_binding_table_t bindings, iree_hal_buffer_ref_t* scratch,
     uint64_t* out_value);
 

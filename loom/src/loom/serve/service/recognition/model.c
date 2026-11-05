@@ -357,7 +357,7 @@ static iree_status_t loom_serve_recognition_prepare(
   if (iree_status_is_ok(status)) {
     status = loom_runtime_preparation_allocate_cached(
         model->jit, model->control.environment, &options->sources,
-        options->sources.prepare, IREE_SV("prepare"),
+        options->sources.prepare, IREE_SV("prepare"), 1,
         LOOM_RUNTIME_PREPARATION_FLAG_PARAMETERS,
         iree_vm_variant_span_from_array(arguments),
         iree_vm_variant_span_from_array(results),
@@ -572,10 +572,12 @@ static iree_status_t loom_serve_recognition_create_control(
         tags.data + i * sizeof(int64_t),
         (uint64_t)loom_runtime_preparation_stage(model->preparation, i)->tag);
   }
+  const loom_runtime_module_feedback_t feedback = {0, model->output};
   const loom_runtime_module_options_t options = {
       .binding_capacity = 5,
+      .executions = {1, &model->execution},
       .stages = {model->stages.count, stages},
-      .feedback = {1, &model->output},
+      .feedback = {1, &feedback},
   };
   iree_vm_module_t* native_modules[4] = {0};
   iree_vm_buffer_t* read_only_tags = NULL;
@@ -585,9 +587,8 @@ static iree_status_t loom_serve_recognition_create_control(
   if (iree_status_is_ok(status)) {
     iree_vm_buffer_release(model->control.tags);
     model->control.tags = read_only_tags;
-    status =
-        loom_runtime_module_create(&model->control.hal_types, model->execution,
-                                   options, host_allocator, &native_modules[0]);
+    status = loom_runtime_module_create(&model->control.hal_types, options,
+                                        host_allocator, &native_modules[0]);
   }
   iree_allocator_free(host_allocator, stages);
   if (iree_status_is_ok(status)) {
@@ -596,7 +597,7 @@ static iree_status_t loom_serve_recognition_create_control(
                               &private_bytes) ||
         !iree_checked_add_u64(
             private_bytes,
-            loom_runtime_module_workspace_requirement(native_modules[0])
+            loom_runtime_module_workspace_requirement(native_modules[0], 0)
                 .allocation_size,
             &private_bytes)) {
       status =
@@ -1031,7 +1032,7 @@ iree_status_t loom_serve_recognition_load_advance(
         load->event.pending = true;
         iree_slim_mutex_unlock(&load->event.mutex);
         status = loom_runtime_stage_set_compile_catalog_async(
-            model->jit, model->preparation, NULL,
+            &model->jit, model->preparation, NULL,
             loom_serve_recognition_load_compiled, load, load->host_allocator);
         submitted = iree_status_is_ok(status);
         break;

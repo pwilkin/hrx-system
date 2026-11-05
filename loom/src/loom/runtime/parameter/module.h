@@ -16,21 +16,24 @@ extern "C" {
 #endif
 
 // Creates the source-facing "parameters" read capability:
-//   gather(i32 source, buffer key, hal.fence wait, hal.buffer descriptors,
-//          i64 descriptor_offset, i64 count, hal.buffer target) -> hal.fence
+//   gather(i32 source, buffer key, hal.semaphore wait, i64 wait_value,
+//          hal.buffer descriptors, i64 descriptor_offset, i64 count,
+//          hal.buffer target) -> (hal.semaphore, i64)
 //
 // Source ordinals identify the cold/request catalog, not resident bindings.
 // Each 24-byte descriptor is three little-endian u64 byte values: parameter
 // offset, target offset, and length. Target spans must not overlap. The wait
-// fence covers descriptor production, destination availability, and previous
-// consumers; NULL means no prerequisite. Returned readiness orders consumers
-// and descriptor reuse. No execution frontier is captured or changed here.
+// timepoint covers descriptor production, destination availability, and
+// previous consumers; NULL with value zero means no prerequisite. Returned
+// readiness orders consumers and descriptor reuse. An empty gather retains and
+// returns the exact input timepoint without allocating or submitting queue
+// work. No execution frontier is captured or changed here.
 //
 // Retains the exact queue, its device, and the source catalog. Accepted reads
 // independently retain their provider and buffers through actual retirement,
-// even after rebinding or module removal. A failed or discarded fence does not
-// release those obligations. The hosting device group and registered reference
-// types outlive every accepted operation and escaped reference.
+// even after rebinding or module removal. Failed or discarded readiness does
+// not release those obligations. The hosting device group and registered
+// reference types outlive every accepted operation and escaped reference.
 iree_status_t loom_runtime_parameters_module_create(
     iree_vm_environment_t* environment, const iree_hal_vm_types_t* types,
     iree_hal_queue_t* queue, loom_runtime_parameter_sources_t* sources,

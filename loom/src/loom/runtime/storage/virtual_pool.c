@@ -1006,12 +1006,89 @@ bool loom_runtime_virtual_pool_is_reclaiming(
   return pending;
 }
 
+typedef struct loom_runtime_virtual_pool_observers_t {
+  // Previous acquisition wake restored after the exclusive outer wait.
+  loom_runtime_wake_callback_t acquisition;
+  // Previous physical-capacity wake, independent of acquisition progress.
+  loom_runtime_wake_callback_t capacity;
+} loom_runtime_virtual_pool_observers_t;
+
+typedef struct loom_runtime_virtual_pool_progress_t {
+  // Borrowed complete cold-progress domain; repeated pools are permitted.
+  loom_runtime_virtual_pool_t* const* pools;
+  // Number of borrowed physical owners.
+  iree_host_size_t count;
+  // Saved observers, indexed in installation order.
+  loom_runtime_virtual_pool_observers_t* observers;
+  // Inline storage for ordinary single-node deployments.
+  loom_runtime_virtual_pool_observers_t inline_observers[8];
+} loom_runtime_virtual_pool_progress_t;
+
+static void loom_runtime_virtual_pool_notify_waiter(void* user_data) {
+  iree_notification_post(user_data, IREE_ALL_WAITERS);
+}
+
+static iree_status_t loom_runtime_virtual_pool_progress_initialize(
+    iree_host_size_t count, loom_runtime_virtual_pool_t* const* pools,
+    iree_notification_t* notification,
+    loom_runtime_virtual_pool_progress_t* progress) {
+  *progress = (loom_runtime_virtual_pool_progress_t){
+      .pools = pools, .count = count, .observers = progress->inline_observers};
+  if (count > IREE_ARRAYSIZE(progress->inline_observers)) {
+    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
+        pools[0]->host_allocator, count, sizeof(*progress->observers),
+        (void**)&progress->observers));
+  }
+  for (iree_host_size_t i = 0; i < count; ++i) {
+    loom_runtime_virtual_pool_t* pool = pools[i];
+    iree_slim_mutex_lock(&pool->mutex);
+    progress->observers[i].acquisition = pool->observer;
+    pool->observer = (loom_runtime_wake_callback_t){
+        loom_runtime_virtual_pool_notify_waiter, notification};
+    iree_slim_mutex_unlock(&pool->mutex);
+    progress->observers[i].capacity = loom_runtime_memory_pool_set_observer(
+        pool->memory_pool, loom_runtime_virtual_pool_notify_waiter,
+        notification);
+  }
+  return iree_ok_status();
+}
+
+static void loom_runtime_virtual_pool_progress_deinitialize(
+    loom_runtime_virtual_pool_progress_t* progress) {
+  // Reverse restoration also preserves observers when two executions share
+  // the same physical workspace or capacity domain.
+  for (iree_host_size_t i = progress->count; i > 0; --i) {
+    loom_runtime_virtual_pool_t* pool = progress->pools[i - 1];
+    const loom_runtime_virtual_pool_observers_t previous =
+        progress->observers[i - 1];
+    loom_runtime_memory_pool_set_observer(
+        pool->memory_pool, previous.capacity.wake, previous.capacity.user_data);
+    loom_runtime_virtual_pool_set_observer(pool, previous.acquisition);
+  }
+  if (progress->observers != progress->inline_observers) {
+    iree_allocator_free(progress->pools[0]->host_allocator,
+                        progress->observers);
+  }
+}
+
+static iree_status_t loom_runtime_virtual_pool_progress_advance(
+    const loom_runtime_virtual_pool_progress_t* progress) {
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t i = 0; i < progress->count; ++i) {
+    status = iree_status_join(
+        status, loom_runtime_virtual_pool_advance(progress->pools[i]));
+  }
+  return status;
+}
+
 typedef struct loom_runtime_virtual_pool_wait_t {
-  // Borrowed physical owner, also providing this wait's notification.
-  loom_runtime_virtual_pool_t* pool;
-  // Owned terminal semaphore result, protected by the pool mutex.
+  // Joins the callback's final access to its stack-owned result.
+  iree_slim_mutex_t mutex;
+  // Woken by both the target timeline and every participating physical owner.
+  iree_notification_t notification;
+  // Owned terminal semaphore result, protected by mutex.
   iree_status_t status;
-  // Callback completion and its final access join under the pool mutex.
+  // Callback completion and its final notification access join under mutex.
   bool complete;
 } loom_runtime_virtual_pool_wait_t;
 
@@ -1019,81 +1096,75 @@ static void loom_runtime_virtual_pool_wait_complete(
     void* user_data, iree_async_semaphore_timepoint_t* timepoint,
     iree_status_t status) {
   loom_runtime_virtual_pool_wait_t* wait = user_data;
-  loom_runtime_virtual_pool_t* pool = wait->pool;
-  iree_slim_mutex_lock(&pool->mutex);
+  iree_slim_mutex_lock(&wait->mutex);
   wait->status = status;
   wait->complete = true;
-  loom_runtime_virtual_pool_wake_locked(pool);
-  iree_slim_mutex_unlock(&pool->mutex);
+  iree_notification_post(&wait->notification, IREE_ALL_WAITERS);
+  iree_slim_mutex_unlock(&wait->mutex);
 }
 
-iree_status_t loom_runtime_virtual_pool_wait(loom_runtime_virtual_pool_t* pool,
-                                             iree_hal_semaphore_t* semaphore,
-                                             uint64_t value) {
-  loom_runtime_virtual_pool_wait_t wait = {.pool = pool};
+iree_status_t loom_runtime_virtual_pool_wait(
+    iree_host_size_t pool_count, loom_runtime_virtual_pool_t* const* pools,
+    iree_hal_semaphore_t* semaphore, uint64_t value) {
+  loom_runtime_virtual_pool_wait_t wait = {0};
+  iree_slim_mutex_initialize(&wait.mutex);
+  iree_notification_initialize(&wait.notification);
+  loom_runtime_virtual_pool_progress_t progress;
+  iree_status_t status = loom_runtime_virtual_pool_progress_initialize(
+      pool_count, pools, &wait.notification, &progress);
+  if (!iree_status_is_ok(status)) {
+    iree_notification_deinitialize(&wait.notification);
+    iree_slim_mutex_deinitialize(&wait.mutex);
+    return status;
+  }
   iree_async_semaphore_timepoint_t timepoint = {
       .callback = loom_runtime_virtual_pool_wait_complete, .user_data = &wait};
-  IREE_RETURN_IF_ERROR(iree_async_semaphore_acquire_timepoint(
-      (iree_async_semaphore_t*)semaphore, value, &timepoint));
-  // The exclusive outer owner waits on both execution and shared capacity
-  // notifications. Joining all memory work would stall an independent warm
-  // execution behind a cold acquisition whose native return is still pending.
-  const loom_runtime_wake_callback_t previous =
-      loom_runtime_memory_pool_set_observer(
-          pool->memory_pool, loom_runtime_virtual_pool_wake, pool);
-  iree_status_t status = iree_ok_status();
-  bool complete = false;
+  status = iree_async_semaphore_acquire_timepoint(
+      (iree_async_semaphore_t*)semaphore, value, &timepoint);
+  bool complete = !iree_status_is_ok(status);
   bool cancelled = false;
   while (!complete) {
     const iree_wait_token_t token =
-        iree_notification_prepare_wait(&pool->notification);
+        iree_notification_prepare_wait(&wait.notification);
     if (iree_status_is_ok(status)) {
-      status = loom_runtime_virtual_pool_advance(pool);
+      status = loom_runtime_virtual_pool_progress_advance(&progress);
     }
     if (!iree_status_is_ok(status) && !cancelled) {
       cancelled = true;
       complete = iree_async_semaphore_cancel_timepoint(
           (iree_async_semaphore_t*)semaphore, &timepoint);
     }
-    iree_slim_mutex_lock(&pool->mutex);
+    iree_slim_mutex_lock(&wait.mutex);
     complete |= wait.complete;
-    iree_slim_mutex_unlock(&pool->mutex);
+    iree_slim_mutex_unlock(&wait.mutex);
     if (complete) {
-      iree_notification_cancel_wait(&pool->notification);
+      iree_notification_cancel_wait(&wait.notification);
     } else {
-      iree_notification_commit_wait(&pool->notification, token,
+      iree_notification_commit_wait(&wait.notification, token,
                                     IREE_DURATION_ZERO,
                                     IREE_TIME_INFINITE_FUTURE);
     }
   }
-  loom_runtime_memory_pool_set_observer(pool->memory_pool, previous.wake,
-                                        previous.user_data);
+  loom_runtime_virtual_pool_progress_deinitialize(&progress);
+  iree_notification_deinitialize(&wait.notification);
+  iree_slim_mutex_deinitialize(&wait.mutex);
   return iree_status_join(status, wait.status);
 }
 
-static void loom_runtime_virtual_pool_notify_waiter(void* user_data) {
-  iree_notification_post(user_data, IREE_ALL_WAITERS);
-}
-
-iree_status_t loom_runtime_virtual_pool_await(loom_runtime_virtual_pool_t* pool,
-                                              iree_notification_t* notification,
-                                              iree_condition_fn_t condition,
-                                              void* user_data) {
-  iree_slim_mutex_lock(&pool->mutex);
-  const loom_runtime_wake_callback_t previous = pool->observer;
-  pool->observer = (loom_runtime_wake_callback_t){
-      loom_runtime_virtual_pool_notify_waiter, notification};
-  iree_slim_mutex_unlock(&pool->mutex);
-  const loom_runtime_wake_callback_t previous_capacity =
-      loom_runtime_memory_pool_set_observer(
-          pool->memory_pool, loom_runtime_virtual_pool_notify_waiter,
-          notification);
+iree_status_t loom_runtime_virtual_pool_await(
+    iree_host_size_t pool_count, loom_runtime_virtual_pool_t* const* pools,
+    iree_notification_t* notification, iree_condition_fn_t condition,
+    void* user_data) {
+  loom_runtime_virtual_pool_progress_t progress;
+  IREE_RETURN_IF_ERROR(loom_runtime_virtual_pool_progress_initialize(
+      pool_count, pools, notification, &progress));
   iree_status_t status = iree_ok_status();
   bool complete = false;
   while (!complete) {
     const iree_wait_token_t token =
         iree_notification_prepare_wait(notification);
-    status = iree_status_join(status, loom_runtime_virtual_pool_advance(pool));
+    status = iree_status_join(
+        status, loom_runtime_virtual_pool_progress_advance(&progress));
     complete = condition(user_data);
     if (complete) {
       iree_notification_cancel_wait(notification);
@@ -1102,9 +1173,7 @@ iree_status_t loom_runtime_virtual_pool_await(loom_runtime_virtual_pool_t* pool,
                                     IREE_TIME_INFINITE_FUTURE);
     }
   }
-  loom_runtime_virtual_pool_set_observer(pool, previous);
-  loom_runtime_memory_pool_set_observer(
-      pool->memory_pool, previous_capacity.wake, previous_capacity.user_data);
+  loom_runtime_virtual_pool_progress_deinitialize(&progress);
   return status;
 }
 

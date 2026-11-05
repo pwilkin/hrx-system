@@ -137,9 +137,6 @@ class ParameterModuleTest : public loom_runtime::testing::ParameterTest {
         queue_, {1, &gates_[domain], &one}, {1, &produced_[domain], &one},
         record.data(), 0, descriptors_[domain], 0, record.size(), nullptr,
         IREE_HAL_UPDATE_FLAG_NONE));
-    iree_hal_fence_t* produced = nullptr;
-    IREE_ASSERT_OK(
-        iree_hal_fence_create_at(produced_[domain], 1, allocator_, &produced));
     iree_vm_buffer_t* key = nullptr;
     IREE_ASSERT_OK(iree_vm_buffer_clone(
         IREE_VM_BUFFER_ACCESS_FLAG_READ,
@@ -147,36 +144,43 @@ class ParameterModuleTest : public loom_runtime::testing::ParameterTest {
     iree_vm_variant_t arguments[] = {
         iree_vm_variant_from_i32(0),
         iree_vm_buffer_variant_from_ptr_move(&vm_types_, &key),
-        iree_hal_fence_variant_from_ptr_move(&types_, &produced),
+        iree_hal_semaphore_variant_from_ptr_borrowed(&types_,
+                                                     produced_[domain]),
+        iree_vm_variant_from_i64(1),
         iree_hal_buffer_variant_from_ptr_borrowed(&types_,
                                                   descriptors_[domain]),
         iree_vm_variant_from_i64(0),
         iree_vm_variant_from_i64(1),
         iree_hal_buffer_variant_from_ptr_borrowed(&types_, targets_[domain])};
-    iree_vm_variant_t result = {};
+    iree_vm_variant_t results[2] = {};
     auto status =
         iree_vm_invoke(loom_runtime_program_invocation(program_), gather_,
                        iree_vm_variant_span_from_array(arguments),
-                       iree_vm_variant_span_from_ptr(&result, 1));
+                       iree_vm_variant_span_from_array(results));
     iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
-    iree_hal_fence_t* ready = nullptr;
+    iree_hal_semaphore_t* ready = nullptr;
     if (iree_status_is_ok(status)) {
-      status =
-          iree_hal_fence_ptr_from_variant_borrowed(&types_, result, &ready);
+      status = iree_hal_semaphore_ptr_from_variant_borrowed(&types_, results[0],
+                                                            &ready);
     }
+    int64_t ready_value = 0;
+    if (iree_status_is_ok(status)) {
+      status = iree_vm_i64_from_variant(results[1], &ready_value);
+    }
+    uint64_t wait_value = static_cast<uint64_t>(ready_value);
     if (iree_status_is_ok(status)) {
       status = iree_hal_queue_download(
-          queue_, iree_hal_fence_semaphore_list(ready),
-          {1, &consumed_[domain], &one}, targets_[domain], 0,
-          output_[domain].data(), output_[domain].size(), nullptr);
+          queue_, {1, &ready, &wait_value}, {1, &consumed_[domain], &one},
+          targets_[domain], 0, output_[domain].data(), output_[domain].size(),
+          nullptr);
     }
-    iree_vm_variant_reset(&result);
+    iree_vm_variant_span_reset(iree_vm_variant_span_from_array(results));
     IREE_ASSERT_OK(status);
     iree_hal_buffer_release(std::exchange(descriptors_[domain], nullptr));
     iree_hal_buffer_release(std::exchange(targets_[domain], nullptr));
   }
 
-  // Canonical type owner outliving the module and escaped fence references.
+  // Canonical type owner outliving the module and escaped semaphore references.
   iree_vm_environment_t* environment_ = nullptr;
   // Device reference identities supplied to the native capability.
   iree_hal_vm_types_t types_ = {};
@@ -236,39 +240,90 @@ TEST_P(ParameterModuleTest, RejectsInvalidSourcesAndCountsBeforeSubmission) {
   ASSERT_NO_FATAL_FAILURE(SelectSource(0));
   iree_vm_buffer_t* key = nullptr;
   IREE_ASSERT_OK(iree_vm_buffer_create(0, 1, allocator_, &key));
-  const auto invoke = [&](int32_t source, int64_t count) {
+  const auto invoke = [&](int32_t source, int64_t count,
+                          int64_t wait_value = 0) {
     iree_vm_variant_t arguments[] = {
         iree_vm_variant_from_i32(source),
         iree_vm_buffer_variant_from_ptr_borrowed(&vm_types_, key),
-        iree_hal_fence_variant_from_ptr_borrowed(&types_, nullptr),
+        iree_hal_semaphore_variant_from_ptr_borrowed(&types_, nullptr),
+        iree_vm_variant_from_i64(wait_value),
         iree_hal_buffer_variant_from_ptr_borrowed(&types_, descriptors_[0]),
         iree_vm_variant_from_i64(0),
         iree_vm_variant_from_i64(count),
         iree_hal_buffer_variant_from_ptr_borrowed(&types_, targets_[0])};
-    iree_vm_variant_t result = {};
+    iree_vm_variant_t results[2] = {};
     auto status =
         iree_vm_invoke(loom_runtime_program_invocation(program_), gather_,
                        iree_vm_variant_span_from_array(arguments),
-                       iree_vm_variant_span_from_ptr(&result, 1));
+                       iree_vm_variant_span_from_array(results));
     iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
     if (iree_status_is_ok(status)) {
-      iree_hal_fence_t* ready = nullptr;
-      status =
-          iree_hal_fence_ptr_from_variant_borrowed(&types_, result, &ready);
+      iree_hal_semaphore_t* ready = nullptr;
+      status = iree_hal_semaphore_ptr_from_variant_borrowed(&types_, results[0],
+                                                            &ready);
       if (iree_status_is_ok(status)) {
-        status = iree_hal_fence_query(ready);
+        EXPECT_EQ(ready, nullptr);
+        int64_t ready_value = -1;
+        status = iree_vm_i64_from_variant(results[1], &ready_value);
+        EXPECT_EQ(ready_value, 0);
       }
     }
-    iree_vm_variant_reset(&result);
+    iree_vm_variant_span_reset(iree_vm_variant_span_from_array(results));
     return status;
   };
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE, invoke(-1, 0));
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE, invoke(1, 0));
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE, invoke(0, -1));
   IREE_EXPECT_OK(invoke(0, 0));
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT, invoke(0, 0, 1));
   loom_runtime_parameters_module_bind_sources(module_, nullptr);
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE, invoke(0, 0));
   iree_vm_buffer_release(key);
+}
+
+TEST_P(ParameterModuleTest, EmptyGatherExportsTheExactInputTimepoint) {
+  ASSERT_NO_FATAL_FAILURE(SelectSource(0));
+  iree_vm_buffer_t* key = nullptr;
+  IREE_ASSERT_OK(iree_vm_buffer_create(0, 1, allocator_, &key));
+  iree_vm_variant_t arguments[] = {
+      iree_vm_variant_from_i32(0),
+      iree_vm_buffer_variant_from_ptr_move(&vm_types_, &key),
+      iree_hal_semaphore_variant_from_ptr_borrowed(&types_, produced_[0]),
+      iree_vm_variant_from_i64(7),
+      iree_hal_buffer_variant_from_ptr_borrowed(&types_, descriptors_[0]),
+      iree_vm_variant_from_i64(24),
+      iree_vm_variant_from_i64(0),
+      iree_hal_buffer_variant_from_ptr_borrowed(&types_, targets_[0]),
+  };
+  iree_vm_variant_t results[2] = {};
+  auto status =
+      iree_vm_invoke(loom_runtime_program_invocation(program_), gather_,
+                     iree_vm_variant_span_from_array(arguments),
+                     iree_vm_variant_span_from_array(results));
+  iree_vm_variant_span_reset(iree_vm_variant_span_from_array(arguments));
+  IREE_ASSERT_OK(status);
+  iree_hal_semaphore_t* ready = nullptr;
+  IREE_ASSERT_OK(iree_hal_semaphore_ptr_from_variant_borrowed(
+      &types_, results[0], &ready));
+  int64_t ready_value = 0;
+  IREE_ASSERT_OK(iree_vm_i64_from_variant(results[1], &ready_value));
+  EXPECT_EQ(ready, produced_[0]);
+  EXPECT_EQ(ready_value, 7);
+
+  // The exported VM reference survives both native owner and module release.
+  DropModule();
+  iree_hal_semaphore_release(std::exchange(produced_[0], nullptr));
+  iree_hal_buffer_release(std::exchange(descriptors_[0], nullptr));
+  iree_hal_buffer_release(std::exchange(targets_[0], nullptr));
+  iree_hal_buffer_release(std::exchange(descriptors_[1], nullptr));
+  iree_hal_buffer_release(std::exchange(targets_[1], nullptr));
+  EXPECT_TRUE(loom_runtime_retirement_is_idle(&retirement_));
+  uint64_t observed = 0;
+  IREE_ASSERT_OK(iree_hal_semaphore_query(ready, &observed));
+  EXPECT_EQ(observed, 0u);
+  IREE_ASSERT_OK(iree_hal_semaphore_signal(ready, 7, nullptr));
+  IREE_ASSERT_OK(iree_hal_semaphore_wait(ready, 7, iree_infinite_timeout(), 0));
+  iree_vm_variant_span_reset(iree_vm_variant_span_from_array(results));
 }
 
 INSTANTIATE_TEST_SUITE_P(Workers, ParameterModuleTest,

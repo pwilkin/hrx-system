@@ -399,8 +399,9 @@ class ContinuingSource {
                                             {buffers[1], 0, 16}};
     iree_hal_buffer_ref_t scratch[3] = {};
     if (iree_status_is_ok(status)) {
-      status = loom_runtime_dispatch_issue(dispatch_, execution, {3, bindings},
-                                           scratch, &value);
+      status = loom_runtime_dispatch_issue(dispatch_, execution,
+                                           iree_hal_semaphore_list_empty(),
+                                           {3, bindings}, scratch, &value);
     }
     if (iree_status_is_ok(status)) {
       status = loom_runtime_execution_dealloca(execution, buffers[0], &value);

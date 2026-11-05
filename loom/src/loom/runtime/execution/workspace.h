@@ -169,25 +169,32 @@ iree_status_t loom_runtime_workspace_advance(
 bool loom_runtime_workspace_is_pending(loom_runtime_workspace_t* workspace);
 
 // Outer blocking caller equivalent to scheduler progress plus a timeline wait.
-// The caller owns physical residency and excludes other owner operations.
-iree_status_t loom_runtime_workspace_wait(loom_runtime_workspace_t* workspace,
-                                          iree_hal_semaphore_t* semaphore,
-                                          uint64_t value);
+// The span includes every workspace needed by the target dependency graph.
+// Repeated workspaces are permitted. The caller owns physical residency and
+// excludes other owner operations; previous wake observers are restored.
+iree_status_t loom_runtime_workspace_wait(
+    iree_host_size_t workspace_count,
+    loom_runtime_workspace_t* const* workspaces,
+    iree_hal_semaphore_t* semaphore, uint64_t value);
 
 // Joins an outer owner's completion condition while progressing accepted cold
 // allocations and returns. Both the condition's producer and allocator progress
-// wake notification. The caller excludes other physical-owner operations; task
-// schedulers instead advance the shared owner without blocking.
-iree_status_t loom_runtime_workspace_await(loom_runtime_workspace_t* workspace,
-                                           iree_notification_t* notification,
-                                           iree_condition_fn_t condition,
-                                           void* user_data);
+// wake notification. The span includes every participating owner, with repeated
+// workspaces permitted. The caller excludes other physical-owner operations;
+// task schedulers instead advance the shared owner without blocking.
+iree_status_t loom_runtime_workspace_await(
+    iree_host_size_t workspace_count,
+    loom_runtime_workspace_t* const* workspaces,
+    iree_notification_t* notification, iree_condition_fn_t condition,
+    void* user_data);
 
 // Joins final consumer ownership while advancing cold backing even after a
 // failed readiness timeline. Only an exclusive outer physical owner may wait;
 // shared task workers instead keep advancing until retirement is idle.
 iree_status_t loom_runtime_workspace_await_retirement(
-    loom_runtime_workspace_t* workspace, loom_runtime_retirement_t* retirement);
+    iree_host_size_t workspace_count,
+    loom_runtime_workspace_t* const* workspaces,
+    loom_runtime_retirement_t* retirement);
 
 #ifdef __cplusplus
 }  // extern "C"

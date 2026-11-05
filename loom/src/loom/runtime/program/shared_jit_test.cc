@@ -252,11 +252,13 @@ class SharedJitTest : public loom_runtime::testing::JitTest {
     if (iree_status_is_ok(status)) {
       if (direct) {
         iree_hal_buffer_ref_t scratch;
-        status = loom_runtime_dispatch_issue(direct, execution, {1, &binding},
-                                             &scratch, &completion);
+        status = loom_runtime_dispatch_issue(
+            direct, execution, iree_hal_semaphore_list_empty(), {1, &binding},
+            &scratch, &completion);
       } else {
-        status = loom_runtime_execution_execute(execution, command,
-                                                {1, &binding}, &completion);
+        status = loom_runtime_execution_execute(
+            execution, iree_hal_semaphore_list_empty(), command, {1, &binding},
+            &completion);
       }
     }
     iree_hal_command_buffer_release(command);
@@ -265,8 +267,9 @@ class SharedJitTest : public loom_runtime::testing::JitTest {
         .download = {*buffer, 0, output_.data(), sizeof(output_)},
     };
     if (iree_status_is_ok(status)) {
-      status =
-          loom_runtime_execution_feedback(execution, 1, &download, &completion);
+      status = loom_runtime_execution_feedback(execution,
+                                               iree_hal_semaphore_list_empty(),
+                                               1, &download, &completion);
     }
     if (iree_status_is_ok(status)) {
       status = loom_runtime_execution_feedback_wait(execution, completion);

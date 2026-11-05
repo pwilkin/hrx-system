@@ -112,8 +112,8 @@ class PoolBindingTest : public SourceEmbeddingServiceTest {
     IREE_ASSERT_OK(loom_service_finite_model_submit(model, &result_, &ready));
     auto* workspace = loom_runtime_pool_workspace(pool);
     for (size_t i = 0; i < IREE_ARRAYSIZE(ready.semaphores); ++i) {
-      IREE_ASSERT_OK(loom_runtime_workspace_wait(workspace, ready.semaphores[i],
-                                                 ready.values[i]));
+      IREE_ASSERT_OK(loom_runtime_workspace_wait(
+          1, &workspace, ready.semaphores[i], ready.values[i]));
     }
     loom_service_finite_model_complete(model);
     EXPECT_EQ(loom_service_finite_result_output_length(result_), 1024u);
@@ -123,8 +123,8 @@ class PoolBindingTest : public SourceEmbeddingServiceTest {
     iree_status_t status = iree_ok_status();
     for (size_t i = 0; i < IREE_ARRAYSIZE(ready.semaphores); ++i) {
       status = iree_status_join(
-          status, loom_runtime_workspace_wait(workspace, ready.semaphores[i],
-                                              ready.values[i]));
+          status, loom_runtime_workspace_wait(
+                      1, &workspace, ready.semaphores[i], ready.values[i]));
     }
     if (iree_status_is_ok(status)) {
       const auto row = loom_service_finite_snapshot_row(snapshot, 0, 0);

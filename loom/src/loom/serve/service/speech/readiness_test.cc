@@ -379,8 +379,9 @@ class SpeechReadinessTest : public ::testing::Test {
                                                uploads.data(), &value);
     }
     if (iree_status_is_ok(status)) {
-      status = loom_runtime_execution_feedback(execution_, batch_.size(),
-                                               downloads.data(), &value);
+      status = loom_runtime_execution_feedback(
+          execution_, iree_hal_semaphore_list_empty(), batch_.size(),
+          downloads.data(), &value);
     }
     if (iree_status_is_ok(status)) {
       auto frontier = loom_runtime_execution_frontier(execution_);
@@ -801,11 +802,11 @@ TEST_F(SpeechReadinessTest, ClosedNativeHandleRetainsAcceptedEncodingStorage) {
   // CPU-device transfers share this executor too. Retire those borrowers on
   // the outer test thread before holding the workers for the encoding cut.
   const auto frontier = loom_runtime_execution_frontier(execution_);
+  auto* workspace =
+      loom_runtime_pool_workspace(loom_runtime_device_group_pool_at(group_, 0));
   for (size_t i = 0; i < 2; ++i) {
     IREE_ASSERT_OK(loom_runtime_workspace_wait(
-        loom_runtime_pool_workspace(
-            loom_runtime_device_group_pool_at(group_, 0)),
-        frontier.semaphores[i], frontier.values[i]));
+        1, &workspace, frontier.semaphores[i], frontier.values[i]));
   }
   for (int i = 0; i < SpeechWorkerCount(); ++i) {
     workers.push_back(std::make_unique<loom_runtime::testing::WorkerGate>(

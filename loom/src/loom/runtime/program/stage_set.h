@@ -43,26 +43,33 @@ typedef void (*loom_runtime_stage_set_layout_fn_t)(
 
 // Snapshots providers and concurrently compiles declarations on shared workers,
 // enforcing their workspace limits before publishing successful completion.
-// Reuses identical kernel requests within the new catalog. Success owes one
-// completion, possibly before return; rejection owes none. Device, preparation,
-// sources and user_data remain borrowed through completion. No model/queue
-// state or parameter residency is mutated and no caller/worker waits.
+// devices is the ordered deployment with preparation_execution_count members.
+// Devices share one admitted source catalog and retain independent profiles,
+// loaded code, and report accumulators. Success owes one
+// completion, possibly before return; rejection owes none. Devices,
+// preparation, sources, sanitizer, and user_data remain borrowed through
+// completion. No model/queue state or parameter residency is mutated and no
+// caller/worker waits.
 iree_status_t loom_runtime_stage_set_compile_async(
-    loom_runtime_device_t* device,
+    loom_runtime_device_t* const* devices,
     const loom_runtime_preparation_t* preparation,
     const loom_runtime_sources_t* sources,
+    const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_stage_set_completion_fn_t completion, void* user_data,
     iree_allocator_t host_allocator);
 
-// Compiles all declarations concurrently against an already indexed catalog.
-// Retains jit through the final join, including after submission or stage
-// failure. Results remain in declaration order and include successfully built
-// stages on failure. The returned set snapshots the catalog's cumulative report
-// at completion; independent catalog jobs may still be running. Preparation and
-// user_data remain borrowed through completion. Success owes exactly
-// one completion, possibly before return; rejection owes none.
+// Compiles all declarations against their indexed execution catalogs. jits has
+// preparation_execution_count members in the same immutable deployment order;
+// its pointer array is borrowed only during the call.
+// Retains every catalog through the final join, including after submission or
+// stage failure. Results remain in declaration order and include successfully
+// built stages on failure. The returned set merges each catalog's cumulative
+// report at completion; independent catalog jobs may still be running.
+// Preparation and user_data remain borrowed through completion. Success owes
+// exactly one completion, possibly before return; rejection owes none.
 iree_status_t loom_runtime_stage_set_compile_catalog_async(
-    loom_runtime_jit_t* jit, const loom_runtime_preparation_t* preparation,
+    loom_runtime_jit_t* const* jits,
+    const loom_runtime_preparation_t* preparation,
     loom_runtime_stage_set_layout_fn_t layout,
     loom_runtime_stage_set_completion_fn_t completion, void* user_data,
     iree_allocator_t host_allocator);

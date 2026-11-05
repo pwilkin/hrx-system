@@ -325,7 +325,7 @@ static iree_status_t loom_runtime_weight_prepare_policy(
   iree_vm_module_t* libraries[4] = {NULL, NULL, NULL, NULL};
   const iree_string_view_t roots[] = {IREE_SVL("prepare_weight")};
   iree_status_t status = loom_runtime_preparation_module_create(
-      environment, job->sources.card, job->sources.component, host_allocator,
+      environment, 1, job->sources.card, job->sources.component, host_allocator,
       &libraries[0]);
   if (iree_status_is_ok(status)) {
     status = loom_runtime_weight_inputs_module_create(
@@ -1660,13 +1660,13 @@ iree_status_t loom_runtime_weights_await(loom_runtime_weights_t* weights) {
   // owner also services cold staging requests from those queues.
   for (iree_host_size_t i = 0; i < weights->activation.count; ++i) {
     status = iree_status_join(
-        status, loom_runtime_workspace_wait(weights->workspace,
+        status, loom_runtime_workspace_wait(1, &weights->workspace,
                                             weights->activation.semaphores[i],
                                             weights->activation.values[i]));
   }
   status = iree_status_join(
       status, loom_runtime_workspace_await_retirement(
-                  weights->workspace, &weights->activation.retirement));
+                  1, &weights->workspace, &weights->activation.retirement));
   loom_runtime_weights_await_backing(weights);
   return iree_status_join(
       status, iree_status_clone(weights->activation.backing_status));
@@ -1746,7 +1746,7 @@ iree_status_t loom_runtime_weights_deactivate_wait(
   // Producer readiness belongs to the consuming model. Eviction joins its
   // actual ownership even when that producer failed, then releases backing.
   IREE_RETURN_IF_ERROR(loom_runtime_workspace_await_retirement(
-      weights->workspace, &weights->activation.retirement));
+      1, &weights->workspace, &weights->activation.retirement));
   loom_runtime_weights_await_backing(weights);
   bool complete = false;
   IREE_RETURN_IF_ERROR(loom_runtime_weights_deactivate(weights, &complete));
@@ -1812,10 +1812,10 @@ iree_status_t loom_runtime_weights_await_retirement(
   loom_runtime_weights_await_backing(weights);
   loom_runtime_memory_operation_await(weights->deactivation);
   iree_status_t status = loom_runtime_workspace_await_retirement(
-      weights->workspace, &weights->retirement);
+      1, &weights->workspace, &weights->retirement);
   return iree_status_join(
       status, loom_runtime_workspace_await_retirement(
-                  weights->workspace, &weights->activation.retirement));
+                  1, &weights->workspace, &weights->activation.retirement));
 }
 
 iree_status_t loom_runtime_weights_free(loom_runtime_weights_t* weights) {

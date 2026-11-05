@@ -122,12 +122,12 @@ class SourceRecognitionModelTest : public ::testing::Test {
 
   iree_status_t Wait(const loom_runtime_execution_frontier_t& frontier) {
     iree_status_t status = iree_ok_status();
+    auto* workspace = loom_runtime_pool_workspace(storage_owner_);
     for (size_t i = 0;
          i < IREE_ARRAYSIZE(frontier.semaphores) && iree_status_is_ok(status);
          ++i) {
       status = loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(storage_owner_), frontier.semaphores[i],
-          frontier.values[i]);
+          1, &workspace, frontier.semaphores[i], frontier.values[i]);
     }
     return status;
   }

@@ -191,8 +191,9 @@ TEST_F(SourceTextServiceTest,
       // Terminal preparation and accepted consumer retirement have completed.
       bool complete = false;
     } wait{load};
+    loom_runtime_workspace_t* workspace = loom_runtime_pool_workspace(pool);
     iree_status_t status = loom_runtime_workspace_await(
-        loom_runtime_pool_workspace(pool), &notification,
+        1, &workspace, &notification,
         [](void* user_data) {
           auto* wait = static_cast<LoadWait*>(user_data);
           wait->status = loom_serve_text_load_advance(
@@ -323,13 +324,14 @@ TEST_F(SourceTextServiceTest, IndependentParameterPreparationJoinsAllDomains) {
     }
     // The media stage has an independent preparation policy and parameter
     // domain while the ordinary text stage retains the fixture's oracle.
-    EditNativeProvider(directory_ + "/prepare.loom", package + "/prepare.loom",
-                       "func.call @parameter(%media_stage, %c0_i32, "
-                       "%c0_source, %checkpoint, %policy)",
-                       "%media_policy = buffer.constant "
-                       "utf8(\"media-weights.loom\") : buffer\n"
-                       "  func.call @parameter(%media_stage, %c0_i32, "
-                       "%c0_source, %checkpoint, %media_policy)");
+    EditNativeProvider(
+        directory_ + "/prepare.loom", package + "/prepare.loom",
+        "func.call @parameter(%media_stage, %c0_i32, %primary_execution, "
+        "%c0_source, %checkpoint, %policy)",
+        "%media_policy = buffer.constant "
+        "utf8(\"media-weights.loom\") : buffer\n"
+        "  func.call @parameter(%media_stage, %c0_i32, %primary_execution, "
+        "%c0_source, %checkpoint, %media_policy)");
     EditNativeProvider(package + "/prepare.loom", package + "/prepare.loom",
                        "func.return %effective, %c2_i32, %state",
                        "func.return %effective, %c1_i32, %state");
@@ -657,10 +659,10 @@ TEST_F(GrowingTextServiceTest, GrowthKeepsLiveHistoriesHandlesAndCheckpoints) {
         loom_serve_text_model_submit_resize(model_, resize, &frontier);
     loom_serve_text_resize_free(resize);
     IREE_ASSERT_OK(status);
+    auto* workspace = loom_runtime_pool_workspace(pool_);
     for (size_t i = 0; i < IREE_ARRAYSIZE(frontier.semaphores); ++i) {
       IREE_ASSERT_OK(loom_runtime_workspace_wait(
-          loom_runtime_pool_workspace(pool_), frontier.semaphores[i],
-          frontier.values[i]));
+          1, &workspace, frontier.semaphores[i], frontier.values[i]));
     }
     loom_serve_text_model_complete_resize(model_);
     EXPECT_EQ(loom_serve_text_model_row_count(model_), capacity);

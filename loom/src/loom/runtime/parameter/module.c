@@ -17,7 +17,7 @@ typedef struct loom_runtime_parameters_module_t {
   iree_vm_module_descriptor_t descriptor;
   // Allocator owning the capability and per-call descriptor snapshots.
   iree_allocator_t host_allocator;
-  // Canonical VM buffer, HAL buffer, and HAL fence identities.
+  // Canonical VM buffer, HAL buffer, and HAL semaphore identities.
   iree_vm_ref_type_t types[3];
   // Retained physical device used by the provider to import checkpoint files.
   iree_hal_device_t* device;
@@ -44,8 +44,9 @@ static iree_status_t loom_runtime_parameters_module_start(
       (loom_runtime_parameters_module_t*)base;
   const iree_vm_call_packet_t* call = &params->call;
   const uint32_t source = (uint32_t)iree_vm_call_value_argument_load(call, 0);
-  const uint64_t offset = iree_vm_call_value_argument_load(call, 1);
-  const uint64_t count = iree_vm_call_value_argument_load(call, 2);
+  uint64_t wait_value = iree_vm_call_value_argument_load(call, 1);
+  const uint64_t offset = iree_vm_call_value_argument_load(call, 2);
+  const uint64_t count = iree_vm_call_value_argument_load(call, 3);
   if (source >= loom_runtime_parameter_sources_count(module->sources)) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "parameter source %u is not declared", source);
@@ -67,17 +68,39 @@ static iree_status_t loom_runtime_parameters_module_start(
   iree_const_byte_span_t key = iree_const_byte_span_empty();
   IREE_RETURN_IF_ERROR(iree_vm_buffer_map_read(
       key_buffer, 0, iree_vm_buffer_length(key_buffer), &key));
-  iree_hal_fence_t* ready = NULL;
-  IREE_RETURN_IF_ERROR(loom_runtime_parameter_gather(
+  iree_hal_semaphore_t* wait = arguments[1].object;
+  if (!wait && wait_value) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "an empty dependency requires value zero");
+  }
+  iree_hal_semaphore_t* ready = NULL;
+  uint64_t ready_value = 1;
+  if (count) {
+    IREE_RETURN_IF_ERROR(iree_hal_semaphore_create(
+        module->device, IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY, 0,
+        IREE_HAL_SEMAPHORE_FLAG_NONE, &ready));
+  }
+  iree_status_t status = loom_runtime_parameter_gather(
       loom_runtime_parameter_sources_provider(module->sources, source),
       module->device, module->queue,
-      iree_hal_fence_semaphore_list((iree_hal_fence_t*)arguments[1].object),
+      (iree_hal_semaphore_list_t){wait ? 1 : 0, &wait, &wait_value},
+      (iree_hal_semaphore_list_t){ready ? 1 : 0, &ready, &ready_value},
       iree_make_string_view((const char*)key.data, key.data_length),
       (iree_hal_buffer_t*)arguments[2].object, offset, (iree_host_size_t)count,
-      (iree_hal_buffer_t*)arguments[3].object, module->host_allocator, &ready));
+      (iree_hal_buffer_t*)arguments[3].object, module->host_allocator);
+  if (!iree_status_is_ok(status)) {
+    iree_hal_semaphore_release(ready);
+    return status;
+  }
+  if (!count) {
+    ready = wait;
+    ready_value = wait_value;
+    iree_hal_semaphore_retain(ready);
+  }
   void* owned = ready;
   iree_vm_ref_t result = iree_vm_ref_from_ptr_move(&owned, module->types[2]);
   iree_vm_call_ref_result_store_move(call, 0, &result);
+  iree_vm_call_value_result_store(call, 0, ready_value);
   *out_outcome = IREE_VM_EXECUTION_OUTCOME_COMPLETED;
   return iree_ok_status();
 }
@@ -86,16 +109,19 @@ static const iree_vm_module_signature_type_t gather_arguments[] = {
     {IREE_VM_SCALAR_TYPE_I32, 0},
     {IREE_VM_MODULE_SIGNATURE_TYPE_KIND_REF, 0},
     {IREE_VM_MODULE_SIGNATURE_TYPE_KIND_REF, 2},
+    {IREE_VM_SCALAR_TYPE_I64, 0},
     {IREE_VM_MODULE_SIGNATURE_TYPE_KIND_REF, 1},
     {IREE_VM_SCALAR_TYPE_I64, 0},
     {IREE_VM_SCALAR_TYPE_I64, 0},
     {IREE_VM_MODULE_SIGNATURE_TYPE_KIND_REF, 1},
 };
-static const iree_vm_module_signature_type_t gather_result = {
-    IREE_VM_MODULE_SIGNATURE_TYPE_KIND_REF, 2};
+static const iree_vm_module_signature_type_t gather_results[] = {
+    {IREE_VM_MODULE_SIGNATURE_TYPE_KIND_REF, 2},
+    {IREE_VM_SCALAR_TYPE_I64, 0},
+};
 static const iree_vm_module_callable_type_declaration_t gather_callable = {
-    .signature = {.arguments = {gather_arguments, 7, 3, 4, 0},
-                  .results = {&gather_result, 1, 0, 1, 0}},
+    .signature = {.arguments = {gather_arguments, 8, 4, 4, 0},
+                  .results = {gather_results, 2, 1, 1, 0}},
 };
 static const iree_vm_module_export_declaration_t gather_export = {
     .export_name = IREE_SVL("gather"),
@@ -165,7 +191,7 @@ iree_status_t loom_runtime_parameters_module_create(
   module->host_allocator = host_allocator;
   module->types[0] = vm_types.buffer;
   module->types[1] = types->buffer;
-  module->types[2] = types->fence;
+  module->types[2] = types->semaphore;
   module->device = iree_hal_queue_family_device(iree_hal_queue_family(queue));
   iree_hal_device_retain(module->device);
   module->queue = queue;
@@ -178,7 +204,7 @@ iree_status_t loom_runtime_parameters_module_create(
       .counts = {.function_count = 1,
                  .callable_type_count = 1,
                  .export_count = 1,
-                 .callable_fields = {.value_count = 3, .ref_count = 5}},
+                 .callable_fields = {.value_count = 5, .ref_count = 5}},
   };
   iree_status_t status = iree_vm_module_initialize(
       &module_vtable, &module->descriptor, &module->base);

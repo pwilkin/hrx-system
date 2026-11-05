@@ -124,19 +124,23 @@ iree_status_t loom_runtime_execution_barrier(
 
 // Enqueues reusable commands. HAL captures the binding table and retains its
 // buffers before returning; the table itself may immediately be reused.
+// Imports waits alongside prior work in this submission. Semaphore arrays are
+// borrowed only during the call; HAL retains the captured handles.
 // Success returns an accepted submission value, not a completed result.
 iree_status_t loom_runtime_execution_execute(
-    loom_runtime_execution_t* execution,
+    loom_runtime_execution_t* execution, iree_hal_semaphore_list_t waits,
     iree_hal_command_buffer_t* command_buffer,
     iree_hal_buffer_binding_table_t bindings, uint64_t* out_value);
 
 // Enqueues a buffer-only native stage without a command buffer. The executable
 // belongs to the exact dispatch queue family. HAL captures bindings and retains
 // the executable and buffers until terminal completion; no host wait occurs.
+// Imports waits alongside prior work with the same capture contract as execute.
 iree_status_t loom_runtime_execution_dispatch(
-    loom_runtime_execution_t* execution, iree_hal_executable_t* executable,
-    iree_hal_executable_function_t function, iree_hal_dispatch_config_t config,
-    iree_hal_buffer_ref_list_t bindings, uint64_t* out_value);
+    loom_runtime_execution_t* execution, iree_hal_semaphore_list_t waits,
+    iree_hal_executable_t* executable, iree_hal_executable_function_t function,
+    iree_hal_dispatch_config_t config, iree_hal_buffer_ref_list_t bindings,
+    uint64_t* out_value);
 
 // Enqueues transfers on the same dependency chain. Host payload memory remains
 // borrowed through completion of the returned value, including error cleanup.
@@ -149,8 +153,11 @@ iree_status_t loom_runtime_execution_transfer(
 // Operations must be downloads; host destinations remain borrowed and device
 // sources must not be overwritten until this completion retires. Independent
 // later commands may read the same sources or consume other model state.
+// Imports waits into feedback only; later work does not inherit them. Semaphore
+// arrays are borrowed only during the call; HAL retains the captured handles.
 iree_status_t loom_runtime_execution_feedback(
-    loom_runtime_execution_t* execution, iree_host_size_t operation_count,
+    loom_runtime_execution_t* execution, iree_hal_semaphore_list_t waits,
+    iree_host_size_t operation_count,
     const iree_hal_transfer_operation_t* operations, uint64_t* out_value);
 
 // Waits for a command/input-transfer value and propagates failure.
@@ -169,6 +176,17 @@ iree_status_t loom_runtime_execution_feedback_wait(
 // Model-visible workspace views are joined after all callers release them;
 // raw allocation bookkeeping transfers on release to the shared workspace.
 iree_status_t loom_runtime_execution_drain(loom_runtime_execution_t* execution);
+
+// Joins a cooperating execution set while advancing every member's cold
+// workspace. The exclusive outer owner supplies the complete dependency
+// domain; waiting on one member alone cannot progress a peer allocation.
+// NULL entries represent unconstructed members during partial cleanup.
+// Shared workspaces are supported, and prior wake observers are restored.
+// Cold observer-storage allocation can fail before consumer retirement; a
+// terminal caller then preserves unretired ownership for a later join.
+iree_status_t loom_runtime_execution_drain_all(
+    iree_host_size_t execution_count,
+    loom_runtime_execution_t* const* executions);
 
 #ifdef __cplusplus
 }  // extern "C"

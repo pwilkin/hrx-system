@@ -395,7 +395,8 @@ struct loom_runtime_test_snapshot_transfer_t {
     uint64_t completion = 0;
     if (iree_status_is_ok(status)) {
       status = loom_runtime_execution_feedback(
-          self->execution, downloads.size(), downloads.data(), &completion);
+          self->execution, iree_hal_semaphore_list_empty(), downloads.size(),
+          downloads.data(), &completion);
     }
     for (auto*& root : self->roots) {
       iree_hal_buffer_release(std::exchange(root, nullptr));

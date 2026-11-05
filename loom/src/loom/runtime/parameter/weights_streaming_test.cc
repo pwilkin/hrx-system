@@ -66,8 +66,9 @@ class WindowedWeightsTest : public WeightsTest {
               },
       };
       uint64_t completion = 0;
-      IREE_ASSERT_OK(loom_runtime_execution_feedback(execution_, 1, &download,
-                                                     &completion));
+      IREE_ASSERT_OK(loom_runtime_execution_feedback(
+          execution_, iree_hal_semaphore_list_empty(), 1, &download,
+          &completion));
       IREE_ASSERT_OK(
           loom_runtime_execution_feedback_wait(execution_, completion));
       const bool first = iree_string_view_equal(parameter.key, IREE_SV("a"));

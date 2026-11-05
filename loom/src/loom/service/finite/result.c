@@ -349,8 +349,9 @@ iree_status_t loom_service_finite_result_download(
   }
   if (iree_status_is_ok(status)) {
     uint64_t value = 0;
-    status = loom_runtime_execution_feedback(result->execution, count,
-                                             operations, &value);
+    status = loom_runtime_execution_feedback(result->execution,
+                                             iree_hal_semaphore_list_empty(),
+                                             count, operations, &value);
   }
   for (iree_host_size_t i = 0; i < initialized; ++i) {
     iree_hal_buffer_release(operations[i].download.source_buffer);

@@ -1712,9 +1712,9 @@ TEST_F(DeviceMemoryTest, PoolTrimSurvivesLateWorkspaceRootRetirement) {
 
   IREE_ASSERT_OK(loom_runtime_pool_trim(storage_owner, 0));
   IREE_ASSERT_OK(iree_hal_semaphore_signal(gate, gate_value, nullptr));
-  iree_status_t completion_status =
-      loom_runtime_workspace_wait(loom_runtime_pool_workspace(storage_owner),
-                                  completion_semaphore, completion_value);
+  auto* workspace = loom_runtime_pool_workspace(storage_owner);
+  iree_status_t completion_status = loom_runtime_workspace_wait(
+      1, &workspace, completion_semaphore, completion_value);
   iree_hal_semaphore_release(completion_semaphore);
   IREE_ASSERT_OK(completion_status);
   while (loom_runtime_device_group_is_pending(group)) {

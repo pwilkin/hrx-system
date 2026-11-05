@@ -102,7 +102,7 @@ iree_status_t loom_runtime_test_pool_trim_and_drain(loom_runtime_pool_t* owner,
     iree_notification_t notification;
     iree_notification_initialize(&notification);
     iree_status_t status = loom_runtime_workspace_await(
-        workspace, &notification, loom_runtime_test_pool_trim_complete,
+        1, &workspace, &notification, loom_runtime_test_pool_trim_complete,
         workspace);
     status = iree_status_join(status, loom_runtime_memory_pool_await(memory));
     status =
@@ -112,7 +112,7 @@ iree_status_t loom_runtime_test_pool_trim_and_drain(loom_runtime_pool_t* owner,
     }
     if (iree_status_is_ok(status)) {
       status = loom_runtime_workspace_await(
-          workspace, &notification, loom_runtime_test_pool_trim_complete,
+          1, &workspace, &notification, loom_runtime_test_pool_trim_complete,
           workspace);
     }
     iree_notification_deinitialize(&notification);

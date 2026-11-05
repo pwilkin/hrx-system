@@ -101,8 +101,8 @@ TEST_F(GroupEmbeddingServiceTest, EmbeddingsCompleteBeforeOtherDeviceRetires) {
               .length = sizeof(output_),
           },
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &value));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &value));
   auto frontier = loom_runtime_execution_frontier(execution_);
   // The feedback branch is a final reader, not an implicit FIFO dependency.
   IREE_ASSERT_OK(loom_runtime_execution_barrier(

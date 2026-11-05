@@ -216,18 +216,20 @@ void JitConcurrentTest::CheckConcurrent(bool direct_dispatch) {
     if (direct_dispatch) {
       iree_hal_buffer_ref_t scratch;
       IREE_ASSERT_OK(loom_runtime_dispatch_issue(
-          dispatches_[i], execution_, {1, &binding}, &scratch, &completion));
+          dispatches_[i], execution_, iree_hal_semaphore_list_empty(),
+          {1, &binding}, &scratch, &completion));
     } else {
       IREE_ASSERT_OK(loom_runtime_execution_execute(
-          execution_, commands_[i], {1, &binding}, &completion));
+          execution_, iree_hal_semaphore_list_empty(), commands_[i],
+          {1, &binding}, &completion));
     }
   }
   const iree_hal_transfer_operation_t download = {
       .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       .download = {buffer_, 0, output_.data(), sizeof(output_)},
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &completion));
   IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution_, completion));
   for (size_t i = 0; i < output_.size(); ++i) {
     EXPECT_EQ(output_[i], direct_dispatch
@@ -286,15 +288,16 @@ TEST_P(JitTest, MixedArgumentsSurviveRecordingScratchReuseAndTrim) {
       loom_runtime_execution_transfer(execution_, 1, &upload, &completion));
   const iree_hal_buffer_binding_t binding = {buffer_, 0, sizeof(input_)};
   for (auto* command : commands_) {
-    IREE_ASSERT_OK(loom_runtime_execution_execute(execution_, command,
-                                                  {1, &binding}, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_execute(
+        execution_, iree_hal_semaphore_list_empty(), command, {1, &binding},
+        &completion));
   }
   const iree_hal_transfer_operation_t download = {
       .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       .download = {buffer_, 0, output_.data(), sizeof(output_)},
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &completion));
   IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution_, completion));
   EXPECT_EQ(output_[0], 17);
   EXPECT_EQ(output_[1], -23);
@@ -400,18 +403,21 @@ class JitCacheTest : public JitTest {
       if (direct_dispatch) {
         iree_hal_buffer_ref_t scratch;
         IREE_ASSERT_OK(loom_runtime_dispatch_issue(
-            dispatches_[i], execution_, {1, &binding}, &scratch, &completion));
+            dispatches_[i], execution_, iree_hal_semaphore_list_empty(),
+            {1, &binding}, &scratch, &completion));
       } else {
         IREE_ASSERT_OK(loom_runtime_execution_execute(
-            execution_, commands_[i], {1, &binding}, &completion));
+            execution_, iree_hal_semaphore_list_empty(), commands_[i],
+            {1, &binding}, &completion));
       }
     }
     const iree_hal_transfer_operation_t download = {
         .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
         .download = {buffer_, 0, output_.data(), sizeof(output_)},
     };
-    IREE_ASSERT_OK(
-        loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_feedback(
+        execution_, iree_hal_semaphore_list_empty(), 1, &download,
+        &completion));
     IREE_ASSERT_OK(
         loom_runtime_execution_feedback_wait(execution_, completion));
     for (size_t i = 0; i < output_.size(); ++i) {
@@ -732,15 +738,16 @@ TEST_P(JitTest, CompletedCatalogsRetireWithoutClosingSharedCompilerQueue) {
       loom_runtime_execution_transfer(execution_, 1, &upload, &completion));
   const iree_hal_buffer_binding_t binding = {buffer_, 0, sizeof(input_)};
   for (auto* command : commands_) {
-    IREE_ASSERT_OK(loom_runtime_execution_execute(execution_, command,
-                                                  {1, &binding}, &completion));
+    IREE_ASSERT_OK(loom_runtime_execution_execute(
+        execution_, iree_hal_semaphore_list_empty(), command, {1, &binding},
+        &completion));
   }
   iree_hal_transfer_operation_t download = {
       .type = IREE_HAL_TRANSFER_OPERATION_TYPE_DOWNLOAD,
       .download = {buffer_, 0, output_.data(), sizeof(output_)},
   };
-  IREE_ASSERT_OK(
-      loom_runtime_execution_feedback(execution_, 1, &download, &completion));
+  IREE_ASSERT_OK(loom_runtime_execution_feedback(
+      execution_, iree_hal_semaphore_list_empty(), 1, &download, &completion));
   IREE_ASSERT_OK(loom_runtime_execution_feedback_wait(execution_, completion));
   for (size_t i = 0; i < output_.size(); ++i) {
     EXPECT_EQ(output_[i], 105 + i + (i == 7 ? 24 : (i == 2 ? 7 : 0)));

@@ -150,9 +150,11 @@ class TextStagesTest : public loom_runtime::testing::JitTest {
       IREE_ASSERT_OK(
           loom_runtime_execution_transfer(execution_, 1, &upload, &completion));
       IREE_ASSERT_OK(loom_runtime_execution_execute(
-          execution_, stages_[i].command, {1, &binding}, &completion));
-      IREE_ASSERT_OK(loom_runtime_execution_feedback(execution_, 1, &download,
-                                                     &completion));
+          execution_, iree_hal_semaphore_list_empty(), stages_[i].command,
+          {1, &binding}, &completion));
+      IREE_ASSERT_OK(loom_runtime_execution_feedback(
+          execution_, iree_hal_semaphore_list_empty(), 1, &download,
+          &completion));
       IREE_ASSERT_OK(
           loom_runtime_execution_feedback_wait(execution_, completion));
       for (size_t element = 0; element < output_.size(); ++element) {
