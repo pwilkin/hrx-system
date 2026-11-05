@@ -193,6 +193,26 @@ class SharedJitTest : public loom_runtime::testing::JitTest {
         &peer_report_, host_allocator_, &peer_);
   }
 
+  iree_status_t CreateSharedSources() {
+    loom_runtime_jit_release(std::exchange(jit_, nullptr));
+    loom_runtime_jit_release(std::exchange(peer_, nullptr));
+    const iree_string_view_t providers[] = {IREE_SV("config.loom"),
+                                            IREE_SV("stage.loom")};
+    const loom_runtime_sources_t sources = {
+        .base_directory = iree_make_cstring_view(directory_.c_str()),
+        .count = IREE_ARRAYSIZE(providers),
+        .values = providers,
+    };
+    loom_runtime_device_t* devices[] = {device_owner_, peer_device_};
+    loom_runtime_jit_t* jits[2] = {};
+    auto status = loom_runtime_device_create_jits(IREE_ARRAYSIZE(devices),
+                                                  devices, &sources, nullptr,
+                                                  shared_reports_.data(), jits);
+    jit_ = jits[0];
+    peer_ = jits[1];
+    return status;
+  }
+
   void Execute(loom_runtime_jit_stage_t* stage, bool peer) {
     Execute(
         stage, peer,
@@ -299,7 +319,66 @@ class SharedJitTest : public loom_runtime::testing::JitTest {
   loom_runtime_execution_t* peer_execution_ = nullptr;
   // Peer device state, never reused across device domains.
   iree_hal_buffer_t* peer_buffer_ = nullptr;
+  // Independent publication evidence for a jointly admitted source catalog.
+  std::array<loom_runtime_compilation_report_t, 2> shared_reports_ = {};
 };
+
+TEST_P(SharedJitTest,
+       SharedSourcesSurviveOriginRetirementAndDirectCompilation) {
+  IREE_ASSERT_OK(CreateSharedSources());
+  Compilation first, second;
+  NativeGate gate(loom_runtime_jit_task_sink(jit_));
+  first.Start(jit_, gate.sink());
+  first.AwaitLayout();
+  second.Start(peer_, loom_runtime_jit_task_sink(peer_));
+  second.AwaitLayout();
+  loom_runtime_jit_release(std::exchange(jit_, nullptr));
+  gate.Open();
+  IREE_ASSERT_OK(first.Await());
+  IREE_ASSERT_OK(second.Await());
+  EXPECT_EQ(shared_reports_[0].kernels, 8u);
+  EXPECT_EQ(shared_reports_[1].kernels, 0u);
+  EXPECT_EQ(shared_reports_[1].reused_kernels, 8u);
+
+  // Direct linking and its target pipeline must use the same frozen context
+  // as command construction, even after the originating JIT has retired.
+  const loomc_config_options_t config = {
+      nullptr, 0, {}, LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED};
+  loom_runtime::testing::loom_runtime_test_compilation_t direct;
+  direct.jit = peer_;
+  direct.direct_dispatch = true;
+  direct.root = IREE_SV("increment_0");
+  direct.config = &config;
+  direct.Start(
+      loom_runtime_host_executor(loom_runtime_device_host(peer_device_)));
+  loom_runtime_jit_stage_t* direct_stage = nullptr;
+  IREE_ASSERT_OK(direct.Await(&direct_stage));
+  loom_runtime_jit_release(std::exchange(peer_, nullptr));
+  Execute(first.stage(), false);
+  Execute(second.stage(), true);
+  Execute(direct_stage, true);
+  loom_runtime_jit_stage_free(direct_stage);
+}
+
+TEST_P(SharedJitTest, SharedSourcesPreserveSuccessfulChildrenAfterFailure) {
+  IREE_ASSERT_OK(CreateSharedSources());
+  Compilation failed, successful;
+  NativeGate gate(loom_runtime_jit_task_sink(jit_));
+  failed.Start(jit_, gate.sink(), IREE_SV("invalid_native"));
+  failed.AwaitLayout();
+  successful.Start(peer_, loom_runtime_jit_task_sink(peer_));
+  successful.AwaitLayout();
+  loom_runtime_jit_release(std::exchange(jit_, nullptr));
+  gate.Open();
+  IREE_ASSERT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT, failed.Await());
+  IREE_ASSERT_OK(successful.Await());
+  EXPECT_GT(shared_reports_[0].diagnostic_count, 0u);
+  EXPECT_EQ(shared_reports_[1].diagnostic_count, 0u);
+  EXPECT_EQ(shared_reports_[1].kernels, 0u);
+  EXPECT_EQ(shared_reports_[1].reused_kernels, 8u);
+  loom_runtime_jit_release(std::exchange(peer_, nullptr));
+  Execute(successful.stage(), true);
+}
 
 TEST_P(SharedJitTest, PendingArtifactsLoadAndExecuteOnIndependentDevices) {
   Compilation first, second, remapped;

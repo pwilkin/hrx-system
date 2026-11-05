@@ -5,10 +5,13 @@
 
 #include "loom/runtime/device/device.h"
 
+#include <string.h>
+
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/util/proactor_pool.h"
 #include "loom/runtime/execution/queues.h"
 #include "loom/runtime/program/jit_cache.h"
+#include "loom/runtime/program/source_catalog.h"
 #include "loom/runtime/program/tokenizer_cache.h"
 
 struct loom_runtime_device_t {
@@ -528,6 +531,33 @@ iree_status_t loom_runtime_device_create_jit(
     loom_runtime_device_t* device, const loom_runtime_sources_t* sources,
     const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_compilation_report_t* report, loom_runtime_jit_t** out_jit) {
-  return loom_runtime_jit_create_cached(device->jit_cache, device->owner->host,
-                                        sources, sanitizer, report, out_jit);
+  return loom_runtime_device_create_jits(1, &device, sources, sanitizer, report,
+                                         out_jit);
+}
+
+iree_status_t loom_runtime_device_create_jits(
+    iree_host_size_t count, loom_runtime_device_t* const* devices,
+    const loom_runtime_sources_t* sources,
+    const loomc_sanitizer_options_t* sanitizer,
+    loom_runtime_compilation_report_t* reports, loom_runtime_jit_t** out_jits) {
+  memset(out_jits, 0, count * sizeof(*out_jits));
+  loom_runtime_host_t* host = devices[0]->owner->host;
+  loom_runtime_source_catalog_t* catalog = NULL;
+  IREE_RETURN_IF_ERROR(loom_runtime_source_catalog_create(
+      loom_runtime_host_target_environment(host), sources, &reports[0],
+      devices[0]->owner->host_allocator, &catalog));
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t i = 0; i < count && iree_status_is_ok(status); ++i) {
+    status =
+        loom_runtime_jit_create_cached(devices[i]->jit_cache, host, catalog,
+                                       sanitizer, &reports[i], &out_jits[i]);
+  }
+  loom_runtime_source_catalog_release(catalog);
+  if (!iree_status_is_ok(status)) {
+    for (iree_host_size_t i = 0; i < count; ++i) {
+      loom_runtime_jit_release(out_jits[i]);
+      out_jits[i] = NULL;
+    }
+  }
+  return status;
 }

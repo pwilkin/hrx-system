@@ -191,6 +191,19 @@ iree_status_t loom_runtime_device_create_jit(
     const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_compilation_report_t* report, loom_runtime_jit_t** out_jit);
 
+// Admits one immutable source catalog for a nonempty deployment on one host,
+// then creates each device's independent compilation/loading/publication owner.
+// reports and out_jits have count members in deployment order. Source admission
+// appends diagnostics once to reports[0]; target-specific evidence stays in its
+// device's report. All outputs are NULL on failure. Reports outlive the
+// returned JITs and accepted work. Source views are borrowed only during this
+// call.
+iree_status_t loom_runtime_device_create_jits(
+    iree_host_size_t count, loom_runtime_device_t* const* devices,
+    const loom_runtime_sources_t* sources,
+    const loomc_sanitizer_options_t* sanitizer,
+    loom_runtime_compilation_report_t* reports, loom_runtime_jit_t** out_jits);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

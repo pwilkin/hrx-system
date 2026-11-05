@@ -250,6 +250,21 @@ loom_cc_library(
 )
 
 loom_cc_library(
+    name = "source_catalog",
+    srcs = ["source_catalog.c"],
+    hdrs = ["source_catalog.h"],
+    deps = [
+        ":compilation",
+        ":source_index",
+        ":sources",
+        "//loom/binding/c:loomc",
+        "//loom/binding/c/target/cmd",
+        "//loom/src/loom/util:digest",
+        "//runtime/src/iree/base",
+    ],
+)
+
+loom_cc_library(
     name = "native_artifact",
     srcs = ["native_artifact.c"],
     hdrs = ["native_artifact.h"],
@@ -349,6 +364,7 @@ loom_cc_library(
         ":compilation",
         ":executable",
         ":native_artifact",
+        ":source_catalog",
         ":source_index",
         ":sources",
         ":target",

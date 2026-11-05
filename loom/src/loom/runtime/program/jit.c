@@ -15,6 +15,7 @@
 #include "loom/runtime/program/executable.h"
 #include "loom/runtime/program/jit_cache.h"
 #include "loom/runtime/program/native_artifact.h"
+#include "loom/runtime/program/source_catalog.h"
 #include "loom/runtime/program/source_index.h"
 #include "loom/runtime/program/target.h"
 #include "loomc/compile.h"
@@ -111,12 +112,8 @@ struct loom_runtime_jit_t {
   loom_runtime_jit_compiler_t kernel;
   // Exact host compilation domain; local views keep device loading separate.
   loom_runtime_native_domain_t* native_domain;
-  // Frozen source providers, shared across all shape specializations.
-  loomc_link_index_t* index;
-  // Concurrent command compiler retaining native source preparations.
-  loomc_cmd_compiler_t* command_compiler;
-  // Immutable linker for direct kernel roots in the shared source catalog.
-  loomc_linker_t* linker;
+  // Admitted source/compiler ownership shared across deployment devices.
+  loom_runtime_source_catalog_t* sources;
   // Exact output reuse, independent of input specialization and entry mapping.
   loom_runtime_executable_cache_t* executables;
   // Exact native reuse, scoped to this catalog's fixed compiler and loader.
@@ -171,20 +168,29 @@ static void loom_runtime_jit_compiler_deinitialize(
 }
 
 static iree_status_t loom_runtime_jit_compiler_initialize(
+    const loom_runtime_source_catalog_t* sources,
     const loomc_sanitizer_options_t* sanitizer,
     loomc_target_control_flow_lowering_t control_flow_lowering,
     loom_runtime_compilation_report_t* report,
     loom_runtime_jit_compiler_t* compiler, iree_allocator_t host_allocator) {
   const loomc_allocator_t ca = loomc_allocator_from_iree(host_allocator);
-  const loomc_context_target_options_t target_options = {
-      .type = LOOMC_STRUCTURE_TYPE_CONTEXT_TARGET_OPTIONS,
-      .target_environment = compiler->environment,
-  };
-  const loomc_context_options_t context_options = {.next = &target_options};
-  IREE_RETURN_IF_ERROR(iree_status_from_loomc(
-      loomc_context_create(&context_options, ca, &compiler->context)));
-  IREE_RETURN_IF_ERROR(iree_status_from_loomc(
-      loomc_compiler_create(compiler->context, NULL, ca, &compiler->compiler)));
+  if (sources) {
+    compiler->context = sources->context;
+    loomc_context_retain(compiler->context);
+    compiler->compiler = sources->compiler;
+    loomc_compiler_retain(compiler->compiler);
+  } else {
+    // A standalone VM compilation has no admitted native source catalog.
+    const loomc_context_target_options_t target_options = {
+        .type = LOOMC_STRUCTURE_TYPE_CONTEXT_TARGET_OPTIONS,
+        .target_environment = compiler->environment,
+    };
+    const loomc_context_options_t context_options = {.next = &target_options};
+    IREE_RETURN_IF_ERROR(iree_status_from_loomc(
+        loomc_context_create(&context_options, ca, &compiler->context)));
+    IREE_RETURN_IF_ERROR(iree_status_from_loomc(loomc_compiler_create(
+        compiler->context, NULL, ca, &compiler->compiler)));
+  }
   loomc_result_t* result = NULL;
   const loomc_target_pipeline_options_t pipeline_options = {
       .next = sanitizer, .control_flow_lowering = control_flow_lowering};
@@ -219,12 +225,12 @@ static void loom_runtime_jit_identity_update_u64(loom_sha256_state_t* identity,
 }
 
 static void loom_runtime_jit_identity_initialize(
-    const loom_runtime_sources_t* sources,
+    const loom_sha256_t* source_identity,
     const loomc_sanitizer_options_t* sanitizer,
     const loom_runtime_target_t* target, loom_sha256_state_t* out_identity) {
   loom_sha256_initialize(out_identity);
   loom_runtime_jit_identity_update_view(
-      out_identity, IREE_SV("loom.serve.compilation-generation.v2"));
+      out_identity, IREE_SV("loom.serve.compilation-generation.v3"));
   loom_runtime_jit_identity_update_view(
       out_identity, target->selection.executable_target->family);
   loom_runtime_jit_identity_update_view(
@@ -245,30 +251,8 @@ static void loom_runtime_jit_identity_initialize(
                                        sanitizer ? sanitizer->flags : 0);
   loom_runtime_jit_identity_update_u64(
       out_identity, sanitizer ? sanitizer->reporting_mode : 0);
-  loom_runtime_jit_identity_update_u64(out_identity, sources->count);
-  if (sources->card) {
-    const loom_model_selection_t* selection =
-        loom_model_card_selection(sources->card);
-    loom_runtime_jit_identity_update_view(out_identity, selection->config);
-    loom_runtime_jit_identity_update_u64(out_identity, selection->inputs.count);
-    loom_runtime_jit_identity_update_u64(out_identity,
-                                         selection->libraries.count);
-  } else {
-    loom_runtime_jit_identity_update_view(out_identity,
-                                          iree_string_view_empty());
-    loom_runtime_jit_identity_update_u64(out_identity, 0);
-    loom_runtime_jit_identity_update_u64(out_identity, 0);
-  }
-  if (sources->component) {
-    loom_runtime_jit_identity_update_view(out_identity,
-                                          sources->component->export_prefix);
-    loom_runtime_jit_identity_update_u64(out_identity,
-                                         sources->component->version);
-  } else {
-    loom_runtime_jit_identity_update_view(out_identity,
-                                          iree_string_view_empty());
-    loom_runtime_jit_identity_update_u64(out_identity, 0);
-  }
+  loom_runtime_jit_identity_update(out_identity, source_identity->bytes,
+                                   sizeof(source_identity->bytes));
 }
 
 static void loom_runtime_jit_native_release(loom_runtime_jit_native_t* native,
@@ -327,9 +311,7 @@ static void loom_runtime_jit_destroy(loom_runtime_jit_t* jit) {
   iree_allocator_free(jit->host_allocator, jit->natives.values);
   loom_runtime_native_domain_release(jit->native_domain);
   loom_runtime_executable_cache_free(jit->executables);
-  loomc_cmd_compiler_release(jit->command_compiler);
-  loomc_link_index_release(jit->index);
-  loomc_linker_release(jit->linker);
+  loom_runtime_source_catalog_release(jit->sources);
   loom_runtime_jit_compiler_deinitialize(&jit->kernel);
   iree_hal_queue_release(jit->dispatch);
   iree_hal_device_release(jit->device);
@@ -391,7 +373,7 @@ void loom_runtime_jit_trim(loom_runtime_jit_t* jit) {
 static iree_status_t loom_runtime_jit_create_impl(
     loom_runtime_jit_cache_t* cache, iree_hal_device_t* device,
     iree_hal_queue_t* dispatch, loom_runtime_host_t* host,
-    const loom_runtime_sources_t* sources,
+    loom_runtime_source_catalog_t* sources,
     const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_compilation_report_t* report, iree_allocator_t host_allocator,
     loom_runtime_jit_t** out_jit) {
@@ -418,7 +400,8 @@ static iree_status_t loom_runtime_jit_create_impl(
   iree_hal_device_retain(device);
   jit->dispatch = dispatch;
   iree_hal_queue_retain(dispatch);
-  const loomc_allocator_t ca = loomc_allocator_from_iree(host_allocator);
+  jit->sources = sources;
+  loom_runtime_source_catalog_retain(sources);
   jit->kernel.environment = loom_runtime_host_target_environment(host);
   if (!jit->kernel.environment) {
     loom_runtime_jit_release(jit);
@@ -446,7 +429,7 @@ static iree_status_t loom_runtime_jit_create_impl(
   }
   if (iree_status_is_ok(status)) {
     status = loom_runtime_jit_compiler_initialize(
-        sanitizer, target.control_flow_lowering, report, &jit->kernel,
+        sources, sanitizer, target.control_flow_lowering, report, &jit->kernel,
         host_allocator);
   }
   if (iree_status_is_ok(status)) {
@@ -465,31 +448,13 @@ static iree_status_t loom_runtime_jit_create_impl(
   }
   loom_sha256_state_t identity;
   if (iree_status_is_ok(status) && cache) {
-    loom_runtime_jit_identity_initialize(sources, sanitizer, &target,
+    loom_runtime_jit_identity_initialize(&sources->identity, sanitizer, &target,
                                          &identity);
-  }
-  loom_sha256_t source_identity;
-  if (iree_status_is_ok(status)) {
-    status = loom_runtime_source_index_create(
-        jit->kernel.context, sources, NULL, report, host_allocator,
-        cache ? &source_identity : NULL, &jit->index);
-  }
-  if (iree_status_is_ok(status)) {
-    status = iree_status_from_loomc(loomc_cmd_compiler_create(
-        jit->index, NULL, ca, &jit->command_compiler));
-  }
-  if (iree_status_is_ok(status) && cache) {
-    loom_runtime_jit_identity_update(&identity, source_identity.bytes,
-                                     sizeof(source_identity.bytes));
   }
   if (iree_status_is_ok(status) && cache) {
     loom_sha256_t digest;
     loom_sha256_finalize(&identity, &digest);
     status = loom_runtime_jit_cache_acquire(cache, &digest, &jit->generation);
-  }
-  if (iree_status_is_ok(status)) {
-    status = iree_status_from_loomc(
-        loomc_linker_create(jit->kernel.context, NULL, ca, &jit->linker));
   }
   if (iree_status_is_ok(status)) {
     status = loom_runtime_executable_cache_allocate(
@@ -513,14 +478,21 @@ iree_status_t loom_runtime_jit_create(
     const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_compilation_report_t* report, iree_allocator_t host_allocator,
     loom_runtime_jit_t** out_jit) {
-  return loom_runtime_jit_create_impl(NULL, device, dispatch, host, sources,
-                                      sanitizer, report, host_allocator,
-                                      out_jit);
+  *out_jit = NULL;
+  loom_runtime_source_catalog_t* catalog = NULL;
+  IREE_RETURN_IF_ERROR(loom_runtime_source_catalog_create(
+      loom_runtime_host_target_environment(host), sources, report,
+      host_allocator, &catalog));
+  iree_status_t status =
+      loom_runtime_jit_create_impl(NULL, device, dispatch, host, catalog,
+                                   sanitizer, report, host_allocator, out_jit);
+  loom_runtime_source_catalog_release(catalog);
+  return status;
 }
 
 iree_status_t loom_runtime_jit_create_cached(
     loom_runtime_jit_cache_t* cache, loom_runtime_host_t* host,
-    const loom_runtime_sources_t* sources,
+    loom_runtime_source_catalog_t* sources,
     const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_compilation_report_t* report, loom_runtime_jit_t** out_jit) {
   return loom_runtime_jit_create_impl(
@@ -814,7 +786,7 @@ static iree_status_t loom_runtime_jit_lookup_root(
   loomc_link_index_symbol_t symbol;
   bool found = false;
   bool has_symbol = loomc_link_index_lookup_global(
-      jit->index, loomc_string_view_from_iree(root), &symbol);
+      jit->sources->index, loomc_string_view_from_iree(root), &symbol);
   while (has_symbol) {
     if (iree_all_bits_set(symbol.flags,
                           LOOMC_LINK_SYMBOL_FLAG_CONCRETE_DEFINITION |
@@ -828,8 +800,8 @@ static iree_status_t loom_runtime_jit_lookup_root(
       *out_ordinal = symbol.ordinal;
       found = true;
     }
-    has_symbol =
-        loomc_link_index_next_global_duplicate(jit->index, &symbol, &symbol);
+    has_symbol = loomc_link_index_next_global_duplicate(jit->sources->index,
+                                                        &symbol, &symbol);
   }
   if (!found) {
     return iree_make_status(IREE_STATUS_NOT_FOUND,
@@ -1474,7 +1446,7 @@ static iree_status_t loom_runtime_jit_compile_dispatch(
   };
   const loomc_link_options_t options = {
       .next = &targets,
-      .link_index = jit->index,
+      .link_index = jit->sources->index,
       .mode = LOOMC_LINK_MODE_LINK,
       .root_symbols = &root,
       .root_symbol_count = 1,
@@ -1482,8 +1454,8 @@ static iree_status_t loom_runtime_jit_compile_dispatch(
   };
   loomc_module_t* module = NULL;
   loomc_result_t* result = NULL;
-  const loomc_status_t operation =
-      loomc_link_module(jit->linker, workspace, &options, &module, &result);
+  const loomc_status_t operation = loomc_link_module(
+      jit->sources->linker, workspace, &options, &module, &result);
   iree_status_t status =
       loom_runtime_compilation_result(operation, result, &job->report);
   loomc_source_t* source = NULL;
@@ -1572,7 +1544,7 @@ static void loom_runtime_jit_job_execute(loomc_task_t* base,
   }
   if (iree_status_is_ok(status)) {
     const loomc_cmd_program_product_options_t options = {
-        .compiler = jit->command_compiler,
+        .compiler = jit->sources->command_compiler,
         .root_symbol_ordinals = &root_ordinal,
         .root_symbol_count = 1,
         .config = *job->config,
@@ -1580,7 +1552,7 @@ static void loom_runtime_jit_job_execute(loomc_task_t* base,
         .request_sink = {.publish = loom_runtime_jit_publish, .user_data = job},
     };
     loomc_result_t* result = NULL;
-    IREE_TRACE_ZONE_BEGIN_NAMED(z_product, "loom_serve_jit_command_product");
+    IREE_TRACE_ZONE_BEGIN_NAMED(z_product, "loom_runtime_jit_command_product");
     const loomc_status_t operation = loomc_cmd_program_product_build(
         workspace, &options, loomc_allocator_from_iree(jit->host_allocator),
         &job->product, &result);
@@ -1786,7 +1758,7 @@ static iree_status_t loom_runtime_jit_compile_vm_source(
   loomc_target_environment_retain(compiler.environment);
   const loomc_allocator_t ca = loomc_allocator_from_iree(host_allocator);
   iree_status_t status = loom_runtime_jit_compiler_initialize(
-      NULL, LOOMC_TARGET_CONTROL_FLOW_LOWERING_CFG, report, &compiler,
+      NULL, NULL, LOOMC_TARGET_CONTROL_FLOW_LOWERING_CFG, report, &compiler,
       host_allocator);
   loomc_workspace_t* workspace = NULL;
   if (iree_status_is_ok(status)) {

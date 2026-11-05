@@ -35,6 +35,7 @@ extern "C" {
 typedef struct loom_runtime_jit_t loom_runtime_jit_t;
 typedef struct loom_runtime_jit_cache_t loom_runtime_jit_cache_t;
 typedef struct loom_runtime_jit_stage_t loom_runtime_jit_stage_t;
+typedef struct loom_runtime_source_catalog_t loom_runtime_source_catalog_t;
 
 // Loads and indexes the explicit text/bytecode providers once. Source views
 // are borrowed only during this call. The selected queue family and device are
@@ -62,9 +63,11 @@ iree_status_t loom_runtime_jit_create(
 // identities; authored locator or card pointer identity never authorizes a
 // hit. The catalog owns its publication/report and callbacks independently of
 // every other model, and borrows scratch from the shared host's workers.
+// Retains sources, admitted using this host's target environment. Independent
+// devices share that catalog while retaining their own profiles and pipelines.
 iree_status_t loom_runtime_jit_create_cached(
     loom_runtime_jit_cache_t* cache, loom_runtime_host_t* host,
-    const loom_runtime_sources_t* sources,
+    loom_runtime_source_catalog_t* sources,
     const loomc_sanitizer_options_t* sanitizer,
     loom_runtime_compilation_report_t* report, loom_runtime_jit_t** out_jit);
 

@@ -33,6 +33,7 @@ loom_cc_library(
         "//loom/src/loom/runtime/host",
         "//loom/src/loom/runtime/parameter:residency",
         "//loom/src/loom/runtime/program:jit",
+        "//loom/src/loom/runtime/program:source_catalog",
         "//loom/src/loom/runtime/program:tokenizer_cache",
         "//loom/src/loom/runtime/storage:memory",
         "//runtime/src/iree/async",
