@@ -16,6 +16,10 @@ static_assert(offsetof(iree_hal_fence_t, ref_count) == 0 &&
                   sizeof(((iree_hal_fence_t*)0)->ref_count) ==
                       IREE_VM_REF_OBJECT_SIZE,
               "HAL fences must share the VM intrusive owner count");
+static_assert(offsetof(iree_async_semaphore_t, ref_count) == 0 &&
+                  sizeof(((iree_async_semaphore_t*)0)->ref_count) ==
+                      IREE_VM_REF_OBJECT_SIZE,
+              "HAL semaphores must share the VM intrusive owner count");
 
 static void iree_hal_vm_buffer_destroy(void* object) {
   // The VM already consumed the final owner, so destroy without decrementing
@@ -29,6 +33,10 @@ static void iree_hal_vm_buffer_view_destroy(void* object) {
 
 static void iree_hal_vm_fence_destroy(void* object) {
   iree_hal_fence_destroy((iree_hal_fence_t*)object);
+}
+
+static void iree_hal_vm_semaphore_destroy(void* object) {
+  iree_hal_semaphore_destroy((iree_hal_semaphore_t*)object);
 }
 
 static const iree_vm_ref_type_table_t iree_hal_vm_type_table_;
@@ -47,10 +55,16 @@ static const iree_vm_ref_type_descriptor_t iree_hal_vm_fence_type_ = {
     &iree_hal_vm_type_table_,
     IREE_SVL("fence"),
 };
+static const iree_vm_ref_type_descriptor_t iree_hal_vm_semaphore_type_ = {
+    iree_hal_vm_semaphore_destroy,
+    &iree_hal_vm_type_table_,
+    IREE_SVL("semaphore"),
+};
 static const iree_hal_vm_types_t iree_hal_vm_types_ = {
     &iree_hal_vm_buffer_type_,
     &iree_hal_vm_buffer_view_type_,
     &iree_hal_vm_fence_type_,
+    &iree_hal_vm_semaphore_type_,
 };
 static const iree_vm_ref_type_table_t iree_hal_vm_type_table_ = {
     sizeof(iree_hal_vm_type_table_),

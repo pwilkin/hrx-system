@@ -8,7 +8,7 @@ native object identity and shares its reference counts with VM callers.
 ## Reference types
 
 `iree/hal/vm/types.h` lets a VM host pass actual HAL buffers, buffer views,
-and fences through ordinary compiled calls. Link the optional `types` library
+fences, and timeline semaphores through ordinary compiled calls. Link the optional `types` library
 and register its provider once when composing the environment:
 
 ```c
@@ -24,7 +24,7 @@ iree_vm_variant_t argument =
 
 Other native modules resolve the already registered `hal` table from the
 environment. The consumer-owned `iree_hal_vm_types_t` contains canonical
-handles for `buffer`, `buffer_view`, and `fence`, in append-only provider ordinal
+handles for `buffer`, `buffer_view`, `fence`, and `semaphore`, in append-only provider ordinal
 order. Bytecode images use their own sorted namespace/type ordinals; loading binds
 those keys to the same canonical handles used by native signatures.
 
@@ -34,7 +34,9 @@ intrusive count. The final VM buffer owner follows HAL recycling; the final view
 owner destroys the view and releases its buffer. Fences retain their semaphore
 timepoints and use the same shared owner count. Dropping a fence neither cancels
 accepted work nor establishes retirement of the resources it uses. No wrapper
-object is allocated. The Core VM `buffer` remains a separate CPU byte-storage type.
+object is allocated. Timeline semaphore references share the semaphore's native
+owner count; callers carry the timeline value separately. The Core VM `buffer`
+remains a separate CPU byte-storage type.
 
 The environment borrows the provider table and can be freed after module
 construction. Provider descriptors and native destructor code must remain loaded
