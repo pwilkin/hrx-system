@@ -856,8 +856,10 @@ iree_status_t loom_serve_text_media_projector_advance(
       *out_progress = true;
     } else {
       loom_runtime_residency_admission_t admission;
-      status = loom_runtime_residency_try_admit(
-          loom_service_finite_model_residency(projector->model), &admission);
+      loom_runtime_residency_t* admission_residency =
+          loom_service_finite_model_residency(projector->model);
+      status =
+          loom_runtime_residency_try_admit(1, &admission_residency, &admission);
       if (iree_status_is_ok(status) &&
           admission == LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED) {
         status = loom_serve_text_media_projector_submit(projector);

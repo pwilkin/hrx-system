@@ -346,7 +346,7 @@ TEST_F(ElasticEmbeddingServiceTest,
   ASSERT_NO_FATAL_FAILURE(CreateService(0));
   auto* retained_residency = loom_service_finite_model_residency(retained_);
   auto* residency = loom_service_finite_model_residency(model_);
-  IREE_ASSERT_OK(loom_runtime_residency_acquire(retained_residency));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &retained_residency));
   IREE_ASSERT_OK(loom_runtime_residency_await(retained_residency));
   EXPECT_EQ(
       loom_runtime_residency_statistics(retained_residency).committed_bytes,
@@ -397,7 +397,7 @@ TEST_F(ElasticEmbeddingServiceTest,
   EXPECT_EQ(loom_runtime_residency_statistics(residency).committed_bytes, 0u);
   loom_runtime_residency_admission_t admission;
   IREE_ASSERT_OK(
-      loom_runtime_residency_try_admit(retained_residency, &admission));
+      loom_runtime_residency_try_admit(1, &retained_residency, &admission));
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED);
   const linger reset = {1, 0};
   ASSERT_EQ(setsockopt(cancelled, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset)),
@@ -420,7 +420,7 @@ TEST_F(ElasticEmbeddingServiceTest,
   EXPECT_GE(withdrawn.admission.duration_ns, pressure.admission.duration_ns);
   EXPECT_EQ(withdrawn.pin_count, 0u);
   IREE_ASSERT_OK(
-      loom_runtime_residency_try_admit(retained_residency, &admission));
+      loom_runtime_residency_try_admit(1, &retained_residency, &admission));
   ASSERT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
   loom_runtime_residency_cancel_admission(retained_residency);
   loom_runtime_residency_release(retained_residency);

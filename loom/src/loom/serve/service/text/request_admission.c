@@ -120,7 +120,8 @@ static bool loom_serve_text_cache_can_reclaim(
 }
 
 iree_status_t loom_serve_text_cache_forecast(
-    void* self, const loom_runtime_residency_forecast_t* request,
+    void* self, loom_runtime_memory_pool_t* pool,
+    const loom_runtime_residency_forecast_t* request,
     loom_runtime_residency_projection_t* out_projection) {
   loom_serve_text_service_t* service = self;
   *out_projection = (loom_runtime_residency_projection_t){0};
@@ -135,7 +136,7 @@ iree_status_t loom_serve_text_cache_forecast(
       &service->cache, service->row_count, service->sessions,
       service->pending.prepared.session, service->pending.prepared.cached);
   const iree_status_t status =
-      request ? request->query(request->self, out_projection)
+      request ? request->query(request->self, pool, out_projection)
               : loom_serve_text_retention_forecast(service->model, NULL, false,
                                                    out_projection);
   loom_serve_text_retention_clear(service->model);

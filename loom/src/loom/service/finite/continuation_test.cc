@@ -208,7 +208,7 @@ class ContinuingSource {
             [](void* p, bool, bool* complete) {
               *complete = true;
               return loom_runtime_residency_prepare_working_set(
-                  static_cast<ContinuingSource*>(p)->residency_, 68, 16);
+                  static_cast<ContinuingSource*>(p)->residency_, 68, 16, 160);
             },
         .submit =
             [](void* p, loom_service_finite_result_t** result,

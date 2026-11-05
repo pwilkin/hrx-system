@@ -41,7 +41,7 @@ iree_status_t loom_serve_text_warmup_allocate(
   }
   if (iree_status_is_ok(status)) {
     status = loom_runtime_activation_allocate(
-        warmup->residency,
+        1, &warmup->residency,
         loom_runtime_host_proactor_pool(loom_runtime_device_host(device)), wake,
         user_data, host_allocator, &warmup->activation);
   }

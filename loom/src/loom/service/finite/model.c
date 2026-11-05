@@ -1422,7 +1422,7 @@ iree_status_t loom_service_finite_model_advance_batch(
                                UINT64_MAX - input_bytes);
     return loom_runtime_residency_prepare_working_set(
         loom_service_executables_residency(model->executables), private_bytes,
-        loom_service_finite_result_output_length(model->invocation.result));
+        loom_service_finite_result_output_length(model->invocation.result), 0);
   }
   return iree_ok_status();
 }

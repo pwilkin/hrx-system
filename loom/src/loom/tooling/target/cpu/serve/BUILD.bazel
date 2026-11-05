@@ -1647,6 +1647,7 @@ loom_cc_test(
     srcs = [
         "//loom/src/loom/runtime/parameter:bank_test.cc",
         "//loom/src/loom/runtime/parameter:residency_pressure_test.cc",
+        "//loom/src/loom/runtime/parameter:residency_test.cc",
         "//loom/src/loom/runtime/parameter:weights_packing_test.cc",
         "//loom/src/loom/runtime/parameter:weights_streaming_test.cc",
         "//loom/src/loom/runtime/parameter:weights_test.cc",
@@ -1655,7 +1656,7 @@ loom_cc_test(
     ],
     args = [
         "--weight_sources=$(rootpath //loom/src/loom/runtime/parameter/testdata/weights:stages.loom)",
-        "--gtest_filter=Streaming/*:Backing/WeightPackingTest.InvocationWorkingSet*:Pressure/*",
+        "--gtest_filter=Streaming/*:Owners/*:Backing/WeightPackingTest.InvocationWorkingSet*:Pressure/*",
         "--executable_sources=$(rootpath //loom/src/loom/service/testdata/executables:prepare.loom)",
     ],
     data = [

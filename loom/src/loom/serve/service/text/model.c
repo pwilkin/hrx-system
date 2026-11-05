@@ -347,7 +347,7 @@ static iree_status_t loom_serve_text_load_link(loom_serve_text_load_t* load) {
       loom_runtime_module_workspace_requirement(model->control.native_module)
           .allocation_size;
   IREE_RETURN_IF_ERROR(loom_runtime_residency_prepare_working_set(
-      model->residency, model->stage_workspace_bytes, 0));
+      model->residency, model->stage_workspace_bytes, 0, 0));
   iree_async_proactor_t* proactor = NULL;
   IREE_RETURN_IF_ERROR(iree_async_proactor_pool_get(
       loom_runtime_host_proactor_pool(
@@ -895,7 +895,7 @@ loom_serve_text_warmup_t* loom_serve_text_model_warmup(
 }
 
 iree_status_t loom_serve_text_model_activate(loom_serve_text_model_t* model) {
-  return loom_runtime_residency_activate(model->residency);
+  return loom_runtime_residency_activate(1, &model->residency);
 }
 
 iree_status_t loom_serve_text_model_deactivate(loom_serve_text_model_t* model,
@@ -1037,7 +1037,7 @@ static iree_status_t loom_serve_text_submit_step(
     loom_serve_text_row_t* row, int32_t initialize,
     loom_runtime_execution_frontier_t* out_frontier) {
   loom_serve_text_model_t* model = row->model;
-  IREE_RETURN_IF_ERROR(loom_runtime_residency_acquire(model->residency));
+  IREE_RETURN_IF_ERROR(loom_runtime_residency_acquire(1, &model->residency));
   iree_vm_variant_t arguments[TEXT_BINDING_COUNT + 4] = {
       iree_vm_buffer_variant_from_ptr_borrowed(&model->source.vm_types,
                                                model->source.control_state),
@@ -1378,7 +1378,7 @@ iree_status_t loom_serve_text_model_submit_epoch(
         LOOM_SERVE_TEXT_MEDIA_PACKET_FEATURE_ALIGNMENT);
   }
   if (iree_status_is_ok(status)) {
-    status = loom_runtime_residency_acquire(model->residency);
+    status = loom_runtime_residency_acquire(1, &model->residency);
   }
   if (!iree_status_is_ok(status)) {
     loom_serve_text_media_epoch_deinitialize(&media);

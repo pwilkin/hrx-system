@@ -163,7 +163,7 @@ TEST_P(WindowedWeightsTest, CapturedSourcesWaitForEveryDestinationSlab) {
                                    {{path_.path()}, {adapter_path_.path()}},
                                    "streaming_policy.loom"));
   IREE_ASSERT_OK(Register(0, 0, 1));
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(VerifyWindowedStorage(true));
   loom_runtime_residency_release(residencies_[0]);
   const auto activity = loom_runtime_weights_activity(plans_[0]);
@@ -189,7 +189,7 @@ TEST_P(WindowedWeightsTest, DirectSourcesAndHostSnapshotsNeedNoStaging) {
   EXPECT_EQ(
       loom_runtime_weights_activation_workspace(plans_[0]).allocation_size, 0u);
   IREE_ASSERT_OK(Register(0, 0, 1));
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(VerifyWindowedStorage(true));
   loom_runtime_residency_release(residencies_[0]);
   const auto activity = loom_runtime_weights_activity(plans_[0]);
@@ -436,7 +436,7 @@ TEST_P(ReadQueueWeightsTest, ReadinessDoesNotReleaseActivationCaptures) {
       std::lock_guard<std::mutex> lock(read_queue_.mutex);
       read_queue_.retain_read = true;
     }
-    IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+    IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
     ASSERT_NO_FATAL_FAILURE(Run(0, 525331));
     loom_runtime_residency_release(residencies_[0]);
     if (observe_model) {
@@ -458,7 +458,7 @@ TEST_P(ReadQueueWeightsTest, ReadinessDoesNotReleaseActivationCaptures) {
     EXPECT_EQ(pending.releasing_bytes, 0u);
     loom_runtime_residency_admission_t admission;
     IREE_ASSERT_OK(
-        loom_runtime_residency_try_admit(residencies_[0], &admission));
+        loom_runtime_residency_try_admit(1, &residencies_[0], &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED);
     ReleaseRead();
     capacity_wake_.Await();
@@ -484,7 +484,7 @@ TEST_P(ReadQueueWeightsTest, ModelRemovalPreservesPendingEvictionWake) {
   loom_runtime_residency_cache_set_observer(
       ResidencyCache(),
       {loom_runtime_test_weight_activation_wake_t::Notify, &capacity_wake_});
-  IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(Run(0, 525331));
   loom_runtime_residency_release(residencies_[0]);
   bool complete = true;
@@ -520,7 +520,7 @@ TEST_P(ReadQueueWeightsTest, PendingActivationReleasePreservesResidentPeer) {
   loom_runtime_residency_cache_set_observer(
       ResidencyCache(),
       {loom_runtime_test_weight_activation_wake_t::Notify, &capacity_wake_});
-  IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(Run(0, 525331));
   loom_runtime_residency_release(residencies_[0]);
   ASSERT_NO_FATAL_FAILURE(RunPinned(1, 525331));

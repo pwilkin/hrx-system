@@ -23,7 +23,8 @@ typedef struct loom_serve_text_reserve_context_t {
 } loom_serve_text_reserve_context_t;
 
 static iree_status_t loom_serve_text_forecast_state(
-    void* user_data, loom_runtime_residency_projection_t* out_projection) {
+    void* user_data, loom_runtime_memory_pool_t* pool,
+    loom_runtime_residency_projection_t* out_projection) {
   const loom_serve_text_reserve_context_t* context = user_data;
   return loom_serve_text_retention_forecast(
       context->model, context->reservation, context->replan, out_projection);
@@ -38,9 +39,17 @@ static iree_status_t loom_serve_text_admit_state(
   const loom_runtime_residency_forecast_t forecast = {
       .self = context, .query = loom_serve_text_forecast_state};
   loom_runtime_residency_admission_t admission;
+  const loom_runtime_residency_state_t state = {
+      .owner = 0,
+      .ranges = ranges,
+      .range_count = range_count,
+      .forecast = &forecast,
+      .readiness = readiness,
+      .value = value,
+      .operation = out_operation,
+  };
   const iree_status_t status = loom_runtime_residency_try_admit_state(
-      context->model->residency, range_count, ranges, &forecast, readiness,
-      value, &admission, out_operation);
+      1, &context->model->residency, 1, &state, &admission);
   switch (admission) {
     case LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY:
       *context->result = LOOM_SERVE_TEXT_RESERVE_CAPACITY;

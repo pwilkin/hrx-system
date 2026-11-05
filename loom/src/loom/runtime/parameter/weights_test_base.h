@@ -135,8 +135,8 @@ struct loom_runtime_test_weight_activation_t {
                               iree_task_process_drain_result_t* result) {
     auto* self =
         static_cast<loom_runtime_test_weight_activation_t*>(process->user_data);
-    auto status =
-        loom_runtime_residency_try_acquire(self->residency, &self->admitted);
+    auto status = loom_runtime_residency_try_acquire(1, &self->residency,
+                                                     &self->admitted);
     if (iree_status_is_ok(status) && !self->admitted) {
       status = iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
                                 "native invocation was not admitted");
@@ -302,6 +302,11 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
 
   virtual void SetUpPool() { AllocatePool(2 * SlabSize()); }
 
+  virtual void TearDownPool() {
+    IREE_CHECK_OK(loom_runtime_pool_free(storage_owner_));
+    storage_owner_ = nullptr;
+  }
+
   void AllocatePool(uint64_t memory_limit) {
     IREE_ASSERT_OK(loom_runtime_pool_free(storage_owner_));
     storage_owner_ = nullptr;
@@ -369,7 +374,7 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
     // Program bindings belong to the caller, independently of the residency
     // budget for parameter preparation and command workspace under test.
     IREE_ASSERT_OK(iree_hal_pool_allocate_buffer(
-        WeightConsumerPool(),
+        ConsumerPool(),
         iree_hal_make_pool_reservation_request(sizeof(output_), 0),
         iree_infinite_timeout(), &output_buffer_));
   }
@@ -449,8 +454,7 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
     EXPECT_FALSE(loom_runtime_pool_is_in_use(storage_owner_));
     EXPECT_EQ(memory.retained.committed_bytes, 0u);
     EXPECT_EQ(memory.workspace.bytes_committed, 0u);
-    IREE_CHECK_OK(loom_runtime_pool_free(storage_owner_));
-    storage_owner_ = nullptr;
+    TearDownPool();
     if (path_.Exists()) {
       EXPECT_TRUE(path_.Remove());
     }
@@ -510,6 +514,8 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
     return owned_cache_ ? owned_cache_
                         : loom_runtime_pool_residency_cache(storage_owner_);
   }
+
+  virtual iree_hal_pool_t* ConsumerPool() { return WeightConsumerPool(); }
 
   iree_status_t Compile(iree_host_size_t index, const char* root) {
     const loomc_config_options_t config = {
@@ -631,7 +637,8 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
   }
 
   void RunPinned(iree_host_size_t index, int32_t first) {
-    IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[index]));
+    IREE_ASSERT_OK(
+        loom_runtime_residency_acquire_wait(1, &residencies_[index]));
     ASSERT_NO_FATAL_FAILURE(Run(index, first));
     loom_runtime_residency_release(residencies_[index]);
   }
@@ -643,7 +650,8 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
   }
 
   void AdmitAfterRelease(iree_host_size_t index) {
-    IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[index]));
+    IREE_ASSERT_OK(
+        loom_runtime_residency_acquire_wait(1, &residencies_[index]));
   }
 
   // Keep the trim request and its physical-owner join in one operation. A
@@ -714,7 +722,7 @@ class WeightsTest : public ::testing::TestWithParam<bool> {
   loom_runtime_compilation_report_t compilation_ = {};
   // Borrowed process-owned device outliving all compiler, VM and I/O resources.
   loom_runtime_device_t* device_owner_ = nullptr;
-  // Case-owned fixed or elastic pool used by the fixture's parameter banks.
+  // Fixed or elastic pool supplied by SetUpPool and retired by TearDownPool.
   loom_runtime_pool_t* storage_owner_ = nullptr;
   // Borrowed live GPU used by compilation and execution.
   iree_hal_device_t* device_ = nullptr;

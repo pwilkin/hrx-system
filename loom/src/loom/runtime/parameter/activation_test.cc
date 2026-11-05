@@ -7,6 +7,9 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <string>
+#include <tuple>
+#include <vector>
 
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
@@ -17,7 +20,8 @@ namespace {
 // Uses the real task HAL and proactor so CPU sanitizers observe the actual
 // readiness publication. Weighted GPU output and pin pressure are exercised by
 // weights_test; this parameter-free group isolates callback storage lifetime.
-class ActivationTest : public ::testing::TestWithParam<uint32_t> {
+class ActivationTest
+    : public ::testing::TestWithParam<std::tuple<uint32_t, uint32_t>> {
  protected:
   static void Wake(void* user_data) {
     auto* self = static_cast<ActivationTest*>(user_data);
@@ -32,32 +36,46 @@ class ActivationTest : public ::testing::TestWithParam<uint32_t> {
   }
 
   void SetUp() override {
-    IREE_ASSERT_OK(loom_runtime_host_create(GetParam(), nullptr,
+    IREE_ASSERT_OK(loom_runtime_host_create(std::get<0>(GetParam()), nullptr,
                                             iree_allocator_system(), &host_));
     const loom_runtime_device_options_t options = {
         .driver = loom_runtime_host_task_driver(host_),
         .uri = IREE_SV("task"),
     };
+    std::vector<loom_runtime_device_options_t> devices(std::get<1>(GetParam()),
+                                                       options);
+    std::vector<std::string> names(devices.size());
+    for (size_t i = 0; i < devices.size(); ++i) {
+      names[i] = "owner" + std::to_string(i);
+      devices[i].name = iree_make_cstring_view(names[i].c_str());
+    }
     IREE_ASSERT_OK(loom_runtime_device_group_allocate(
-        host_, 1, &options, iree_allocator_system(), &group_));
-    auto* device = loom_runtime_device_group_at(group_, 0);
-    const loom_runtime_pool_options_t pool_options = {};
-    loom_runtime_pool_t* storage_owner = nullptr;
-    IREE_ASSERT_OK(loom_runtime_device_group_create_pool(
-        group_, {IREE_SV("pool"), 1}, &pool_options, &storage_owner));
-    IREE_ASSERT_OK(loom_runtime_device_create_execution(device, storage_owner,
-                                                        &execution_));
-    IREE_ASSERT_OK(loom_runtime_residency_allocate(
-        loom_runtime_pool_residency_cache(storage_owner), execution_, 0,
-        nullptr, iree_allocator_system(), &residency_));
+        host_, devices.size(), devices.data(), iree_allocator_system(),
+        &group_));
+    executions_.resize(devices.size());
+    residencies_.resize(devices.size());
+    for (size_t i = 0; i < devices.size(); ++i) {
+      auto* owner = loom_runtime_device_group_at(group_, i);
+      const loom_runtime_pool_options_t pool_options = {};
+      loom_runtime_pool_t* pool = nullptr;
+      IREE_ASSERT_OK(loom_runtime_device_group_create_pool(
+          group_, {devices[i].name, UINT64_C(1) << i}, &pool_options, &pool));
+      IREE_ASSERT_OK(
+          loom_runtime_device_create_execution(owner, pool, &executions_[i]));
+      IREE_ASSERT_OK(loom_runtime_residency_allocate(
+          loom_runtime_pool_residency_cache(pool), executions_[i], 0, nullptr,
+          iree_allocator_system(), &residencies_[i]));
+    }
+    auto* device = loom_runtime_device_group_at(group_, devices.size() - 1);
     IREE_ASSERT_OK(iree_hal_semaphore_create(
         loom_runtime_device_handle(device), IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY,
         0, IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &gate_));
     uint64_t value = 1;
-    IREE_ASSERT_OK(
-        loom_runtime_execution_barrier(execution_, {1, &gate_, &value}));
+    IREE_ASSERT_OK(loom_runtime_execution_barrier(executions_.back(),
+                                                  {1, &gate_, &value}));
     IREE_ASSERT_OK(loom_runtime_activation_allocate(
-        residency_, loom_runtime_host_proactor_pool(host_), Wake, this,
+        residencies_.size(), residencies_.data(),
+        loom_runtime_host_proactor_pool(host_), Wake, this,
         iree_allocator_system(), &activation_));
   }
 
@@ -77,12 +95,15 @@ class ActivationTest : public ::testing::TestWithParam<uint32_t> {
       }
       loom_runtime_activation_free(activation_);
     }
-    if (execution_) {
-      IREE_EXPECT_STATUS_IS(expected_code_,
-                            loom_runtime_execution_drain(execution_));
+    for (size_t i = 0; i < executions_.size(); ++i) {
+      if (executions_[i]) {
+        IREE_EXPECT_STATUS_IS(
+            i + 1 == executions_.size() ? expected_code_ : IREE_STATUS_OK,
+            loom_runtime_execution_drain(executions_[i]));
+      }
+      loom_runtime_residency_free(residencies_[i]);
+      loom_runtime_execution_release(executions_[i]);
     }
-    loom_runtime_residency_free(residency_);
-    loom_runtime_execution_release(execution_);
     iree_hal_semaphore_release(gate_);
     IREE_EXPECT_OK(loom_runtime_device_group_free(group_));
     loom_runtime_host_release(host_);
@@ -92,10 +113,10 @@ class ActivationTest : public ::testing::TestWithParam<uint32_t> {
   loom_runtime_host_t* host_ = nullptr;
   // Native device and shared residency cache owner.
   loom_runtime_device_group_t* group_ = nullptr;
-  // Model timeline containing an explicit unresolved predecessor.
-  loom_runtime_execution_t* execution_ = nullptr;
-  // Parameter-free native group used by the real activation owner.
-  loom_runtime_residency_t* residency_ = nullptr;
+  // Independent model timelines; the final member has a held predecessor.
+  std::vector<loom_runtime_execution_t*> executions_;
+  // Complete parameter-free membership used by the real activation owner.
+  std::vector<loom_runtime_residency_t*> residencies_;
   // Explicit dependency; only the outer owner publishes its completion.
   iree_hal_semaphore_t* gate_ = nullptr;
   // Warmup operation whose final callback must precede destruction.
@@ -116,7 +137,7 @@ TEST_P(ActivationTest, UnstartedCancellationHasNoCallbackOrActivation) {
   IREE_ASSERT_OK(loom_runtime_activation_advance(
       activation_, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, &phase_));
   EXPECT_EQ(phase_, LOOM_RUNTIME_ACTIVATION_COMPLETE);
-  EXPECT_FALSE(loom_runtime_residency_snapshot(residency_).active);
+  EXPECT_FALSE(loom_runtime_residency_snapshot(residencies_.back()).active);
   std::lock_guard<std::mutex> lock(mutex_);
   EXPECT_FALSE(ready_);
 }
@@ -127,7 +148,7 @@ TEST_P(ActivationTest, SubmittedCancellationJoinsRealReadinessPublication) {
   IREE_ASSERT_OK(loom_runtime_activation_advance(
       activation_, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, &phase_));
   EXPECT_EQ(phase_, LOOM_RUNTIME_ACTIVATION_LOADING);
-  EXPECT_TRUE(loom_runtime_residency_snapshot(residency_).active);
+  EXPECT_TRUE(loom_runtime_residency_snapshot(residencies_.back()).active);
   {
     std::lock_guard<std::mutex> lock(mutex_);
     EXPECT_FALSE(ready_);
@@ -149,6 +170,9 @@ TEST_P(ActivationTest, FailedReadinessJoinsTheCallbackAndPreservesFailure) {
   IREE_EXPECT_STATUS_IS(
       expected_code_, loom_runtime_activation_advance(activation_, 0, &phase_));
   EXPECT_EQ(phase_, LOOM_RUNTIME_ACTIVATION_COMPLETE);
+  for (auto* residency : residencies_) {
+    EXPECT_EQ(loom_runtime_residency_snapshot(residency).pin_count, 1u);
+  }
   // Final advance joins the proactor publication before storage is released;
   // the failed native execution remains owned until ordinary owner draining.
   loom_runtime_activation_free(activation_);
@@ -215,28 +239,30 @@ TEST_P(ActivationTest, NullableSlotCreatesAndRetiresOneWarmup) {
   loom_runtime_activation_free(activation_);
   activation_ = nullptr;
   IREE_ASSERT_OK(loom_runtime_activation_poll(
-      &activation_, residency_, loom_runtime_host_proactor_pool(host_), Wake,
-      this, 0, iree_allocator_system(), &phase_));
+      &activation_, residencies_.back(), loom_runtime_host_proactor_pool(host_),
+      Wake, this, 0, iree_allocator_system(), &phase_));
   EXPECT_EQ(phase_, LOOM_RUNTIME_ACTIVATION_LOADING);
   auto* pending = activation_;
   ASSERT_NE(pending, nullptr);
   IREE_ASSERT_OK(loom_runtime_activation_poll(
-      &activation_, residency_, loom_runtime_host_proactor_pool(host_), Wake,
-      this, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, iree_allocator_system(),
+      &activation_, residencies_.back(), loom_runtime_host_proactor_pool(host_),
+      Wake, this, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, iree_allocator_system(),
       &phase_));
   EXPECT_EQ(phase_, LOOM_RUNTIME_ACTIVATION_LOADING);
   EXPECT_EQ(activation_, pending);
   IREE_ASSERT_OK(iree_hal_semaphore_signal(gate_, 1, nullptr));
   AwaitWake();
   IREE_ASSERT_OK(loom_runtime_activation_poll(
-      &activation_, residency_, loom_runtime_host_proactor_pool(host_), Wake,
-      this, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, iree_allocator_system(),
+      &activation_, residencies_.back(), loom_runtime_host_proactor_pool(host_),
+      Wake, this, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, iree_allocator_system(),
       &phase_));
   EXPECT_EQ(phase_, LOOM_RUNTIME_ACTIVATION_COMPLETE);
   EXPECT_EQ(activation_, nullptr);
 }
 
-INSTANTIATE_TEST_SUITE_P(Workers, ActivationTest, ::testing::Values(1u, 4u));
+INSTANTIATE_TEST_SUITE_P(Workers, ActivationTest,
+                         ::testing::Combine(::testing::Values(1u, 4u),
+                                            ::testing::Values(1u, 3u)));
 
 TEST(ActivationSlotTest, EmptyCancellationNeedsNoResourcesOrAllocation) {
   loom_runtime_activation_t* activation = nullptr;

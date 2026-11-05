@@ -42,7 +42,8 @@ class ResidencyPressureTest : public WeightsTest {
          [](void* self) {
            return static_cast<ResidencyPressureTest*>(self)->history_pending_;
          },
-         [](void* self, const loom_runtime_residency_forecast_t*,
+         [](void* self, loom_runtime_memory_pool_t*,
+            const loom_runtime_residency_forecast_t*,
             loom_runtime_residency_projection_t* projection) {
            const auto* owner = static_cast<const ResidencyPressureTest*>(self);
            *projection = {
@@ -181,8 +182,14 @@ TEST_P(ResidencyPressureTest,
   const loom_runtime_memory_range_t range = {incoming, 0, 2 * kSlabBytes};
   loom_runtime_memory_operation_t* operation = nullptr;
   loom_runtime_residency_admission_t logical;
+  const loom_runtime_residency_state_t incoming_state = {
+      .owner = 0,
+      .ranges = &range,
+      .range_count = 1,
+      .operation = &operation,
+  };
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[1], 1, &range, nullptr, nullptr, 0, &logical, &operation));
+      1, &residencies_[1], 1, &incoming_state, &logical));
   EXPECT_EQ(logical, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
   EXPECT_EQ(operation, nullptr);
   loom_runtime_memory_admission_t physical;
@@ -197,7 +204,7 @@ TEST_P(ResidencyPressureTest,
   // use the same owner fact and wait for its ordinary asynchronous release.
   history_retained_ = false;
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[1], 1, &range, nullptr, nullptr, 0, &logical, &operation));
+      1, &residencies_[1], 1, &incoming_state, &logical));
   EXPECT_EQ(logical, LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED);
   EXPECT_EQ(history_requests_, 1u);
   EXPECT_EQ(state_statistics_.committed_bytes, kSlabBytes);
@@ -206,7 +213,7 @@ TEST_P(ResidencyPressureTest,
   history_pending_ = false;
   DrainNativeReturns();
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[1], 1, &range, nullptr, nullptr, 0, &logical, &operation));
+      1, &residencies_[1], 1, &incoming_state, &logical));
   const auto free_operation = [](loom_runtime_memory_operation_t* operation) {
     loom_runtime_memory_operation_await(operation);
     loom_runtime_memory_operation_free(operation);
@@ -230,7 +237,7 @@ TEST_P(ResidencyPressureTest, NativePublicationDoesNotDoubleCountTrimPressure) {
   IREE_ASSERT_OK(CreateRoots(0, 1, &root, {path_.path()}));
   IREE_ASSERT_OK(Register(0, 0, 1));
   const auto run = [&] {
-    IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+    IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
     ASSERT_NO_FATAL_FAILURE(ReadOutputOn(execution_, 0));
     for (size_t i = 0; i < output_.size(); ++i) {
       EXPECT_EQ(output_[i], 30 + i);
@@ -355,9 +362,14 @@ TEST_P(ResidencyPressureTest, LogicalAdmissionCollectsFailureBeforeEviction) {
   const loom_runtime_memory_range_t incoming_range = {incoming, 0, kSlabBytes};
   loom_runtime_residency_admission_t admission;
   loom_runtime_memory_operation_t* incoming_operation = nullptr;
+  const loom_runtime_residency_state_t incoming_state = {
+      .owner = 0,
+      .ranges = &incoming_range,
+      .range_count = 1,
+      .operation = &incoming_operation,
+  };
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[1], 1, &incoming_range, nullptr, nullptr, 0, &admission,
-      &incoming_operation));
+      1, &residencies_[1], 1, &incoming_state, &admission));
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED);
   EXPECT_EQ(incoming_operation, nullptr);
   EXPECT_EQ(history_requests_, 0u);
@@ -371,8 +383,7 @@ TEST_P(ResidencyPressureTest, LogicalAdmissionCollectsFailureBeforeEviction) {
   // Logical admission must collect that result before requesting history loss.
   EXPECT_EQ(state_statistics_.pending_bytes, kSlabBytes);
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[1], 1, &incoming_range, nullptr, nullptr, 0, &admission,
-      &incoming_operation));
+      1, &residencies_[1], 1, &incoming_state, &admission));
   const std::unique_ptr<loom_runtime_memory_operation_t,
                         decltype(free_operation)>
       incoming_operation_owner(incoming_operation, free_operation);
@@ -400,7 +411,7 @@ TEST_P(ResidencyPressureTest, WarmAdmissionDoesNotQueryNativeCapacity) {
   const auto root = Root(0, 0);
   IREE_ASSERT_OK(CreateRoots(0, 1, &root, {path_.path()}));
   IREE_ASSERT_OK(Register(0, 0, 1));
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
   loom_runtime_residency_release(residencies_[0]);
   uint32_t queries = 0;
   deferred_backing_->statistics_observer = [&queries] { ++queries; };
@@ -410,7 +421,8 @@ TEST_P(ResidencyPressureTest, WarmAdmissionDoesNotQueryNativeCapacity) {
       {
           .self = &forecasts,
           .forecast =
-              [](void* self, const loom_runtime_residency_forecast_t*,
+              [](void* self, loom_runtime_memory_pool_t*,
+                 const loom_runtime_residency_forecast_t*,
                  loom_runtime_residency_projection_t* projection) {
                 ++*static_cast<uint32_t*>(self);
                 *projection = {};
@@ -418,7 +430,8 @@ TEST_P(ResidencyPressureTest, WarmAdmissionDoesNotQueryNativeCapacity) {
               },
       });
   loom_runtime_residency_admission_t admission;
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit(residencies_[0], &admission));
+  IREE_ASSERT_OK(
+      loom_runtime_residency_try_admit(1, &residencies_[0], &admission));
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
   // A fitting private-workspace increase also reads only owner facts.
   IREE_EXPECT_OK(
@@ -439,7 +452,7 @@ TEST_P(ResidencyPressureTest, WarmAdmissionDoesNotQueryNativeCapacity) {
 TEST_P(ResidencyPressureTest, WorkspaceGrowthCollectsFailureBeforeDenial) {
   ASSERT_NO_FATAL_FAILURE(UseDeferredBacking(2 * kSlabBytes));
   ASSERT_NO_FATAL_FAILURE(RegisterHistory());
-  IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
   const auto geometry = loom_runtime_pool_state_geometry(storage_owner_);
   IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
       pool_, geometry, 2 * kSlabBytes, 256, &state_statistics_, &state_));

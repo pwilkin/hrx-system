@@ -746,9 +746,10 @@ static iree_status_t loom_service_finite_advance(
       *out_progress = true;
     } else {
       loom_runtime_residency_admission_t admission;
-      status = loom_runtime_residency_try_admit(
-          service->generator.vtable->residency(service->generator.self),
-          &admission);
+      loom_runtime_residency_t* admission_residency =
+          service->generator.vtable->residency(service->generator.self);
+      status =
+          loom_runtime_residency_try_admit(1, &admission_residency, &admission);
       if (iree_status_is_ok(status) &&
           admission == LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED) {
         status = loom_service_finite_submit(service);

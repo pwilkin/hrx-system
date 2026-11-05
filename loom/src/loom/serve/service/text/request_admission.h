@@ -35,7 +35,8 @@ bool loom_serve_text_cache_reclaim_request(void* self);
 // Projects retained native state using the same eligibility as reclamation.
 // Explicit endpoints and currently borrowed state remain protected.
 iree_status_t loom_serve_text_cache_forecast(
-    void* self, const loom_runtime_residency_forecast_t* request,
+    void* self, loom_runtime_memory_pool_t* pool,
+    const loom_runtime_residency_forecast_t* request,
     loom_runtime_residency_projection_t* out_projection);
 
 // Lends an idle row to CPU preparation for the selected admission candidate.

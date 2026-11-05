@@ -598,7 +598,7 @@ static iree_status_t loom_serve_speech_create_control(
       // One serialized numerical cohort serves all resident rows. State is
       // admitted separately as an exact range union; scratch is charged once.
       status = loom_runtime_residency_prepare_working_set(model->residency,
-                                                          private_bytes, 0);
+                                                          private_bytes, 0, 0);
     }
   }
   if (iree_status_is_ok(status)) {

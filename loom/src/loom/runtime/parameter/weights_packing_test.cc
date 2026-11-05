@@ -164,7 +164,7 @@ TEST_P(WeightPackingTest,
   EXPECT_EQ(before.activity.read_bytes, 0u);
   EXPECT_EQ(loom_runtime_execution_frontier(execution_).values[0], 0u);
   // A denied shape has not poisoned either the parameter plan or execution.
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(CheckPackedOn(execution_));
   loom_runtime_residency_release(residencies_[0]);
 }
@@ -185,6 +185,12 @@ TEST_P(WeightPackingTest,
   loom_runtime_residency_admission_t admission;
   loom_runtime_memory_operation_t* operation = nullptr;
   loom_runtime_memory_range_t range = {};
+  loom_runtime_residency_state_t state = {
+      .owner = 0,
+      .ranges = &range,
+      .range_count = pool_ ? 1u : 0u,
+      .operation = &operation,
+  };
   if (pool_) {
     IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
         pool_, loom_runtime_pool_weight_geometry(storage_owner_),
@@ -194,8 +200,7 @@ TEST_P(WeightPackingTest,
     // not: neither backing nor parameter I/O may start, and the caller retains
     // no partial pin.
     IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-        residencies_[0], 1, &range, nullptr, nullptr, 0, &admission,
-        &operation));
+        1, &residencies_[0], 1, &state, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     EXPECT_EQ(operation, nullptr);
     EXPECT_EQ(state_statistics_.pending_bytes, 0u);
@@ -209,9 +214,8 @@ TEST_P(WeightPackingTest,
     EXPECT_EQ(denied.memory.committed_bytes, 0u);
     range.length = kSlabBytes;
   }
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[0], pool_ ? 1 : 0, &range, nullptr, nullptr, 0, &admission,
-      &operation));
+  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(1, &residencies_[0], 1,
+                                                        &state, &admission));
   ASSERT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
   loom_runtime_memory_operation_await(operation);
   IREE_EXPECT_OK(loom_runtime_memory_operation_query_status(operation));
@@ -226,8 +230,7 @@ TEST_P(WeightPackingTest,
     // still exceed capacity. Denial preserves the accepted consumer's pin.
     range.length = 3 * kSlabBytes;
     IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-        residencies_[0], 1, &range, nullptr, nullptr, 0, &admission,
-        &operation));
+        1, &residencies_[0], 1, &state, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     EXPECT_EQ(operation, nullptr);
     const auto denied = loom_runtime_residency_snapshot(residencies_[0]);
@@ -250,18 +253,23 @@ TEST_P(WeightPackingTest, InvocationWorkingSetRetiresColdActivationCredit) {
                                    "packing_policy.loom"));
   IREE_ASSERT_OK(Register(0, 0, 1));
   IREE_ASSERT_OK(
-      loom_runtime_residency_prepare_working_set(residencies_[0], 0, 0));
+      loom_runtime_residency_prepare_working_set(residencies_[0], 0, 0, 0));
   loom_runtime_residency_admission_t admission;
   loom_runtime_memory_operation_t* operation = nullptr;
   loom_runtime_memory_range_t range = {};
+  loom_runtime_residency_state_t state = {
+      .owner = 0,
+      .ranges = &range,
+      .range_count = pool_ ? 1u : 0u,
+      .operation = &operation,
+  };
   if (pool_) {
     IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
         pool_, loom_runtime_pool_weight_geometry(storage_owner_), kSlabBytes,
         256, &state_statistics_, &state_));
     range = {state_, 0, kSlabBytes};
     IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-        residencies_[0], 1, &range, nullptr, nullptr, 0, &admission,
-        &operation));
+        1, &residencies_[0], 1, &state, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     EXPECT_EQ(operation, nullptr);
     EXPECT_EQ(loom_runtime_weights_activity(plans_[0]).activations, 0u);
@@ -269,13 +277,12 @@ TEST_P(WeightPackingTest, InvocationWorkingSetRetiresColdActivationCredit) {
   }
   // Keep the prepared weights while retiring and trimming only cold scratch.
   loom_runtime_residency_set_pinned(residencies_[0], true);
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(CheckPackedOn(execution_));
   loom_runtime_residency_release(residencies_[0]);
   ASSERT_NO_FATAL_FAILURE(TrimWorkspace());
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[0], pool_ ? 1 : 0, &range, nullptr, nullptr, 0, &admission,
-      &operation));
+  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(1, &residencies_[0], 1,
+                                                        &state, &admission));
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
   loom_runtime_memory_operation_await(operation);
   IREE_EXPECT_OK(loom_runtime_memory_operation_query_status(operation));
@@ -298,15 +305,14 @@ TEST_P(WeightPackingTest, InvocationWorkingSetRetiresColdActivationCredit) {
         loom_runtime_residency_deactivate(residencies_[0], &complete));
     EXPECT_TRUE(complete);
     IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-        residencies_[0], 1, &range, nullptr, nullptr, 0, &admission,
-        &operation));
+        1, &residencies_[0], 1, &state, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     EXPECT_EQ(operation, nullptr);
     EXPECT_EQ(loom_runtime_weights_activity(plans_[0]).activations, 1u);
     loom_runtime_residency_cancel_admission(residencies_[0]);
     IREE_ASSERT_OK(loom_runtime_virtual_buffer_free(state_));
     state_ = nullptr;
-    IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+    IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
     ASSERT_NO_FATAL_FAILURE(CheckPackedOn(execution_));
     loom_runtime_residency_release(residencies_[0]);
     EXPECT_EQ(loom_runtime_weights_activity(plans_[0]).activations, 2u);
@@ -331,6 +337,12 @@ TEST_P(WeightPackingTest,
   loom_runtime_residency_admission_t admission;
   loom_runtime_memory_operation_t* operation = nullptr;
   loom_runtime_memory_range_t range = {};
+  loom_runtime_residency_state_t state = {
+      .owner = 0,
+      .ranges = &range,
+      .range_count = pool_ ? 1u : 0u,
+      .operation = &operation,
+  };
   if (pool_) {
     IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
         pool_, loom_runtime_pool_weight_geometry(storage_owner_), kSlabBytes,
@@ -339,18 +351,17 @@ TEST_P(WeightPackingTest,
   }
   {
     ScopedNativeHold hold(device_owner_);
-    IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+    IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
     if (pool_) {
       hold.WaitEntered();
     }
-    IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[1]));
+    IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[1]));
     if (pool_) {
       // Submission and an explicit policy unpin do not return staging credit.
       loom_runtime_residency_set_pinned(residencies_[0], true);
       loom_runtime_residency_set_pinned(residencies_[0], false);
       IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-          residencies_[1], 1, &range, nullptr, nullptr, 0, &admission,
-          &operation));
+          1, &residencies_[1], 1, &state, &admission));
       EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED);
       EXPECT_EQ(operation, nullptr);
       EXPECT_EQ(loom_runtime_residency_snapshot(residencies_[1]).pin_count, 1u);
@@ -361,9 +372,8 @@ TEST_P(WeightPackingTest,
   // Neither borrower's invocation has returned its pin. Completion of their
   // shared producer is enough to admit state without another parameter load.
   ASSERT_NO_FATAL_FAILURE(TrimWorkspace());
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[1], pool_ ? 1 : 0, &range, nullptr, nullptr, 0, &admission,
-      &operation));
+  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(1, &residencies_[1], 1,
+                                                        &state, &admission));
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
   loom_runtime_memory_operation_await(operation);
   IREE_EXPECT_OK(loom_runtime_memory_operation_query_status(operation));
@@ -394,9 +404,9 @@ TEST_P(WeightPackingTest,
                                    "packing_policy.loom"));
   IREE_ASSERT_OK(Register(0, 0, 1));
   IREE_ASSERT_OK(
-      loom_runtime_residency_prepare_working_set(residencies_[0], 0, 1));
+      loom_runtime_residency_prepare_working_set(residencies_[0], 0, 1, 0));
   loom_runtime_residency_set_pinned(residencies_[0], true);
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residencies_[0]));
   ASSERT_NO_FATAL_FAILURE(CheckPackedOn(execution_));
   iree_hal_buffer_t* escaping = output_buffer_;
   iree_hal_buffer_retain(escaping);
@@ -410,36 +420,39 @@ TEST_P(WeightPackingTest,
   // The next invocation produces no output, but the previous consumer's view
   // retains its independently charged bound after the producer has finished.
   IREE_ASSERT_OK(
-      loom_runtime_residency_prepare_working_set(residencies_[0], 0, 0));
+      loom_runtime_residency_prepare_working_set(residencies_[0], 0, 0, 0));
   loom_runtime_residency_admission_t admission;
   loom_runtime_memory_operation_t* operation = nullptr;
   loom_runtime_memory_range_t range = {};
+  loom_runtime_residency_state_t state = {
+      .owner = 0,
+      .ranges = &range,
+      .range_count = pool_ ? 1u : 0u,
+      .operation = &operation,
+  };
   if (pool_) {
     IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
         pool_, loom_runtime_pool_weight_geometry(storage_owner_), kSlabBytes,
         256, &state_statistics_, &state_));
     range = {state_, 0, kSlabBytes};
     IREE_EXPECT_OK(loom_runtime_residency_try_admit_state(
-        residencies_[0], 1, &range, nullptr, nullptr, 0, &admission,
-        &operation));
+        1, &residencies_[0], 1, &state, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     EXPECT_EQ(operation, nullptr);
   }
   iree_hal_buffer_release(escaping);
   IREE_ASSERT_OK(
-      loom_runtime_residency_prepare_working_set(residencies_[0], 1, 0));
+      loom_runtime_residency_prepare_working_set(residencies_[0], 1, 0, 0));
   if (pool_) {
     IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-        residencies_[0], 1, &range, nullptr, nullptr, 0, &admission,
-        &operation));
+        1, &residencies_[0], 1, &state, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     EXPECT_EQ(operation, nullptr);
   }
   IREE_ASSERT_OK(loom_runtime_residency_check_private_peak(residencies_[0], 0));
   loom_runtime_residency_set_private_peak(residencies_[0], 0);
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
-      residencies_[0], pool_ ? 1 : 0, &range, nullptr, nullptr, 0, &admission,
-      &operation));
+  IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(1, &residencies_[0], 1,
+                                                        &state, &admission));
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
   loom_runtime_memory_operation_await(operation);
   IREE_EXPECT_OK(loom_runtime_memory_operation_query_status(operation));
@@ -467,13 +480,13 @@ TEST_P(WeightPackingTest,
       ResidencyCache(), shared_execution_, 0, nullptr, host_allocator_,
       &residencies_[1]));
   IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(residencies_[1],
-                                                            kSlabBytes, 0));
+                                                            kSlabBytes, 0, 0));
   execution_code_ = IREE_STATUS_RESOURCE_EXHAUSTED;
   {
     ScopedNativeHold hold(device_owner_);
     NativeAllocator::ForDevice(device_owner_)
         .FailNextAllocation(IREE_ALLOCATOR_COMMAND_CALLOC, true);
-    IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+    IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
     hold.WaitEntered();
     EXPECT_TRUE(loom_runtime_residency_cache_is_reclaiming(ResidencyCache()));
   }
@@ -492,7 +505,8 @@ TEST_P(WeightPackingTest,
   IREE_ASSERT_OK(loom_runtime_residency_cache_query_status(ResidencyCache()));
   EXPECT_FALSE(loom_runtime_residency_cache_is_reclaiming(ResidencyCache()));
   loom_runtime_residency_admission_t admission;
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit(residencies_[1], &admission));
+  IREE_ASSERT_OK(
+      loom_runtime_residency_try_admit(1, &residencies_[1], &admission));
   if (pool_) {
     // The failed producer still owns its working set until terminal teardown,
     // but accepted loading is no longer a reason to wait for future capacity.
@@ -563,7 +577,7 @@ TEST_P(WeightPackingTest,
   loom_runtime_test_weight_activation_wake_t wake;
   loom_runtime_activation_t* activation = nullptr;
   IREE_ASSERT_OK(loom_runtime_activation_allocate(
-      residencies_[0],
+      1, &residencies_[0],
       loom_runtime_host_proactor_pool(loom_runtime_device_host(device_owner_)),
       loom_runtime_test_weight_activation_wake_t::Notify, &wake,
       host_allocator_, &activation));
@@ -588,7 +602,7 @@ TEST_P(WeightPackingTest,
       activation, LOOM_RUNTIME_ACTIVATION_FLAG_CANCEL, &phase));
   EXPECT_EQ(phase, LOOM_RUNTIME_ACTIVATION_COMPLETE);
   loom_runtime_activation_free(activation);
-  IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
   CheckPackedOn(execution_);
   EXPECT_EQ(loom_runtime_weights_activity(plans_[0]).activations, 1u);
   loom_runtime_residency_release(residencies_[0]);
@@ -597,7 +611,7 @@ TEST_P(WeightPackingTest,
       loom_runtime_pool_statistics(storage_owner_).workspace.bytes_committed,
       0u);
   // Elastic eviction drops only the result backing, not indexes or commands.
-  IREE_ASSERT_OK(loom_runtime_residency_acquire(residencies_[0]));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire(1, &residencies_[0]));
   CheckPackedOn(execution_);
   EXPECT_EQ(loom_runtime_weights_activity(plans_[0]).activations,
             GetParam() ? 2u : 1u);

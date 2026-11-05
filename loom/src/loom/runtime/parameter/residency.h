@@ -140,8 +140,9 @@ void loom_runtime_residency_free(loom_runtime_residency_t* residency);
 // of ordered private commands. Their aggregate is rounded to the workspace's
 // physical slab geometry. This checks the configured serving ceiling, not
 // available HAL memory, and neither reserves credit nor admits work against
-// other invocations. Mutable state is accounted at admission. Fixed backing has
-// no configured ceiling.
+// other invocations. The declared minimum mutable state participates in this
+// standalone fit check; shared admission charges its actual backing instead.
+// Fixed backing has no configured ceiling.
 iree_status_t loom_runtime_residency_check_working_set(
     const loom_runtime_residency_t* residency, iree_host_size_t extent_count,
     const iree_device_size_t* extents);
@@ -151,10 +152,12 @@ iree_status_t loom_runtime_residency_check_working_set(
 // scratch; output bytes survive independently of the producer after
 // publication. Ordered activation staging contributes to the admission peak
 // only until its deallocation completes. The caller owns no invocation pin
-// while replacing these prepared bounds.
+// while replacing these prepared bounds. minimum_state_bytes is an exact
+// physical minimum required before accepting requests, not a second logical
+// reservation for those same mutable bytes.
 iree_status_t loom_runtime_residency_prepare_working_set(
     loom_runtime_residency_t* residency, uint64_t private_bytes,
-    uint64_t output_bytes);
+    uint64_t output_bytes, uint64_t minimum_state_bytes);
 
 // Checks a replacement command peak at a completed execution boundary. Live
 // rows may retain parameter pins; an increase must fit alongside their state
@@ -216,9 +219,9 @@ typedef struct loom_runtime_residency_projection_t {
 typedef struct loom_runtime_residency_forecast_t {
   // Borrowed caller context owning the prepared request.
   void* self;
-  // Reads source-owned logical requirements without changing their plan.
-  // May allocate temporary host scratch; failure preserves every history.
-  iree_status_t (*query)(void* self,
+  // Reads source-owned logical requirements for pool without changing their
+  // plan. May allocate temporary host scratch; failure preserves every history.
+  iree_status_t (*query)(void* self, loom_runtime_memory_pool_t* pool,
                          loom_runtime_residency_projection_t* out_projection);
 } loom_runtime_residency_forecast_t;
 
@@ -239,9 +242,11 @@ typedef struct loom_runtime_residency_reclaimer_t {
   bool (*is_pending)(void* self);
   // Projects this owner's state after all eligible histories retire. A supplied
   // request belongs to this registration and includes its new demand. Owners
-  // in one cache report disjoint state. Unknown state remains protected.
+  // in one cache report disjoint state for pool. Unknown state remains
+  // protected.
   iree_status_t (*forecast)(
-      void* self, const loom_runtime_residency_forecast_t* request,
+      void* self, loom_runtime_memory_pool_t* pool,
+      const loom_runtime_residency_forecast_t* request,
       loom_runtime_residency_projection_t* out_projection);
 } loom_runtime_residency_reclaimer_t;
 
@@ -257,17 +262,18 @@ void loom_runtime_residency_set_reclaimer(
 bool loom_runtime_residency_cache_is_reclaiming(
     const loom_runtime_residency_cache_t* cache);
 
-// Pins every group before admission/loading. Already active groups need no I/O;
-// each execution imports their readiness once per activation. Enqueues loading
-// before consumption without waiting on device or I/O completion.
-// On success admitted=true owns one pin,
-// released only after activation and consuming work retire (or after activation
-// if the caller relinquishes explicit retention). admitted=false owns no
-// pin and reports ordinary backpressure, with no partial parameter load. Real
-// loading failures are terminal and preserve protection until residency
-// destruction.
+// Acquires a nonempty span of distinct physical caches on one serialized owner.
+// Complete preflight precedes pinning and loading. Already active
+// groups need no I/O; each execution imports their readiness once per
+// activation. Enqueues loading before consumption without waiting on device or
+// I/O completion. On success admitted=true owns one pin per member, released
+// only after activation and consuming work retire (or after activation if the
+// caller relinquishes explicit retention). admitted=false owns no pin and
+// reports ordinary backpressure, with no partial parameter load. Real loading
+// failures are terminal and preserve protection until residency destruction.
 iree_status_t loom_runtime_residency_try_acquire(
-    loom_runtime_residency_t* residency, bool* out_admitted);
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies, bool* out_admitted);
 
 typedef enum loom_runtime_residency_admission_e {
   // Declared working set cannot fit. No pin or partial load is owned.
@@ -275,42 +281,73 @@ typedef enum loom_runtime_residency_admission_e {
   // An older waiter has priority or idle-cache maintenance is releasing
   // backing.
   LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED,
-  // One pin protects enqueued activation and subsequent consuming work.
+  // One pin per member protects activation and subsequent consuming work.
   LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED,
 } loom_runtime_residency_admission_t;
 
-// New-work admission with one outstanding interest per residency. An actual
-// capacity denial starts a FIFO; subsequent weighted admissions join it, even
-// for an already-active model. Accepted work uses acquire/try_acquire directly
-// so nested execution pins never wait behind the work they must unblock.
+// New-work admission across a nonempty span of distinct physical caches, with
+// one outstanding interest per residency. Membership stays fixed until every
+// interest is withdrawn. All caches share one serialized host owner. An actual
+// capacity denial queues the entire span in one turn; subsequent weighted
+// admissions respect every cache FIFO, even for an already-active model.
+// Accepted work uses acquire/try_acquire directly so nested execution pins
+// never wait behind the work they must unblock.
 // Parameter-free working sets bypass weight pressure. Acquiring parameters
 // preserves an existing interest: model-owned state may still need capacity.
-// The caller withdraws it with cancel_admission only after the complete
-// request/cohort is admitted or abandoned. All calls share the cache's
-// serialized owner. No callback or task waits are installed.
+// The caller withdraws every interest with cancel_admission only after the
+// complete request/cohort is admitted or abandoned. Success owns one pin per
+// member; ordinary denial owns none and starts no parameter loading. Terminal
+// loading failure preserves all pins until their owners retire. No callback or
+// task waits are installed.
 iree_status_t loom_runtime_residency_try_admit(
-    loom_runtime_residency_t* residency,
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies,
     loom_runtime_residency_admission_t* out_admission);
 
-// Admits parameters and the caller's complete mutable-state range union before
-// submitting either. Ranges belong to this residency's physical owner and
-// their logical borrowers exclude policy reclamation for the call. Denial
-// retains neither a parameter pin nor new backing; FIFO interest remains.
-// Success owns a parameter pin and publishes state backing on readiness/value,
-// independently of parameter loading on the execution timeline. The caller
-// owns the returned operation through actual native retirement, including
-// terminal activation failure. A fixed-backed caller supplies no ranges or
-// readiness. An optional source forecast includes the complete incoming state
-// and legal placement changes after denial; NULL retains exact-range demand.
-// It is queried only under pressure, never to admit work. No task or device
-// wait occurs.
+// One caller-owned mutable-state union in a complete request admission.
+// Records are ordered by distinct residency index and contain at most one
+// union per member. Ranges belong to that member's physical pool; logical
+// borrowers exclude reclamation until the admission call returns.
+typedef struct loom_runtime_residency_state_t {
+  // Index in the caller's immutable distinct-pool residency set.
+  iree_host_size_t owner;
+  // Exact mutable-state ranges produced by the logical planner.
+  const loom_runtime_memory_range_t* ranges;
+  // Number of ranges, including zero for fixed backing.
+  iree_host_size_t range_count;
+  // Optional source projection including legal placement after denial.
+  const loom_runtime_residency_forecast_t* forecast;
+  // Caller-owned mapping timeline, or NULL for fixed backing.
+  iree_hal_semaphore_t* readiness;
+  // Readiness value published after this owner's backing is usable.
+  uint64_t value;
+  // Caller-owned operation slot, preserved on terminal activation failure.
+  loom_runtime_memory_operation_t** operation;
+} loom_runtime_residency_state_t;
+
+// Admits parameters and every mutable-state union before submitting either.
+// Each pool prepares its complete parameter/state demand in the same serialized
+// owner turn. Denial retains neither a parameter pin nor new backing; FIFO
+// interest remains. Success owns one parameter pin per member and publishes
+// each state's backing on its readiness/value, independently of parameter
+// loading. The caller owns all returned operations through actual native
+// retirement, including partial submission and terminal activation failure.
+// Fixed-backed state supplies no ranges or readiness. No task/device wait or
+// cross-pool readiness join occurs here; the model owns its consumer frontier.
 iree_status_t loom_runtime_residency_try_admit_state(
-    loom_runtime_residency_t* residency, iree_host_size_t range_count,
-    const loom_runtime_memory_range_t* ranges,
-    const loom_runtime_residency_forecast_t* forecast,
-    iree_hal_semaphore_t* readiness, uint64_t value,
-    loom_runtime_residency_admission_t* out_admission,
-    loom_runtime_memory_operation_t** out_operation);
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies, iree_host_size_t state_count,
+    const loom_runtime_residency_state_t* states,
+    loom_runtime_residency_admission_t* out_admission);
+
+// Accepted-work counterpart of try_admit_state. Already admitted consumers
+// must not queue behind new requests waiting for their capacity to retire.
+// State submission, pin ownership, and failure retirement are otherwise the
+// same; ordinary denial owns no pin and starts no partial load or mapping.
+iree_status_t loom_runtime_residency_try_acquire_state(
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies, iree_host_size_t state_count,
+    const loom_runtime_residency_state_t* states, bool* out_admitted);
 
 // Withdraws this model's pending admission, without changing any owned pin or
 // queued device work. Idempotent; called on the owner when its prepared request
@@ -324,15 +361,18 @@ void loom_runtime_residency_cancel_admission(
 // try_acquire this only enqueues activation and does not wait for readiness.
 // New-work schedulers use try_admit; accepted consumers use acquire directly.
 iree_status_t loom_runtime_residency_acquire(
-    loom_runtime_residency_t* residency);
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies);
 
 // Synchronous outer-thread invocation admission and readiness join. Waits for
 // already-accepted native capacity operations before retrying admission. Live
 // pins and model-owned history needing scheduler progress still deny capacity.
-// Success owns one pin; activation failure preserves it until teardown. Shared
-// task schedulers use try_admit/acquire and never call this function.
+// Success owns one pin per member; activation failure preserves all pins until
+// teardown. Capacity denial starts no partial load. Shared task schedulers use
+// try_admit/acquire and never call this function.
 iree_status_t loom_runtime_residency_acquire_wait(
-    loom_runtime_residency_t* residency);
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies);
 
 // Cold outer-thread activation join for a pinned working set. Task services
 // consume the model timeline asynchronously. Failure preserves the pin until
@@ -358,7 +398,8 @@ iree_status_t loom_runtime_residency_finish(loom_runtime_residency_t* residency,
 // Synchronous outer-thread warmup without retaining a pin across calls. The
 // next pressure event may evict it.
 iree_status_t loom_runtime_residency_activate(
-    loom_runtime_residency_t* residency);
+    iree_host_size_t residency_count,
+    loom_runtime_residency_t* const* residencies);
 
 // Starts/advances asynchronous release after consumers retire. New requests
 // cannot reactivate this residency until native release completes. Rejects

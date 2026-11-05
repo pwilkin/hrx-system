@@ -131,11 +131,11 @@ TEST_F(SourceTextServiceTest, NativeWorkspaceReplacementPreservesAdmission) {
   if (pool) {
     // Independently prepared work uses ordinary admission. The selected text
     // transient must remain charged between epochs, not only during selection.
-    IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(peer_residency,
-                                                              peer_bytes(), 0));
+    IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(
+        peer_residency, peer_bytes(), 0, 0));
     loom_runtime_residency_admission_t admission;
     IREE_ASSERT_OK(
-        loom_runtime_residency_try_admit(peer_residency, &admission));
+        loom_runtime_residency_try_admit(1, &peer_residency, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
   }
   IREE_ASSERT_OK(loom_serve_text_model_select_variant(model_, nullptr));
@@ -144,7 +144,7 @@ TEST_F(SourceTextServiceTest, NativeWorkspaceReplacementPreservesAdmission) {
     // The identical waiting peer now fits; rows and parameters never moved.
     loom_runtime_residency_admission_t admission;
     IREE_ASSERT_OK(
-        loom_runtime_residency_try_admit(peer_residency, &admission));
+        loom_runtime_residency_try_admit(1, &peer_residency, &admission));
     ASSERT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
     loom_runtime_residency_cancel_admission(peer_residency);
     loom_runtime_residency_release(peer_residency);
@@ -175,11 +175,11 @@ TEST_F(SourceTextServiceTest, NativeWorkspaceReplacementPreservesAdmission) {
       cold_row, LOOM_SERVE_TEXT_RESERVE_FRESH, nullptr, 32, &admitted));
   ASSERT_TRUE(admitted);
   if (pool) {
-    IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(peer_residency,
-                                                              peer_bytes(), 0));
+    IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(
+        peer_residency, peer_bytes(), 0, 0));
     loom_runtime_residency_admission_t admission;
     IREE_ASSERT_OK(
-        loom_runtime_residency_try_admit(peer_residency, &admission));
+        loom_runtime_residency_try_admit(1, &peer_residency, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
     loom_runtime_residency_cancel_admission(peer_residency);
   }

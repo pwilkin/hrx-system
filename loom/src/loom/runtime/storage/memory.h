@@ -131,9 +131,9 @@ iree_status_t loom_runtime_memory_pool_await(loom_runtime_memory_pool_t* pool);
 
 // Cold pressure policy, independent of logical storage geometry. The callback
 // may trim eligible reservations toward target_bytes of committed plus pending
-// backing; it returns a status only for an actual platform/IO failure. An
-// unreachable target is not an error. It must not commit memory or recurse into
-// admission.
+// backing. Completion publication cannot change that target. The callback
+// returns a status only for an actual platform/IO failure. An unreachable
+// target is not an error. It must not commit memory or recurse into admission.
 typedef struct loom_runtime_memory_reclaimer_t {
   // Borrowed policy owner, alive until the callback is removed.
   void* user_data;
@@ -286,6 +286,8 @@ typedef struct loom_runtime_memory_footprint_t {
   uint64_t total_bytes;
   // Additional commitment, excluding live or already accepted backing.
   uint64_t missing_bytes;
+  // The same missing union classified for admission in its physical pool.
+  loom_runtime_memory_demand_t missing_demand;
 } loom_runtime_memory_footprint_t;
 
 // Physical footprint of the caller-validated range union. Overlapping views
@@ -362,6 +364,18 @@ iree_status_t loom_runtime_memory_pool_commit_with_demand_async(
     loom_runtime_memory_demand_t immediate, iree_hal_semaphore_t* readiness,
     uint64_t value, loom_runtime_memory_admission_t* out_admission,
     loom_runtime_memory_operation_t** out_operation);
+
+// Commits a range union whose complete demand was admitted by pool_prepare in
+// this serialized owner turn. The caller has protected its ranges and any
+// jointly admitted parameters from reclamation and has not yielded capacity
+// to another admission. This submits no pressure policy and cannot deny
+// capacity. Allocation, mapping, and readiness failures retain the same partial
+// ownership as commit_async. Used after every pool in a joint request has
+// admitted its complete demand, before any one pool starts that request.
+iree_status_t loom_runtime_memory_pool_commit_admitted_async(
+    loom_runtime_memory_pool_t* pool, iree_host_size_t range_count,
+    const loom_runtime_memory_range_t* ranges, iree_hal_semaphore_t* readiness,
+    uint64_t value, loom_runtime_memory_operation_t** out_operation);
 
 // Copies the unkept physical slot set of these distinct reservations and queues
 // its return to the shared inventory. The caller has retired every consumer and

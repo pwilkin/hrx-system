@@ -361,8 +361,10 @@ class FiniteComponentTest : public ::testing::Test {
   void Admit(loom_service_finite_model_t* model) {
     loom_runtime_residency_admission_t admission;
     IREE_ASSERT_OK(owner_.Run(device_, storage_owner_, [&](bool* complete) {
-      auto status = loom_runtime_residency_try_admit(
-          loom_service_finite_model_residency(model), &admission);
+      loom_runtime_residency_t* admission_residency =
+          loom_service_finite_model_residency(model);
+      auto status =
+          loom_runtime_residency_try_admit(1, &admission_residency, &admission);
       *complete = admission != LOOM_RUNTIME_RESIDENCY_ADMISSION_DEFERRED;
       return status;
     }));
@@ -447,7 +449,7 @@ class FiniteComponentTest : public ::testing::Test {
     ASSERT_NO_FATAL_FAILURE(PrepareBatch(peer_model, 0, 2 * kSlabSize));
     auto* peer_residency = loom_service_finite_model_residency(peer_model);
     IREE_ASSERT_OK(
-        loom_runtime_residency_try_admit(peer_residency, &admission));
+        loom_runtime_residency_try_admit(1, &peer_residency, &admission));
     if (loom_runtime_pool_memory(storage_owner_)) {
       EXPECT_NE(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
     } else {
@@ -895,7 +897,8 @@ TEST_F(FiniteComponentTest, PeerAdmissionWaitsForCapturedOutputRetirement) {
   // slab boundary. Adding the peer's weights then exceeds the ceiling.
   ASSERT_NO_FATAL_FAILURE(PrepareBatch(peer_model, 0, kSlabSize));
   loom_runtime_residency_admission_t admission;
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit(peer_residency, &admission));
+  IREE_ASSERT_OK(
+      loom_runtime_residency_try_admit(1, &peer_residency, &admission));
   EXPECT_EQ(admission, loom_runtime_pool_memory(storage_owner_)
                            ? LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY
                            : LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED);
@@ -907,7 +910,7 @@ TEST_F(FiniteComponentTest, PeerAdmissionWaitsForCapturedOutputRetirement) {
             loom_runtime_pool_memory(storage_owner_) != nullptr);
   if (admission != LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED) {
     IREE_ASSERT_OK(
-        loom_runtime_residency_try_admit(peer_residency, &admission));
+        loom_runtime_residency_try_admit(1, &peer_residency, &admission));
     EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
   }
   loom_runtime_residency_cache_set_observer(

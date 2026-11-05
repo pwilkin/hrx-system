@@ -930,6 +930,9 @@ TEST_F(MemoryTest, WeightTailAndStateMappingsShareOnePhysicalParent) {
                                                       ranges, &footprint));
   EXPECT_EQ(footprint.total_bytes, initial_logical_bytes);
   EXPECT_EQ(footprint.missing_bytes, initial_logical_bytes);
+  EXPECT_EQ(footprint.missing_demand.weight_bytes, bulk.mapping_size);
+  EXPECT_EQ(footprint.missing_demand.packed_bytes, 2 * state.mapping_size);
+  EXPECT_EQ(footprint.missing_demand.dedicated_bytes, 0u);
   deferred_backing->defer = true;
   loom_runtime_memory_admission_t commit_admission;
   loom_runtime_memory_operation_t* operation = nullptr;
@@ -946,6 +949,9 @@ TEST_F(MemoryTest, WeightTailAndStateMappingsShareOnePhysicalParent) {
                                                       ranges, &footprint));
   EXPECT_EQ(footprint.total_bytes, initial_logical_bytes);
   EXPECT_EQ(footprint.missing_bytes, 0u);
+  EXPECT_EQ(footprint.missing_demand.weight_bytes, 0u);
+  EXPECT_EQ(footprint.missing_demand.packed_bytes, 0u);
+  EXPECT_EQ(footprint.missing_demand.dedicated_bytes, 0u);
   deferred_backing->ResumeAcquisitions();
   loom_runtime_memory_operation_await(operation);
   IREE_ASSERT_OK(loom_runtime_memory_operation_query_status(operation));
@@ -1537,9 +1543,10 @@ TEST_F(DeviceMemoryTest, AdmissionIncludesWorkspaceSlabGranularity) {
   std::unique_ptr<loom_runtime_residency_t,
                   decltype(&loom_runtime_residency_free)>
       claim(residency, loom_runtime_residency_free);
-  IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(residency, 256, 0));
+  IREE_ASSERT_OK(
+      loom_runtime_residency_prepare_working_set(residency, 256, 0, 0));
   loom_runtime_residency_admission_t admission;
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit(residency, &admission));
+  IREE_ASSERT_OK(loom_runtime_residency_try_admit(1, &residency, &admission));
   // Half a slab remains, but even this small invocation needs one whole
   // workspace slab. Reject it before any queue allocation is accepted.
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
@@ -1550,7 +1557,7 @@ TEST_F(DeviceMemoryTest, AdmissionIncludesWorkspaceSlabGranularity) {
   IREE_ASSERT_OK(loom_runtime_virtual_buffer_free(first));
   first = nullptr;
   IREE_ASSERT_OK(loom_runtime_memory_pool_await(pool));
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residency));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residency));
   const auto request = iree_hal_make_pool_reservation_request(256, 256);
   IREE_ASSERT_OK(
       loom_runtime_execution_alloca(execution, 1, &request, &workspace));
@@ -1594,11 +1601,11 @@ TEST_F(DeviceMemoryTest, PermanentStorageIsNotDiscountedAsWorkspace) {
   std::unique_ptr<loom_runtime_residency_t,
                   decltype(&loom_runtime_residency_free)>
       claim(residency, loom_runtime_residency_free);
-  IREE_ASSERT_OK(
-      loom_runtime_residency_prepare_working_set(residency, 2 * kSlabSize, 0));
+  IREE_ASSERT_OK(loom_runtime_residency_prepare_working_set(
+      residency, 2 * kSlabSize, 0, 0));
   const auto before = loom_runtime_execution_frontier(execution);
   loom_runtime_residency_admission_t admission;
-  IREE_ASSERT_OK(loom_runtime_residency_try_admit(residency, &admission));
+  IREE_ASSERT_OK(loom_runtime_residency_try_admit(1, &residency, &admission));
   // Permanent roots do not fulfill the invocation's protected scratch credit.
   // The two footprints cannot fit in this owner's three-slab budget.
   EXPECT_EQ(admission, LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY);
@@ -1613,7 +1620,7 @@ TEST_F(DeviceMemoryTest, PermanentStorageIsNotDiscountedAsWorkspace) {
   permanent.reset();
   IREE_ASSERT_OK(loom_runtime_execution_drain(execution));
   IREE_ASSERT_OK(loom_runtime_test_pool_trim_and_drain(storage_owner, 0));
-  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(residency));
+  IREE_ASSERT_OK(loom_runtime_residency_acquire_wait(1, &residency));
   IREE_ASSERT_OK(
       loom_runtime_execution_alloca(execution, 1, &request, &workspace));
   ASSERT_NO_FATAL_FAILURE(RoundTrip(workspace, kSlabSize, 0x87654321));

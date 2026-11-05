@@ -1075,7 +1075,7 @@ static iree_status_t loom_serve_image_model_submit_stage(
 }
 
 iree_status_t loom_serve_image_model_activate(loom_serve_image_model_t* model) {
-  return loom_runtime_residency_activate(model->residency);
+  return loom_runtime_residency_activate(1, &model->residency);
 }
 
 iree_status_t loom_serve_image_model_deactivate(loom_serve_image_model_t* model,
@@ -1238,7 +1238,7 @@ iree_status_t loom_serve_image_model_advance_batch(
     // one private high-water until that collection releases the admission pin.
     IREE_RETURN_IF_ERROR(loom_runtime_residency_prepare_working_set(
         loom_service_executables_residency(model->executables),
-        invocation_bytes, 0));
+        invocation_bytes, 0, 0));
     // Register geometry for every member of this allocation transaction so
     // they can occupy one backing range without sharing their lifetimes.
     return loom_runtime_execution_reserve_workspace(
@@ -1364,8 +1364,9 @@ iree_status_t loom_serve_image_model_generate(
   loom_serve_image_model_set_observer(model, (loom_runtime_wake_callback_t){0});
   iree_notification_deinitialize(&notification);
   if (iree_status_is_ok(status)) {
-    status = loom_runtime_residency_acquire_wait(
-        loom_service_executables_residency(model->executables));
+    loom_runtime_residency_t* residency =
+        loom_service_executables_residency(model->executables);
+    status = loom_runtime_residency_acquire_wait(1, &residency);
   }
   if (!iree_status_is_ok(status)) {
     loom_serve_image_model_discard_batch(model);
@@ -1397,7 +1398,7 @@ static iree_status_t loom_serve_image_generator_admit(
     void* self, loom_runtime_residency_admission_t* out_admission) {
   loom_runtime_residency_t* residency = loom_serve_image_model_residency(self);
   IREE_RETURN_IF_ERROR(
-      loom_runtime_residency_try_admit(residency, out_admission));
+      loom_runtime_residency_try_admit(1, &residency, out_admission));
   if (*out_admission == LOOM_RUNTIME_RESIDENCY_ADMISSION_ACQUIRED) {
     loom_runtime_residency_cancel_admission(residency);
   }
