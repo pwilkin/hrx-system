@@ -142,6 +142,15 @@ static uint32_t loom_aie2p_native_input_receive_window(
       return 0;
     }
   }
+  if (channel->replay.record_count) {
+    // The finite retained batch coalesces into one receive task. Its prefix
+    // tasks and complete payload fit together without per-record refills.
+    const loom_xdna_dma_facts_t* dma =
+        &context->pool_tiles[channel->pool_index]->facts->dma;
+    return input->source->phase_count <= dma->task_queue_depth
+               ? (uint32_t)bulk->source->transfers
+               : 0;
+  }
   return loom_aie2p_native_phased_window(context, channel, tail,
                                          (uint32_t)input->source->admissions,
                                          (uint32_t)bulk->source->transfers);
