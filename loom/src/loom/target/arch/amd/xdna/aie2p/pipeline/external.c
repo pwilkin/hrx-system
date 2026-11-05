@@ -43,6 +43,10 @@ iree_status_t loom_aie2p_native_select_input(
   // Prefixes fit independently before the first bulk demand, even if the
   // observer reads a later phase first. The final phase may span many windows;
   // its exact arrivals drive additional address periods and final reclamation.
+  const loom_pipeline_transport_input_phase_t* tail =
+      &plan->phases[plan->phase_count - 1];
+  const bool invocation_owned =
+      !binding && plan->admissions == 1 && tail->period == tail->transfers;
   for (iree_host_size_t i = 0; i < plan->phase_count; ++i) {
     const loom_pipeline_transport_input_phase_t* phase = &plan->phases[i];
     const loom_aie2p_native_channel_t* local = loom_aie2p_native_channel(
@@ -56,7 +60,10 @@ iree_status_t loom_aie2p_native_select_input(
         phase->transfers > UINT32_MAX || !plan->admissions ||
         plan->admissions > UINT32_MAX / phase->transfers ||
         phase->transfers % phase->period ||
-        (i + 1 < plan->phase_count && phase->transfers != 1) ||
+        (i + 1 < plan->phase_count &&
+         (phase->transfers > local->source->capacity ||
+          phase->transfers != phase->period ||
+          (!invocation_owned && phase->transfers != 1))) ||
         phase->source_byte_offset < 0 || phase->source_byte_stride < 0 ||
         phase->source_byte_stride > UINT32_MAX) {
       return iree_ok_status();
@@ -177,7 +184,7 @@ static iree_status_t loom_aie2p_native_input_receivers(
     }
     const uint32_t repetitions =
         window
-            ? (i == tail ? window : 1)
+            ? (i == tail ? window : (uint32_t)phase->source->transfers)
             : (uint32_t)(input->source->admissions * phase->source->transfers);
     IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
         context, phase->destination, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,

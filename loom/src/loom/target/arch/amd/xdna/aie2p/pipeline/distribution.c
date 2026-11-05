@@ -666,7 +666,7 @@ iree_status_t loom_aie2p_native_select_worker_distributions(
     }
   }
   uint32_t* windows = NULL;
-  if (!ordered && !packet_program) {
+  if (!packet_program && (!ordered || child)) {
     IREE_RETURN_IF_ERROR(loom_aie2p_native_distribution_windows(
         context, realization, &source->transport, &windows));
   }
