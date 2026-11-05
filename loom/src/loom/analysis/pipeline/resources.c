@@ -254,7 +254,7 @@ iree_status_t loom_pipeline_resources_build(
           (loom_pipeline_resource_pool_binding_t){
               .value_id = loom_pipeline_memory_result(op),
               .pool_index = pool_index,
-      };
+          };
       continue;
     }
     if (loom_pipeline_strand_isa(op)) {

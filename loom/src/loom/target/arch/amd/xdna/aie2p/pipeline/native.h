@@ -716,8 +716,9 @@ iree_status_t loom_aie2p_native_bind_distribution_phases(
 iree_status_t loom_aie2p_native_select_control_route(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization,
-    iree_host_size_t worker_index, const loom_aie2p_native_tile_t* tile, bool reply,
-    uint32_t* next_source, uint8_t* next_controller, bool* out_valid);
+    iree_host_size_t worker_index, const loom_aie2p_native_tile_t* tile,
+    bool reply, uint32_t* next_source, uint8_t* next_controller,
+    bool* out_valid);
 
 iree_status_t loom_aie2p_native_distribution_boundary(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,

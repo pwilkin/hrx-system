@@ -68,8 +68,8 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_11() asm {
   %198 = lt %integer, %count
   low.cond_br %198, ^_bb2, ^_bb3 : reg<aie2p.er>
 ^_bb2:
-  %74 = mov.local-address 458752
-  st %integer, %74, 0
+  %70 = mov.local-address 458752
+  st %integer, %70, 0
   %251 = mov.short -1
   acq %251, 49
   rel %step, 50
@@ -81,7 +81,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_11() asm {
   rel %step, 52
   acq %251, 49
   rel %step, 50
-  st %integer, %74, 0
+  st %integer, %70, 0
   acq %251, 49
   rel %step, 50
   acq %251, 33
@@ -116,11 +116,11 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_13() asm {
   acq %238, 50
   rel %step, 49
   acq %238, 50
-  %69 = mov.local-address 262144
-  %value = lda %69, 0
+  %64 = mov.local-address 262144
+  %value = lda %64, 0
   %increment = mov.short 17
   %result = add.nc %value, %increment
-  st %result, %69, 0
+  st %result, %64, 0
   rel %step, 49
   acq %238, 50
   %211 = add.nc %phase, %step
@@ -145,17 +145,17 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_15() asm {
   rel %step, 17
   %234 = mov.short -1
   acq %234, 18
-  %79 = mov.local-address 327680
-  %value$218 = lda %79, 0
+  %76 = mov.local-address 327680
+  %value$218 = lda %76, 0
   %result$220 = add.nc %value$218, %step
-  st %result$220, %79, 0
+  st %result$220, %76, 0
   rel %step, 17
   acq %234, 18
   rel %step, 19
   acq %234, 20
-  %value$222 = lda %79, 0
+  %value$222 = lda %76, 0
   %result$223 = add.nc %value$222, %step
-  st %result$223, %79, 0
+  st %result$223, %76, 0
   rel %step, 17
   acq %234, 18
   rel %step, 17

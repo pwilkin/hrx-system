@@ -241,6 +241,7 @@ static iree_status_t loom_pipeline_realization_prepare_workers(
   loom_pass_value_fact_owner_t value_facts;
   loom_pass_value_fact_owner_initialize(rewriter->arena->block_pool,
                                         &value_facts);
+  uint32_t next_name = 0;
   iree_status_t status = iree_ok_status();
   for (iree_host_size_t i = 0;
        iree_status_is_ok(status) && i < realization->invocations.worker_count;
@@ -273,8 +274,21 @@ static iree_status_t loom_pipeline_realization_prepare_workers(
     if (!specialized) {
       continue;
     }
+    // Specialized sources are ordinary callable definitions, even while
+    // their consuming instances are being selected. Keep their symbol names
+    // valid through erasure so snapshots can still project the module.
+    char name[48];
+    do {
+      iree_snprintf(name, sizeof(name), "__pipeline_source_%u", next_name++);
+    } while (loom_module_lookup_string(module, iree_make_cstring_view(name)) !=
+             LOOM_STRING_ID_INVALID);
+    loom_string_id_t name_id = LOOM_STRING_ID_INVALID;
+    status = loom_module_intern_string(module, iree_make_cstring_view(name),
+                                       &name_id);
     loom_symbol_id_t symbol;
-    status = loom_module_add_symbol(module, LOOM_STRING_ID_INVALID, &symbol);
+    if (iree_status_is_ok(status)) {
+      status = loom_module_add_symbol(module, name_id, &symbol);
+    }
     if (iree_status_is_ok(status)) {
       loom_builder_set_block(&rewriter->builder, loom_module_block(module));
       status = loom_callable_clone_definition(

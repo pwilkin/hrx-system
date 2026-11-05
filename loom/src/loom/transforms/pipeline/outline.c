@@ -252,7 +252,8 @@ static iree_status_t loom_pipeline_outline_body(
   } else {
     loom_block_t* moved_entry = NULL;
     IREE_RETURN_IF_ERROR(loom_rewriter_move_region_blocks(
-        rewriter, source_body, declaration, target_body, 1, function, &moved_entry));
+        rewriter, source_body, declaration, target_body, 1, function,
+        &moved_entry));
     loom_builder_enter_region(&builder, function, target_body);
     loom_op_t* branch = NULL;
     IREE_RETURN_IF_ERROR(loom_cfg_br_build(&builder, moved_entry, NULL, 0,
