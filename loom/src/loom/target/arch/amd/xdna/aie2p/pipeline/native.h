@@ -633,6 +633,15 @@ typedef struct loom_aie2p_native_context_t {
   loom_aie2p_worker_builder_t code;
 } loom_aie2p_native_context_t;
 
+// Supplies one native occurrence's inventory and mechanics to the common
+// realization owner. The supplied version is the child, not necessarily the
+// pass frame's function. Source binding and traversal stay with that owner.
+iree_status_t loom_aie2p_pipeline_realization_initialize(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_target_function_version_t* version,
+    loom_aie2p_native_context_t* context,
+    loom_pipeline_realization_callback_t* out_callback, bool* out_valid);
+
 iree_status_t loom_aie2p_native_reject(
     const loom_aie2p_native_context_t* context, const loom_op_t* op,
     iree_string_view_t requirement);
@@ -653,7 +662,8 @@ iree_status_t loom_aie2p_native_emit_worker(
     iree_host_size_t worker_index);
 iree_status_t loom_aie2p_native_emit_configuration(
     void* user_data, loom_rewriter_t* rewriter,
-    const loom_pipeline_realization_t* realization);
+    const loom_pipeline_realization_t* realization,
+    loom_func_like_t* out_function);
 
 // Builds the physical entries around common retained control projection.
 // Child workers return normally; each entry owns private cursor initialization

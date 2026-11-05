@@ -106,60 +106,29 @@ static iree_status_t loom_pipeline_realization_report(
 
 static iree_status_t loom_pipeline_realization_clone_workers(
     loom_pass_t* pass, loom_rewriter_t* rewriter,
-    loom_pipeline_realization_t* realization) {
+    loom_pipeline_realization_t* realization, loom_symbol_map_t* names,
+    uint32_t* next_name) {
   loom_module_t* module = rewriter->module;
-  const loom_target_pass_capability_t* capability =
-      loom_target_pass_capability_from_pass(pass);
-  loom_function_version_owner_t* owner =
-      loom_target_pass_capability_function_version_owner(capability);
-  realization->version_owner = owner;
-  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
-      pass->arena, realization->invocations.worker_count,
-      sizeof(*realization->worker_versions),
-      (void**)&realization->worker_versions));
-  memset(realization->worker_versions, 0,
-         realization->invocations.worker_count *
-             sizeof(*realization->worker_versions));
-  loom_target_function_version_snapshot_t versions = {0};
-  IREE_RETURN_IF_ERROR(loom_target_function_version_snapshot_build(
-      module, loom_target_pass_capability_function_versions(capability),
-      pass->arena, &versions));
-  if (versions.target_context_capacity >= LOOM_TARGET_CONTEXT_ORDINAL_INVALID) {
-    return iree_make_status(
-        IREE_STATUS_RESOURCE_EXHAUSTED,
-        "pipeline realization exceeds target context capacity");
-  }
-  realization->entry_target_context =
-      (loom_target_context_ordinal_t)versions.target_context_capacity;
+  loom_function_version_owner_t* owner = realization->version_owner;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       pass->arena, realization->invocations.worker_count,
       sizeof(*realization->instances), (void**)&realization->instances));
-  loom_symbol_map_t names = {0};
-  for (iree_host_size_t i = 0; i < module->symbols.count; ++i) {
-    if (module->symbols.entries[i].name_id == LOOM_STRING_ID_INVALID) {
-      continue;
-    }
-    IREE_RETURN_IF_ERROR(loom_symbol_map_insert(
-        &names, pass->arena, module->symbols.entries[i].name_id,
-        (loom_symbol_id_t)i));
-  }
-  uint32_t next_name = 0;
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     loom_pipeline_worker_t* worker = &realization->workers[i];
     const loom_target_function_version_t* source_version =
-        loom_target_function_version_snapshot_at(
-            &versions, loom_func_call_callee(worker->source->call).symbol_id);
+        realization->worker_versions[i];
+    realization->worker_versions[i] = NULL;
     loom_string_id_t name = LOOM_STRING_ID_INVALID;
     do {
       char text[48];
-      iree_snprintf(text, sizeof(text), "__pipeline_worker_%u", next_name++);
+      iree_snprintf(text, sizeof(text), "__pipeline_worker_%u", (*next_name)++);
       IREE_RETURN_IF_ERROR(loom_module_intern_string(
           module, iree_make_cstring_view(text), &name));
-    } while (loom_symbol_map_find(&names, name) != LOOM_SYMBOL_ID_INVALID);
+    } while (loom_symbol_map_find(names, name) != LOOM_SYMBOL_ID_INVALID);
     loom_symbol_id_t symbol = LOOM_SYMBOL_ID_INVALID;
     IREE_RETURN_IF_ERROR(loom_module_add_symbol(module, name, &symbol));
     IREE_RETURN_IF_ERROR(
-        loom_symbol_map_insert(&names, pass->arena, name, symbol));
+        loom_symbol_map_insert(names, pass->arena, name, symbol));
     const loom_symbol_ref_t target = {0, symbol};
     loom_builder_set_block(&rewriter->builder, loom_module_block(module));
     loom_local_value_domain_restore(&worker->value_domain);
@@ -421,45 +390,25 @@ iree_status_t loom_pipeline_realize(
   return status;
 }
 
-iree_status_t loom_pipeline_realize_invocations(
-    loom_pass_t* pass, loom_module_t* module,
-    const loom_pipeline_invocations_t* invocations,
-    loom_pipeline_worker_t* workers,
+static iree_status_t loom_pipeline_realization_emit_workers(
+    loom_pass_t* pass, loom_rewriter_t* rewriter,
+    loom_pipeline_realization_t* realization,
     const loom_pipeline_realization_callback_t* callback) {
-  const loom_pipeline_invocation_t* root = invocations->entries[0];
-  loom_pipeline_realization_t realization = {
-      .function = root->function,
-      .facts = root->facts,
-      .resources = *root->resources,
-      .invocations = *invocations,
-      .workers = workers,
-  };
-  loom_rewriter_t rewriter;
-  loom_rewriter_initialize(&rewriter, module, pass->arena);
-  iree_status_t status =
-      loom_pipeline_realization_report(pass, module, &realization);
-  bool valid = true;
-  if (iree_status_is_ok(status) && valid) {
-    status =
-        callback->select(callback->user_data, module, &realization, &valid);
-  }
-  if (iree_status_is_ok(status) && valid) {
-    status =
-        loom_pipeline_realization_clone_workers(pass, &rewriter, &realization);
-  }
-  for (iree_host_size_t i = 0; iree_status_is_ok(status) && valid &&
-                               i < realization.invocations.worker_count;
+  loom_module_t* module = rewriter->module;
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t i = 0;
+       iree_status_is_ok(status) && i < realization->invocations.worker_count;
        ++i) {
-    loom_pipeline_worker_t* worker = &realization.workers[i];
+    loom_pipeline_worker_t* worker = &realization->workers[i];
     loom_channel_materialization_instance_t* instance =
-        &realization.instances[i].channels;
+        &realization->instances[i].channels;
     loom_local_value_domain_restore(&instance->value_domain);
-    status = callback->worker(callback->user_data, &rewriter, &realization, i);
+    status = callback->worker(callback->user_data, rewriter, realization, i);
     loom_local_value_domain_release(&instance->value_domain);
     if (iree_status_is_ok(status)) {
       loom_block_t* entry =
           loom_region_entry_block(loom_func_like_body(instance->function));
-      loom_builder_set_before(&rewriter.builder, entry->first_op);
+      loom_builder_set_before(&rewriter->builder, entry->first_op);
       loom_ir_remap_t literals;
       if (worker->literal_captures) {
         status = loom_ir_remap_initialize(module, module, pass->arena, NULL,
@@ -477,31 +426,31 @@ iree_status_t loom_pipeline_realize_invocations(
         if (loom_value_facts_can_materialize_constant(value_facts, type)) {
           loom_value_id_t constant;
           status =
-              loom_constant_build(&rewriter.builder, value_facts, type,
+              loom_constant_build(&rewriter->builder, value_facts, type,
                                   worker->function.op->location, &constant);
           if (iree_status_is_ok(status)) {
-            status = loom_rewriter_replace_all_uses_with(&rewriter, argument,
+            status = loom_rewriter_replace_all_uses_with(rewriter, argument,
                                                          constant);
           }
         } else if (worker->literal_captures && worker->literal_captures[j]) {
           loom_op_t* constant = NULL;
           status =
-              loom_ir_clone_op(&rewriter.builder, worker->literal_captures[j],
+              loom_ir_clone_op(&rewriter->builder, worker->literal_captures[j],
                                &literals, &constant);
           if (iree_status_is_ok(status)) {
             status = loom_rewriter_replace_all_uses_with(
-                &rewriter, argument, loom_op_results(constant)[0]);
+                rewriter, argument, loom_op_results(constant)[0]);
           }
         }
       }
       if (iree_status_is_ok(status)) {
-        status = loom_rewriter_seed_function(&rewriter, instance->function);
+        status = loom_rewriter_seed_function(rewriter, instance->function);
       }
       loom_op_t* dead;
       while (iree_status_is_ok(status) &&
-             (dead = loom_rewriter_pop(&rewriter))) {
+             (dead = loom_rewriter_pop(rewriter))) {
         bool erased;
-        status = loom_rewriter_erase_if_dead(&rewriter, dead, &erased);
+        status = loom_rewriter_erase_if_dead(rewriter, dead, &erased);
       }
       for (uint16_t j = entry->arg_count; j > 0 && iree_status_is_ok(status);
            --j) {
@@ -512,12 +461,171 @@ iree_status_t loom_pipeline_realize_invocations(
       }
     }
   }
-  if (iree_status_is_ok(status) && valid) {
-    status = callback->entry(callback->user_data, &rewriter, &realization);
-    loom_function_version_owner_prune_erased(realization.version_owner);
+  return status;
+}
+
+iree_status_t loom_pipeline_realize_occurrences(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_pipeline_realization_request_t* requests,
+    iree_host_size_t request_count, bool* out_valid) {
+  *out_valid = false;
+  const loom_target_pass_capability_t* capability =
+      loom_target_pass_capability_from_pass(pass);
+  loom_function_version_owner_t* owner =
+      loom_target_pass_capability_function_version_owner(capability);
+  loom_target_function_version_snapshot_t versions = {0};
+  IREE_RETURN_IF_ERROR(loom_target_function_version_snapshot_build(
+      module, loom_target_pass_capability_function_versions(capability),
+      pass->arena, &versions));
+  if (request_count >
+      LOOM_TARGET_CONTEXT_ORDINAL_INVALID - versions.target_context_capacity) {
+    return iree_make_status(
+        IREE_STATUS_RESOURCE_EXHAUSTED,
+        "pipeline realization exceeds target context capacity");
   }
+  loom_pipeline_realization_t* realizations = NULL;
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(pass->arena, request_count,
+                                                 sizeof(*realizations),
+                                                 (void**)&realizations));
+  loom_pipeline_realization_symbols_t symbols = {0};
+  // Capture stable version handles before the first symbol-table mutation.
+  // Subsequent cloning never consults this module snapshot again.
+  for (iree_host_size_t i = 0; i < request_count; ++i) {
+    const loom_pipeline_realization_request_t* request = &requests[i];
+    const loom_pipeline_invocation_t* occurrence =
+        request->invocations->entries[0];
+    const loom_symbol_ref_t source =
+        loom_func_like_callee(occurrence->function);
+    loom_target_function_version_t* entry_version =
+        loom_target_function_version_cast(
+            loom_target_function_version_snapshot_handle_at(&versions,
+                                                            source.symbol_id));
+    if (entry_version && request->symbol.symbol_id != source.symbol_id) {
+      loom_target_function_version_t* independent = NULL;
+      IREE_RETURN_IF_ERROR(iree_arena_allocate(
+          owner->arena, sizeof(*independent), (void**)&independent));
+      *independent = *entry_version;
+      independent->base.flags = 0;
+      independent->memory_accesses = NULL;
+      independent->loop_execution = NULL;
+      independent->loop_pipelines = (loom_source_loop_pipeline_list_t){0};
+      entry_version = independent;
+    }
+    loom_pipeline_realization_t* realization = &realizations[i];
+    *realization = (loom_pipeline_realization_t){
+        .function = occurrence->function,
+        .symbols = &symbols,
+        .entry = {.symbol = request->symbol,
+                  .location = occurrence->function.op->location,
+                  .visibility = loom_func_like_visibility(occurrence->function),
+                  .retain = iree_any_bit_set(
+                      module->symbols.entries[request->symbol.symbol_id].flags,
+                      LOOM_SYMBOL_FLAG_RETAIN),
+                  .version = entry_version},
+        .facts = occurrence->facts,
+        .resources = *occurrence->resources,
+        .invocations = *request->invocations,
+        .workers = request->workers,
+        .version_owner = owner,
+        .entry_target_context =
+            (loom_target_context_ordinal_t)(versions.target_context_capacity +
+                                            i),
+    };
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        pass->arena, realization->invocations.worker_count,
+        sizeof(*realization->worker_versions),
+        (void**)&realization->worker_versions));
+    for (iree_host_size_t j = 0; j < realization->invocations.worker_count;
+         ++j) {
+      realization->worker_versions[j] = loom_target_function_version_cast(
+          loom_target_function_version_snapshot_handle_at(
+              &versions,
+              loom_func_call_callee(realization->workers[j].source->call)
+                  .symbol_id));
+    }
+    IREE_RETURN_IF_ERROR(
+        loom_pipeline_realization_report(pass, module, realization));
+    bool valid = false;
+    IREE_RETURN_IF_ERROR(request->callback.select(request->callback.user_data,
+                                                  module, realization, &valid));
+    if (!valid) {
+      return iree_ok_status();
+    }
+  }
+  for (iree_host_size_t i = 0; i < module->symbols.count; ++i) {
+    if (module->symbols.entries[i].name_id != LOOM_STRING_ID_INVALID) {
+      IREE_RETURN_IF_ERROR(loom_symbol_map_insert(
+          &symbols.names, pass->arena, module->symbols.entries[i].name_id,
+          (loom_symbol_id_t)i));
+    }
+  }
+  uint32_t next_name = 0;
+  loom_rewriter_t rewriter;
+  loom_rewriter_initialize(&rewriter, module, pass->arena);
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t i = 0; i < request_count && iree_status_is_ok(status);
+       ++i) {
+    loom_pipeline_realization_t* realization = &realizations[i];
+    status = loom_pipeline_realization_clone_workers(
+        pass, &rewriter, realization, &symbols.names, &next_name);
+    if (iree_status_is_ok(status)) {
+      status = loom_pipeline_realization_emit_workers(
+          pass, &rewriter, realization, &requests[i].callback);
+    }
+  }
+  bool prepared = true;
+  for (iree_host_size_t i = 0;
+       i < request_count && iree_status_is_ok(status) && prepared; ++i) {
+    const loom_pipeline_realization_callback_t* callback =
+        &requests[i].callback;
+    if (callback->prepare) {
+      status = callback->prepare(callback->user_data, &rewriter,
+                                 &realizations[i], &prepared);
+    }
+  }
+  for (iree_host_size_t i = 0;
+       i < request_count && iree_status_is_ok(status) && prepared; ++i) {
+    loom_pipeline_realization_t* realization = &realizations[i];
+    const loom_pipeline_realization_callback_t* callback =
+        &requests[i].callback;
+    const bool replacing =
+        realization->entry.symbol.symbol_id ==
+        loom_func_like_callee(realization->function).symbol_id;
+    if (replacing) {
+      status = loom_rewriter_erase(&rewriter, realization->function.op);
+    }
+    loom_func_like_t output = {0};
+    if (iree_status_is_ok(status)) {
+      status =
+          callback->entry(callback->user_data, &rewriter, realization, &output);
+    }
+    if (iree_status_is_ok(status) && realization->entry.version) {
+      loom_function_version_update(&realization->entry.version->base, output);
+      if (!replacing) {
+        status = loom_function_version_owner_append(
+            owner, &realization->entry.version->base);
+      }
+    }
+  }
+  loom_function_version_owner_prune_erased(owner);
   loom_pass_value_fact_owner_invalidate(pass->value_facts);
   loom_pass_mark_changed(pass);
   loom_rewriter_deinitialize(&rewriter);
+  *out_valid = iree_status_is_ok(status) && prepared;
   return status;
+}
+
+iree_status_t loom_pipeline_realize_invocations(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_pipeline_invocations_t* invocations,
+    loom_pipeline_worker_t* workers,
+    const loom_pipeline_realization_callback_t* callback) {
+  const loom_pipeline_realization_request_t request = {
+      .invocations = invocations,
+      .workers = workers,
+      .symbol = loom_func_like_callee(invocations->entries[0]->function),
+      .callback = *callback,
+  };
+  bool valid = false;
+  return loom_pipeline_realize_occurrences(pass, module, &request, 1, &valid);
 }

@@ -7,6 +7,7 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/worker.h"
 
 #include "iree/base/internal/math.h"
+#include "loom/ir/symbol_map.h"
 
 iree_status_t loom_aie2p_worker_builder_initialize(
     loom_module_t* module, iree_arena_allocator_t* arena,
@@ -16,14 +17,6 @@ iree_status_t loom_aie2p_worker_builder_initialize(
       .arena = arena,
       .descriptors = loom_aie2p_core_descriptor_set(),
   };
-  for (iree_host_size_t i = 0; i < module->symbols.count; ++i) {
-    if (module->symbols.entries[i].name_id == LOOM_STRING_ID_INVALID) {
-      continue;
-    }
-    IREE_RETURN_IF_ERROR(loom_symbol_map_insert(
-        &out_builder->names, arena, module->symbols.entries[i].name_id,
-        (loom_symbol_id_t)i));
-  }
   IREE_RETURN_IF_ERROR(loom_module_intern_string(
       module, IREE_SV("amd.xdna.aie2p.core"), &out_builder->contract));
   IREE_RETURN_IF_ERROR(loom_module_intern_string(module, IREE_SV("i"),
@@ -42,20 +35,21 @@ iree_status_t loom_aie2p_worker_builder_initialize(
 
 iree_status_t loom_aie2p_worker_symbol(loom_aie2p_worker_builder_t* context,
                                        loom_symbol_ref_t* out_symbol) {
+  loom_pipeline_realization_symbols_t* symbols = context->realization->symbols;
   loom_string_id_t name = LOOM_STRING_ID_INVALID;
   do {
     char text[48];
     iree_snprintf(text, sizeof(text), "__aie2p_worker_helper_%u",
-                  context->next_name++);
+                  symbols->next_helper++);
     IREE_RETURN_IF_ERROR(loom_module_intern_string(
         context->module, iree_make_cstring_view(text), &name));
-  } while (loom_symbol_map_find(&context->names, name) !=
+  } while (loom_symbol_map_find(&symbols->names, name) !=
            LOOM_SYMBOL_ID_INVALID);
   *out_symbol = loom_symbol_ref_null();
   IREE_RETURN_IF_ERROR(
       loom_module_add_symbol(context->module, name, &out_symbol->symbol_id));
   out_symbol->module_id = 0;
-  IREE_RETURN_IF_ERROR(loom_symbol_map_insert(&context->names, context->arena,
+  IREE_RETURN_IF_ERROR(loom_symbol_map_insert(&symbols->names, context->arena,
                                               name, out_symbol->symbol_id));
   return iree_ok_status();
 }

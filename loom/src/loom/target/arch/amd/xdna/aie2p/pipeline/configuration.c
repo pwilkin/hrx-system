@@ -825,15 +825,11 @@ static iree_status_t loom_aie2p_native_config_communicate(
 
 iree_status_t loom_aie2p_native_emit_configuration(
     void* user_data, loom_rewriter_t* rewriter,
-    const loom_pipeline_realization_t* realization) {
+    const loom_pipeline_realization_t* realization,
+    loom_func_like_t* out_function) {
   loom_aie2p_native_context_t* context = user_data;
+  context->code.realization = realization;
   loom_module_t* module = rewriter->module;
-  bool valid = false;
-  IREE_RETURN_IF_ERROR(
-      loom_aie2p_native_emit_programs(context, rewriter, realization, &valid));
-  if (!valid) {
-    return iree_ok_status();
-  }
   loom_aie2p_native_configuration_t config = {
       .context = context,
       .descriptors = loom_aie2p_configuration_descriptor_set()};
@@ -863,8 +859,7 @@ iree_status_t loom_aie2p_native_emit_configuration(
   loom_target_facts_builder_set_worker_contract(
       LOOM_AIE2P_TARGET_KIND_CONFIGURATION,
       &loom_aie2p_configuration_target_bundle, facts);
-  loom_target_function_version_t* version =
-      loom_target_function_version_cast(context->pass->function_version);
+  loom_target_function_version_t* version = realization->entry.version;
   const loom_resolved_target_t resolved = {
       .provider = version->resolved_target.provider, .facts = facts};
   IREE_RETURN_IF_ERROR(loom_aie2p_target_materialize_definition(
@@ -874,9 +869,8 @@ iree_status_t loom_aie2p_native_emit_configuration(
       loom_aie2p_worker_symbol(&context->code, &initialize_symbol));
   IREE_RETURN_IF_ERROR(
       loom_aie2p_worker_symbol(&context->code, &invoke_symbol));
-  const loom_symbol_ref_t entry_symbol =
-      loom_func_like_callee(realization->function);
-  const loom_location_id_t location = realization->function.op->location;
+  const loom_symbol_ref_t entry_symbol = realization->entry.symbol;
+  const loom_location_id_t location = realization->entry.location;
   loom_kernel_launch_config_program_t* launch_program =
       loom_kernel_launch_config_program_from_pass(context->pass);
   if (launch_program) {
@@ -896,12 +890,8 @@ iree_status_t loom_aie2p_native_emit_configuration(
             module->symbols.entries[entry_symbol.symbol_id].name_id),
         &launch_config));
   }
-  const uint8_t visibility = loom_func_like_visibility(realization->function);
-  const uint8_t retain =
-      iree_any_bit_set(module->symbols.entries[entry_symbol.symbol_id].flags,
-                       LOOM_SYMBOL_FLAG_RETAIN)
-          ? LOOM_LOW_RETAIN_RETAIN
-          : 0;
+  const uint8_t visibility = realization->entry.visibility;
+  const uint8_t retain = realization->entry.retain ? LOOM_LOW_RETAIN_RETAIN : 0;
   uint64_t columns = 1;
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     const uint64_t limit = context->workers[i].tile->coordinate.column + 1;
@@ -1105,7 +1095,6 @@ iree_status_t loom_aie2p_native_emit_configuration(
   }
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&config.builder, NULL, 0));
 
-  IREE_RETURN_IF_ERROR(loom_rewriter_erase(rewriter, realization->function.op));
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     if (context->workers[i].execution != LOOM_AIE2P_NATIVE_EXECUTION_CORE) {
       IREE_RETURN_IF_ERROR(loom_rewriter_erase(
@@ -1130,12 +1119,11 @@ iree_status_t loom_aie2p_native_emit_configuration(
       &config, AIE2P_CONFIGURATION_DESCRIPTOR_REF_CONFIGURATION_ENTRY, &columns,
       1, loom_make_named_attr_slice(entries, 2)));
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&config.builder, NULL, 0));
-  loom_function_version_update(&version->base,
-                               loom_func_like_cast(module, entry));
   version->resolved_target = resolved;
   version->function_target_facts = facts;
   version->target_requirement_facts = facts;
   version->authored_target_is_exact = true;
   version->target_context_ordinal = realization->entry_target_context;
+  *out_function = loom_func_like_cast(module, entry);
   return iree_ok_status();
 }

@@ -1014,26 +1014,54 @@ static iree_status_t loom_aie2p_native_select(
       context->pass->diagnostic_emitter, out_valid);
 }
 
+static iree_status_t loom_aie2p_native_prepare_entry(
+    void* user_data, loom_rewriter_t* rewriter,
+    const loom_pipeline_realization_t* realization, bool* out_valid) {
+  return loom_aie2p_native_emit_programs(user_data, rewriter, realization,
+                                         out_valid);
+}
+
+iree_status_t loom_aie2p_pipeline_realization_initialize(
+    loom_pass_t* pass, loom_module_t* module,
+    const loom_target_function_version_t* version,
+    loom_aie2p_native_context_t* context,
+    loom_pipeline_realization_callback_t* out_callback, bool* out_valid) {
+  *out_valid = false;
+  const loom_aie2p_target_facts_t* target =
+      loom_aie2p_target_facts_cast(version->function_target_facts);
+  *context = (loom_aie2p_native_context_t){.pass = pass, .target = target};
+  if (!target || !target->device_profile) {
+    return loom_aie2p_native_reject(context, version->base.function.op,
+                                    IREE_SV("an exact deployment profile"));
+  }
+  context->family =
+      loom_xdna_device_profile_array_family(target->device_profile);
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_inventory(context));
+  IREE_RETURN_IF_ERROR(loom_aie2p_worker_builder_initialize(module, pass->arena,
+                                                            &context->code));
+  *out_callback = (loom_pipeline_realization_callback_t){
+      .select = loom_aie2p_native_select,
+      .worker = loom_aie2p_native_emit_worker,
+      .prepare = loom_aie2p_native_prepare_entry,
+      .entry = loom_aie2p_native_emit_configuration,
+      .user_data = context};
+  *out_valid = true;
+  return iree_ok_status();
+}
+
 iree_status_t loom_aie2p_pipeline_realize(loom_pass_t* pass,
                                           loom_module_t* module,
                                           loom_func_like_t function) {
-  const loom_aie2p_target_facts_t* target = loom_aie2p_target_facts_cast(
-      loom_target_function_version_target_facts(pass->function_version));
-  loom_aie2p_native_context_t context = {.pass = pass, .target = target};
-  if (!target || !target->device_profile) {
-    return loom_aie2p_native_reject(&context, function.op,
-                                    IREE_SV("an exact deployment profile"));
+  loom_aie2p_native_context_t context;
+  loom_pipeline_realization_callback_t callback;
+  bool valid = false;
+  IREE_RETURN_IF_ERROR(loom_aie2p_pipeline_realization_initialize(
+      pass, module,
+      loom_target_function_version_const_cast(pass->function_version), &context,
+      &callback, &valid));
+  if (!valid) {
+    return iree_ok_status();
   }
-  context.family =
-      loom_xdna_device_profile_array_family(target->device_profile);
-  IREE_RETURN_IF_ERROR(loom_aie2p_native_inventory(&context));
-  IREE_RETURN_IF_ERROR(
-      loom_aie2p_worker_builder_initialize(module, pass->arena, &context.code));
-  const loom_pipeline_realization_callback_t callback = {
-      .select = loom_aie2p_native_select,
-      .worker = loom_aie2p_native_emit_worker,
-      .entry = loom_aie2p_native_emit_configuration,
-      .user_data = &context};
   return loom_pipeline_realize(pass, module, function, &context.inventory,
                                &callback);
 }

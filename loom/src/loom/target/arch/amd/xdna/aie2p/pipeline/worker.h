@@ -9,7 +9,6 @@
 
 #include "loom/codegen/low/builder.h"
 #include "loom/ir/module.h"
-#include "loom/ir/symbol_map.h"
 #include "loom/target/arch/amd/xdna/aie2p/descriptors/core_descriptors.h"
 #include "loom/transforms/pipeline/realization.h"
 
@@ -26,10 +25,6 @@ typedef struct loom_aie2p_worker_builder_t {
   iree_host_size_t worker_index;
   // Compiler diagnostic sink used by helper function-contract refinement.
   iree_diagnostic_emitter_t diagnostic_emitter;
-  // Module symbol inventory extended as helpers are emitted.
-  loom_symbol_map_t names;
-  // Next candidate suffix for a helper name.
-  uint32_t next_name;
   // Canonical core descriptor vocabulary.
   const loom_low_descriptor_set_t* descriptors;
   // Core representation contract for every helper.

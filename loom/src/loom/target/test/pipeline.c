@@ -22,6 +22,8 @@ typedef struct loom_test_pipeline_t {
   iree_host_size_t* engines;
   // Production overlap and phase-participation plan.
   loom_pipeline_execution_t execution;
+  // Projected physical entry retained across source retirement.
+  loom_func_like_t entry;
   // Synthetic device operations visible in the projected program.
   loom_symbol_ref_t boundaries[2];
   // Unique declaration suffix for synthetic collective transport operations.
@@ -195,9 +197,9 @@ static iree_status_t loom_test_pipeline_collective_end(
   return iree_ok_status();
 }
 
-static iree_status_t loom_test_pipeline_entry(
+static iree_status_t loom_test_pipeline_prepare(
     void* user_data, loom_rewriter_t* rewriter,
-    const loom_pipeline_realization_t* realization) {
+    const loom_pipeline_realization_t* realization, bool* out_valid) {
   loom_test_pipeline_t* state = user_data;
   loom_builder_enter_region(&rewriter->builder, NULL, rewriter->module->body);
   const char* names[] = {"__test_phase_join", "__test_phase_enter"};
@@ -229,12 +231,24 @@ static iree_status_t loom_test_pipeline_entry(
       rewriter, realization, &state->execution, &options, &functions));
   for (iree_host_size_t i = 0; i < state->execution.engine_count; ++i) {
     if (loom_func_like_isa(functions[i].function)) {
+      state->entry = functions[i].function;
       IREE_RETURN_IF_ERROR(
           loom_rewriter_set_attr(rewriter, functions[i].function.op, 1,
                                  loom_attr_enum(LOOM_FUNC_VISIBILITY_PUBLIC)));
     }
   }
-  return loom_rewriter_erase(rewriter, realization->function.op);
+  *out_valid = true;
+  return iree_ok_status();
+}
+
+static iree_status_t loom_test_pipeline_entry(
+    void* user_data, loom_rewriter_t* rewriter,
+    const loom_pipeline_realization_t* realization,
+    loom_func_like_t* out_function) {
+  (void)rewriter;
+  (void)realization;
+  *out_function = ((loom_test_pipeline_t*)user_data)->entry;
+  return iree_ok_status();
 }
 
 static iree_status_t loom_test_pipeline_run(loom_pass_t* pass,
@@ -249,6 +263,7 @@ static iree_status_t loom_test_pipeline_run(loom_pass_t* pass,
   const loom_pipeline_realization_callback_t callbacks = {
       .select = loom_test_pipeline_select,
       .worker = loom_test_pipeline_worker,
+      .prepare = loom_test_pipeline_prepare,
       .entry = loom_test_pipeline_entry,
       .user_data = &state};
   return loom_pipeline_realize(pass, module, function, &inventory, &callbacks);
