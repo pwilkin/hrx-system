@@ -97,6 +97,10 @@ iree_status_t loom_aie2p_native_select_input(
       .binding = binding,
       .source = plan,
       .controller = UINT32_MAX,
+      .begin = loom_symbol_ref_null(),
+      .start = loom_symbol_ref_null(),
+      .complete = loom_symbol_ref_null(),
+      .retire = loom_symbol_ref_null(),
   };
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       context->pass->arena, plan->phase_count, sizeof(*input->phases),
@@ -471,8 +475,8 @@ iree_status_t loom_aie2p_native_route_input(
   bool valid = false;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_select_control_route(
       context, realization, input->controller, shim,
-      protocol != NULL || (!input->continuation && input->invocation->ordinal),
-      next_source, next_controller, &valid));
+      protocol != NULL || input->invocation->ordinal, next_source,
+      next_controller, &valid));
   if (!valid) {
     return iree_ok_status();
   }
@@ -480,8 +484,8 @@ iree_status_t loom_aie2p_native_route_input(
     for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
       IREE_RETURN_IF_ERROR(loom_aie2p_native_select_control_route(
           context, realization, input->controller,
-          input->phases[i].receiver.tile, input->continuation == NULL,
-          next_source, next_controller, &valid));
+          input->phases[i].receiver.tile, true, next_source, next_controller,
+          &valid));
       if (!valid) {
         return iree_ok_status();
       }

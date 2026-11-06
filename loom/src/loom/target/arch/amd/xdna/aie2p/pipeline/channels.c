@@ -674,9 +674,9 @@ static iree_status_t loom_aie2p_native_channel_exit(
   loom_aie2p_native_channel_emitter_t* emitter = user_data;
   for (const loom_aie2p_native_input_t* input = emitter->inputs; input;
        input = input->next) {
-    if (!input->continuation && loom_symbol_ref_is_valid(input->complete)) {
+    if (loom_symbol_ref_is_valid(input->retire)) {
       IREE_RETURN_IF_ERROR(loom_aie2p_native_invoke(
-          &rewriter->builder, input->complete, NULL, 0, NULL, NULL));
+          &rewriter->builder, input->retire, NULL, 0, NULL, NULL));
     }
   }
   const int64_t zero = 0;

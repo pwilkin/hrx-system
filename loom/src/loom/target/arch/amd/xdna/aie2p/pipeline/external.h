@@ -119,10 +119,13 @@ typedef struct loom_aie2p_native_input_t {
   iree_host_size_t state_index;
   // Generated source admission helper in the controller's context.
   loom_symbol_ref_t begin;
-  // Child-entry receiver publication; root receivers start in configuration.
+  // Child-entry iterator initialization and receiver publication. A shared
+  // external ring supplies its first slot; root inputs start in configuration.
   loom_symbol_ref_t start;
-  // Shared source reclamation or invocation-owned queue retirement helper.
+  // Shared source reclamation after the final local observation of a lease.
   loom_symbol_ref_t complete;
+  // Child-exit retirement of source, credit, and local receiver queues.
+  loom_symbol_ref_t retire;
   // Next input controlled by the same existing core.
   struct loom_aie2p_native_input_t* next;
 } loom_aie2p_native_input_t;

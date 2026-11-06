@@ -10,17 +10,12 @@
 #include "loom/ops/view/ops.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 
-// Selects a compact descriptor's slot after all preceding reads retire.
-// Query payloads and credit completions have already drained the reply stream.
-static iree_status_t loom_aie2p_native_input_select_slot(
+// Writes an idle descriptor's slot while preserving its address geometry.
+static iree_status_t loom_aie2p_native_input_write_slot(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
-    loom_region_t* region, const loom_aie2p_native_input_t* input,
-    uint32_t register_offset, uint32_t geometry_word, loom_value_id_t slot) {
+    const loom_aie2p_native_input_t* input, uint32_t register_offset,
+    uint32_t geometry_word, loom_value_id_t slot) {
   loom_aie2p_worker_builder_t* code = &context->code;
-  IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
-      context, builder, region, input->shim, input->input_engine,
-      LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, input->control_packet,
-      input->completion_packet));
   const loom_xdna_register_field_info_t current = loom_xdna_register_field_info(
       LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT);
   loom_value_id_t shift, current_slot, geometry, iteration;
@@ -37,6 +32,29 @@ static iree_status_t loom_aie2p_native_input_select_slot(
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
       code, builder, input->control_packet, register_offset, &iteration, 1));
   return iree_ok_status();
+}
+
+// Selects a compact descriptor's slot after all preceding reads retire.
+// Query payloads and credit completions have already drained the reply stream.
+static iree_status_t loom_aie2p_native_input_select_slot(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    loom_region_t* region, const loom_aie2p_native_input_t* input,
+    uint32_t register_offset, uint32_t geometry_word, loom_value_id_t slot) {
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
+      context, builder, region, input->shim, input->input_engine,
+      LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, input->control_packet,
+      input->completion_packet));
+  return loom_aie2p_native_input_write_slot(
+      context, builder, input, register_offset, geometry_word, slot);
+}
+
+// Immutable bulk/notification descriptors select their slot through the task
+// ID. Prefixes and compact descriptors instead retain hardware iteration state.
+static bool loom_aie2p_native_input_initializes_slot(
+    const loom_aie2p_native_input_t* input) {
+  return input->binding && input->binding->protocol->payload.capacity > 1 &&
+         (input->source->phase_count > 1 ||
+          input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE);
 }
 
 static iree_status_t loom_aie2p_native_input_begin(
@@ -223,8 +241,41 @@ iree_status_t loom_aie2p_native_prepare_input(
   if (input->invocation->ordinal) {
     loom_builder_t builder;
     loom_op_t* function;
+    const bool initializes_slot =
+        loom_aie2p_native_input_initializes_slot(input);
     IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(
-        &context->code, NULL, 0, NULL, 0, &builder, &input->start, &function));
+        &context->code, &context->code.scalar_type, initializes_slot, NULL, 0,
+        &builder, &input->start, &function));
+    if (initializes_slot) {
+      const loom_value_id_t slot =
+          loom_region_entry_block(loom_low_func_def_body(function))->arg_ids[0];
+      const uint64_t origin = (uint64_t)input->shim->coordinate.column
+                              << context->family->column_shift;
+      const iree_host_size_t phase_count =
+          input->source->phase_count -
+          (input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD);
+      for (iree_host_size_t i = 0; i < phase_count; ++i) {
+        const loom_aie2p_native_input_phase_t* phase = &input->phases[i];
+        const uint32_t offset =
+            (uint32_t)(loom_xdna_register_field_address(
+                           context->family,
+                           LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT,
+                           input->shim->coordinate, &phase->descriptor) -
+                       origin);
+        IREE_RETURN_IF_ERROR(loom_aie2p_native_input_write_slot(
+            context, &builder, input, offset, phase->words[6], slot));
+      }
+      if (input->slots != LOOM_AIE2P_NATIVE_INPUT_SLOTS_IMMUTABLE) {
+        const uint32_t offset =
+            (uint32_t)(loom_xdna_register_field_address(
+                           context->family,
+                           LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT,
+                           input->shim->coordinate, &input->credit_descriptor) -
+                       origin);
+        IREE_RETURN_IF_ERROR(loom_aie2p_native_input_write_slot(
+            context, &builder, input, offset, input->ready_iteration, slot));
+      }
+    }
     for (iree_host_size_t i = 0; i < input->source->phase_count; ++i) {
       const loom_aie2p_native_distribution_endpoint_t* receiver =
           &input->phases[i].receiver;
@@ -235,17 +286,22 @@ iree_status_t loom_aie2p_native_prepare_input(
     IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&builder, NULL, 0));
   }
   IREE_RETURN_IF_ERROR(loom_aie2p_native_input_begin(context, input));
-  if (!input->continuation && input->invocation->ordinal) {
+  if (input->invocation->ordinal) {
     loom_builder_t builder;
     loom_op_t* function;
-    IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(&context->code, NULL, 0, NULL,
-                                                  0, &builder, &input->complete,
-                                                  &function));
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(
+        &context->code, NULL, 0, NULL, 0, &builder, &input->retire, &function));
     const iree_host_size_t shim = input->shim - context->tiles;
     IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
         context, &builder, loom_low_func_def_body(function), input->shim,
         input->input_engine, LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM,
         owner->control_packets[shim], owner->control_replies[shim]));
+    if (input->binding) {
+      IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
+          context, &builder, loom_low_func_def_body(function), input->shim,
+          input->credit_engine, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+          owner->control_packets[shim], owner->control_replies[shim]));
+    }
     const iree_host_size_t count =
         input->shared_receiver ? 1 : input->source->phase_count;
     for (iree_host_size_t i = 0; i < count; ++i) {
@@ -257,7 +313,7 @@ iree_status_t loom_aie2p_native_prepare_input(
           receiver->engine, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
           owner->control_packets[tile], owner->control_replies[tile]));
     }
-    return loom_aie2p_worker_return(&builder, NULL, 0);
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&builder, NULL, 0));
   }
   return input->binding ? loom_aie2p_native_input_complete(context, input)
                         : iree_ok_status();
@@ -274,20 +330,11 @@ static iree_status_t loom_aie2p_native_input_constant(loom_builder_t* builder,
   return iree_ok_status();
 }
 
-iree_status_t loom_aie2p_native_initialize_input(
+static iree_status_t loom_aie2p_native_initialize_input_state(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
     const loom_aie2p_native_input_t* input, loom_value_id_t* frame_argument,
     loom_value_id_t* state, loom_value_id_t* state_views) {
   loom_op_t* op;
-  if (input->invocation->ordinal) {
-    IREE_RETURN_IF_ERROR(loom_low_invoke_build(builder, 0, 0, 0, input->start,
-                                               NULL, 0, NULL, 0, NULL, 0,
-                                               LOOM_LOCATION_UNKNOWN, &op));
-  }
-  if (!input->continuation) {
-    return loom_low_invoke_build(builder, 0, 0, 0, input->begin, NULL, 0, NULL,
-                                 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op);
-  }
   const uint32_t initial[] = {0, 1, 0};
   for (iree_host_size_t i = 0; i < (input->binding ? 3 : 1); ++i) {
     IREE_RETURN_IF_ERROR(
@@ -327,6 +374,28 @@ iree_status_t loom_aie2p_native_initialize_input(
   IREE_RETURN_IF_ERROR(loom_scalar_addi_build(
       builder, 0, ordinal, admissions, type, LOOM_LOCATION_UNKNOWN, &op));
   state[3] = loom_scalar_addi_result(op);
+  return iree_ok_status();
+}
+
+iree_status_t loom_aie2p_native_initialize_input(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    const loom_aie2p_native_input_t* input, loom_value_id_t* frame_argument,
+    loom_value_id_t* state, loom_value_id_t* state_views) {
+  if (input->continuation) {
+    IREE_RETURN_IF_ERROR(loom_aie2p_native_initialize_input_state(
+        context, builder, input, frame_argument, state, state_views));
+  }
+  loom_op_t* op;
+  if (input->invocation->ordinal) {
+    IREE_RETURN_IF_ERROR(
+        loom_low_invoke_build(builder, 0, 0, 0, input->start, state,
+                              loom_aie2p_native_input_initializes_slot(input),
+                              NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op));
+  }
+  if (!input->continuation) {
+    return loom_low_invoke_build(builder, 0, 0, 0, input->begin, NULL, 0, NULL,
+                                 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op);
+  }
   return iree_ok_status();
 }
 
