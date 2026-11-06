@@ -1,7 +1,8 @@
 // RUN: emit source-low @composed target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=low
 
-// Ordered children share one physical core. Their distinct storage survives
-// preparation, and the complete program owns one start and completion.
+// Ordered children share one physical core and reuse their local storage. The
+// parent's shared allocation stays distinct across both child lifetimes, and
+// the complete program owns one start and completion.
 aie2p.target<array> @device {device_profile = "amd.xdna.strix.17f0_10"}
 
 pipeline.def @write_shared() run(%memory: pool, %shared: buffer) {
@@ -48,11 +49,10 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_5() asm {
   %value$102 = mov.short 17
   st %value$102, %46, 0
   st %value$102, %42, 0
-  %99 = mov.local-address 458760
   %value$105 = lda %42, 0
   %increment = mov.short 29
   %result = add.nc %value$105, %increment
-  st %result, %99, 0
+  st %result, %46, 0
   %81 = mov.short 1
   rel %81, 48
   low.br ^_bb1
@@ -68,7 +68,7 @@ low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_6) @__a
   write.mask32 %83, %84, %85
   %86 = constant 0 : reg<aie2p.config.scalar : i64>
   program.load %86, %85, @__aie2p_worker_helper_5
-  %87 = constant 12 : reg<aie2p.config.scalar : i64>
+  %87 = constant 8 : reg<aie2p.config.scalar : i64>
   data.reserve %86, %85, %86, %87
   return
 }

@@ -10,6 +10,7 @@
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 #include "loom/analysis/pipeline/execution.h"
+#include "loom/analysis/source_storage_packing.h"
 
 namespace loom {
 namespace {
@@ -91,6 +92,8 @@ class PipelineInvocationsTest : public ::testing::Test {
     resources_[1].schedule_count = 1;
     occurrences_[1].schedules = bound_;
     invocations_ = {entries_, 5, workers_, 5, channels_, 3, channel_order_};
+    IREE_ASSERT_OK(loom_pipeline_lifetimes_build(&invocations_, &arena_,
+                                                 &invocations_.lifetimes));
   }
 
   void TearDown() override {
@@ -150,6 +153,7 @@ TEST_F(PipelineInvocationsTest, WholeRootBorrowsInventoryWithoutAllocation) {
   EXPECT_EQ(projected.workers, invocations_.workers);
   EXPECT_EQ(projected.channels, invocations_.channels);
   EXPECT_EQ(projected.channel_order, invocations_.channel_order);
+  EXPECT_EQ(projected.lifetimes.nodes, invocations_.lifetimes.nodes);
 }
 
 TEST_F(PipelineInvocationsTest, IndependentSubtreeKeepsProtocolsAndJoins) {
@@ -159,6 +163,7 @@ TEST_F(PipelineInvocationsTest, IndependentSubtreeKeepsProtocolsAndJoins) {
   ASSERT_EQ(projected.count, 4u);
   ASSERT_EQ(projected.worker_count, 4u);
   ASSERT_EQ(projected.channel_count, 2u);
+  EXPECT_EQ(projected.lifetimes.nodes, invocations_.lifetimes.nodes);
   const auto* root = projected.entries[0];
   EXPECT_EQ(root->parent, nullptr);
   EXPECT_EQ(root->call, nullptr);
@@ -216,6 +221,125 @@ TEST_F(PipelineInvocationsTest, IndependentSubtreeKeepsProtocolsAndJoins) {
   EXPECT_EQ(leaf.channels[1].invocation, root);
   EXPECT_EQ(leaf.entries[0]->first_channel, 2u);
   EXPECT_EQ(leaf.entries[0]->subtree.channels, 0u);
+}
+
+TEST_F(PipelineInvocationsTest, StorageRespectsOwnersAndCanonicalBackings) {
+  const loom_source_storage_packing_range_t fixed[] = {{0, 64}};
+  loom_pipeline_resource_pool_t pools[2] = {};
+  IREE_ASSERT_OK(loom_source_storage_packing_allocate({}, fixed, 1, &arena_,
+                                                      &pools[0].packing));
+  IREE_ASSERT_OK(loom_source_storage_packing_allocate({}, nullptr, 0, &arena_,
+                                                      &pools[1].packing));
+  // A different inventory ordering must still identify the same two backings.
+  const loom_pipeline_resource_pool_t reversed[] = {pools[1], pools[0]};
+  const uint64_t lengths[] = {32, 33, 48, 96, 24};
+  const uint64_t alignments[] = {16, 32, 16, 128, 64};
+  loom_pipeline_resource_allocation_t allocations[5][2] = {};
+  for (size_t i = 0; i < 5; ++i) {
+    resources_[i].pools = i % 2 ? reversed : pools;
+    resources_[i].pool_count = 2;
+    resources_[i].allocations = allocations[i];
+    resources_[i].allocation_count = 2;
+    allocations[i][0] = {
+        .pool_index = static_cast<uint32_t>(i % 2),
+        .byte_length = lengths[i],
+        .byte_alignment = alignments[i],
+    };
+    allocations[i][1] = {
+        .pool_index = static_cast<uint32_t>(1 - i % 2),
+        .construction_order = 1,
+        .byte_length = i == 3 ? 8u : 0u,
+        .byte_alignment = 8,
+    };
+  }
+  const loom_pipeline_storage_allocation_t** placed = nullptr;
+  IREE_ASSERT_OK(loom_pipeline_construction_storage_build(&invocations_,
+                                                          &arena_, &placed));
+  const uint64_t offsets[] = {128, 256, 304, 384, 384};
+  for (size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(placed[i][0].source, &allocations[i][0]);
+    EXPECT_EQ(placed[i][0].byte_offset, offsets[i]);
+    EXPECT_EQ(placed[i][0].byte_offset % alignments[i], 0u);
+    occurrences_[i].storage = placed[i];
+    for (size_t j = 0; j < i; ++j) {
+      if (i == 4 && j == 3) {
+        continue;
+      }
+      EXPECT_TRUE(offsets[i] >= offsets[j] + lengths[j] ||
+                  offsets[j] >= offsets[i] + lengths[i]);
+    }
+  }
+  EXPECT_EQ(
+      loom_source_storage_packing_requirement(pools[0].packing).byte_length,
+      480u);
+  EXPECT_EQ(
+      loom_source_storage_packing_requirement(pools[1].packing).byte_length,
+      8u);
+  uint64_t service_offset = UINT64_MAX;
+  IREE_ASSERT_OK(loom_source_storage_packing_reserve(
+      pools[0].packing, 64, 64, nullptr, 0, &service_offset));
+  EXPECT_EQ(service_offset, 64u);
+
+  const auto before_projection =
+      loom_source_storage_packing_requirement(pools[0].packing).byte_length;
+  loom_pipeline_invocations_t projected;
+  IREE_ASSERT_OK(loom_pipeline_invocations_project(&invocations_, entries_[1],
+                                                   &arena_, &projected));
+  for (size_t i = 0; i < projected.count; ++i) {
+    EXPECT_EQ(projected.entries[i]->storage, placed[i + 1]);
+  }
+  EXPECT_EQ(
+      loom_source_storage_packing_requirement(pools[0].packing).byte_length,
+      before_projection);
+}
+
+TEST_F(PipelineInvocationsTest,
+       ConcurrentStorageUsesConstructionOrderAndFixedReservationHoles) {
+  // Keep only the root's concurrent wrapper and its concurrent child.
+  resources_[1].schedule_count = 0;
+  invocations_.count = 3;
+  IREE_ASSERT_OK(loom_pipeline_lifetimes_build(&invocations_, &arena_,
+                                               &invocations_.lifetimes));
+  const loom_source_storage_packing_range_t fixed[] = {{64, 64}, {192, 64}};
+  loom_pipeline_resource_pool_t pool = {};
+  IREE_ASSERT_OK(loom_source_storage_packing_allocate({}, fixed, 2, &arena_,
+                                                      &pool.packing));
+  loom_pipeline_resource_allocation_t allocations[3] = {};
+  for (size_t i = 0; i < 3; ++i) {
+    resources_[i].pools = &pool;
+    resources_[i].pool_count = 1;
+    resources_[i].allocations = &allocations[i];
+    resources_[i].allocation_count = 1;
+    allocations[i].byte_length = 64;
+    allocations[i].byte_alignment = 64;
+  }
+  // Lookup order differs from construction order. The first allocation fits
+  // below the first fixed range, while the second needs the next complete hole.
+  const loom_pipeline_resource_allocation_t root_allocations[] = {
+      {
+          .root_value_id = 1,
+          .construction_order = 1,
+          .byte_length = 64,
+          .byte_alignment = 64,
+      },
+      {
+          .root_value_id = 2,
+          .construction_order = 0,
+          .byte_length = 32,
+          .byte_alignment = 32,
+      },
+  };
+  resources_[0].allocations = root_allocations;
+  resources_[0].allocation_count = IREE_ARRAYSIZE(root_allocations);
+  const loom_pipeline_storage_allocation_t** placed = nullptr;
+  IREE_ASSERT_OK(loom_pipeline_construction_storage_build(&invocations_,
+                                                          &arena_, &placed));
+  EXPECT_EQ(placed[0][0].byte_offset, 128u);
+  EXPECT_EQ(placed[0][1].byte_offset, 0u);
+  EXPECT_EQ(placed[1][0].byte_offset, 256u);
+  EXPECT_EQ(placed[2][0].byte_offset, 320u);
+  EXPECT_EQ(loom_source_storage_packing_requirement(pool.packing).byte_length,
+            384u);
 }
 
 }  // namespace

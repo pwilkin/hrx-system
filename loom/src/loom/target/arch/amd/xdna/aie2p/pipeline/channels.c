@@ -29,7 +29,7 @@ iree_status_t loom_aie2p_native_select_channels(
     const loom_pipeline_invocation_channel_t* occurrence =
         &invocations->channels[i];
     const loom_pipeline_resource_channel_t* source = occurrence->source;
-    const loom_pipeline_resource_allocation_t* allocation =
+    const loom_pipeline_storage_allocation_t* allocation =
         occurrence->allocation;
     // Allocation ownership establishes a lifetime, not a transport. A parent
     // may own the external payload while this occurrence imports its protocol.
@@ -66,7 +66,7 @@ iree_status_t loom_aie2p_native_select_channels(
                   "protocol"));
     }
     loom_aie2p_native_tile_t* owner =
-        context->pool_tiles[allocation->pool_index];
+        context->pool_tiles[allocation->source->pool_index];
     const loom_pipeline_channel_geometry_t* geometry = source->geometry;
     int64_t offset = 0;
     uint64_t extent = 0;
@@ -78,8 +78,8 @@ iree_status_t loom_aie2p_native_select_channels(
         !iree_checked_mul_u64(source->capacity - 1,
                               geometry->slot_bit_stride / 8, &extent) ||
         !iree_checked_add_u64(extent, geometry->record_bit_span / 8, &extent) ||
-        (uint64_t)offset > allocation->byte_length ||
-        extent > allocation->byte_length - (uint64_t)offset ||
+        (uint64_t)offset > allocation->source->byte_length ||
+        extent > allocation->source->byte_length - (uint64_t)offset ||
         geometry->slot_bit_stride / 8 > UINT32_MAX ||
         allocation->byte_offset > UINT32_MAX - (uint64_t)offset) {
       return loom_aie2p_native_reject(
@@ -93,7 +93,7 @@ iree_status_t loom_aie2p_native_select_channels(
     }
     context->channels[i] = (loom_aie2p_native_channel_t){
         .source = source,
-        .pool_index = allocation->pool_index,
+        .pool_index = allocation->source->pool_index,
         .byte_offset = (uint32_t)(allocation->byte_offset + (uint64_t)offset),
         .byte_stride = (uint32_t)(geometry->slot_bit_stride / 8),
         .record_byte_length = (uint32_t)(geometry->record_bit_span / 8),

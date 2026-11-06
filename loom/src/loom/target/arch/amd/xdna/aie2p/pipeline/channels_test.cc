@@ -35,7 +35,7 @@ class Aie2pChannelsTest : public ::testing::Test {
     source_.capacity = 3;
     source_.geometry = &geometry_;
     occurrence_.source = &source_;
-    occurrence_.allocation = &allocation_;
+    occurrence_.allocation = &placement_;
     realization_.invocations.channels = &occurrence_;
     realization_.invocations.channel_count = 1;
     const auto view = loom_type_shaped_1d(LOOM_TYPE_VIEW, LOOM_SCALAR_TYPE_I32,
@@ -84,10 +84,11 @@ class Aie2pChannelsTest : public ::testing::Test {
   // Source allocation whose lifetime is independent of channel selection.
   loom_pipeline_resource_allocation_t allocation_ = {
       .pool_index = 0,
-      .byte_offset = 512,
       .byte_length = 320,
       .byte_alignment = 32,
   };
+  // Common construction placement supplied before target channel selection.
+  loom_pipeline_storage_allocation_t placement_ = {&allocation_, 512};
   // One imported or locally constructed channel occurrence.
   loom_pipeline_invocation_channel_t occurrence_ = {};
   // Complete selected input for this channel admission.
@@ -109,7 +110,7 @@ TEST_F(Aie2pChannelsTest, ExternalProtocolDoesNotConsumeLocalStorageOrLocks) {
     for (const bool parent_allocated : {false, true}) {
       SCOPED_TRACE(::testing::Message() << space << ":" << parent_allocated);
       source_.storage.memory_space = space;
-      occurrence_.allocation = parent_allocated ? &allocation_ : nullptr;
+      occurrence_.allocation = parent_allocated ? &placement_ : nullptr;
       Select(true);
       const auto& channel = context_.channels[0];
       EXPECT_EQ(channel.external, &binding_);

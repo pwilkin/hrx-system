@@ -253,18 +253,18 @@ static iree_status_t loom_aie2p_native_select_storage_accesses(
           context, source->source->call,
           IREE_SV("a fixed local byte offset for each core storage capture"));
     }
-    const loom_pipeline_resource_allocation_t* allocation =
+    const loom_pipeline_storage_allocation_t* allocation =
         loom_pipeline_invocation_lookup_allocation(invocation, root);
-    if (!allocation || allocation->byte_length == 0 ||
+    if (!allocation || allocation->source->byte_length == 0 ||
         allocation->byte_offset > UINT32_MAX ||
-        allocation->byte_length > UINT32_MAX) {
+        allocation->source->byte_length > UINT32_MAX) {
       return loom_aie2p_native_reject(
           context, source->source->call,
           IREE_SV("an invocation-owned finite local allocation for each core "
                   "storage capture"));
     }
     const loom_aie2p_native_tile_t* owner =
-        context->pool_tiles[allocation->pool_index];
+        context->pool_tiles[allocation->source->pool_index];
     if (owner->facts->kind == LOOM_XDNA_TILE_KIND_MEMORY) {
       return loom_aie2p_native_reject(
           context, source->source->call,
@@ -281,8 +281,8 @@ static iree_status_t loom_aie2p_native_select_storage_accesses(
         &worker->storage.accesses[worker->storage.count++];
     access->argument = argument;
     access->alignment =
-        offset ? iree_min(allocation->byte_alignment, offset_alignment)
-               : allocation->byte_alignment;
+        offset ? iree_min(allocation->source->byte_alignment, offset_alignment)
+               : allocation->source->byte_alignment;
     access->address =
         window->base + (uint32_t)allocation->byte_offset + (uint32_t)offset;
   }
