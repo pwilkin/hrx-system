@@ -84,6 +84,13 @@ iree_status_t loom_runtime_backing_directory_insert(
     loom_runtime_backing_directory_t* directory, iree_host_size_t index,
     loom_runtime_backing_entry_t** out_entry);
 
+// Marks [begin, end) as kept with one lookup per logical group. Missing slots
+// become empty markers. Reports newly selected slots, counting overlaps once.
+// Allocation failure preserves ownership and any already-selected prefix.
+iree_status_t loom_runtime_backing_directory_keep(
+    loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
+    iree_host_size_t end, iree_host_size_t* out_added_count);
+
 // Removes an entry and makes its payload slot reusable.
 void loom_runtime_backing_directory_remove(
     loom_runtime_backing_directory_t* directory,

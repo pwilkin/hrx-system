@@ -1270,6 +1270,9 @@ TEST_F(MemoryTest, KeepFootprintCountsSharedSlabsAndUnbackedTail) {
   // Rebuilding the authoritative keep set after a layout preview must not
   // retain its speculative marks or change existing payload.
   loom_runtime_virtual_buffer_begin_trim(first);
+  EXPECT_EQ(Keep(first, 0, 2 * kSlabSize + tail), 2 * kSlabSize + tail);
+  EXPECT_EQ(Keep(first, 2 * kSlabSize, tail), 0u);
+  loom_runtime_virtual_buffer_begin_trim(first);
   EXPECT_EQ(Keep(first, 0, 256), kSlabSize);
   IREE_ASSERT_OK(loom_runtime_virtual_buffer_trim(first));
   EXPECT_EQ(statistics[0].committed_bytes, kSlabSize);

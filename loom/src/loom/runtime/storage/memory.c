@@ -1926,15 +1926,21 @@ iree_status_t loom_runtime_virtual_buffer_keep(
   }
   const iree_device_size_t slab_size = buffer->geometry.mapping_size;
   const iree_host_size_t end = (offset + length - 1) / slab_size + 1;
-  for (iree_host_size_t i = offset / slab_size; i < end; ++i) {
-    loom_runtime_backing_entry_t* entry = NULL;
-    IREE_RETURN_AND_END_ZONE_IF_ERROR(
-        z0, loom_runtime_backing_directory_insert(&buffer->backing, i, &entry));
-    if (!entry->keep) {
-      if (out_added_bytes) {
-        *out_added_bytes += loom_runtime_memory_slab_length(buffer, i);
-      }
-      entry->keep = true;
+  bool adds_partial_tail = false;
+  if (out_added_bytes && end == buffer->slab_count &&
+      buffer->byte_length % slab_size) {
+    const loom_runtime_backing_entry_t* tail =
+        loom_runtime_backing_directory_find_const(&buffer->backing, end - 1);
+    adds_partial_tail = !tail || !tail->keep;
+  }
+  iree_host_size_t added_count = 0;
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, loom_runtime_backing_directory_keep(
+              &buffer->backing, offset / slab_size, end, &added_count));
+  if (out_added_bytes) {
+    *out_added_bytes = added_count * slab_size;
+    if (adds_partial_tail) {
+      *out_added_bytes -= slab_size - buffer->byte_length % slab_size;
     }
   }
   IREE_TRACE_ZONE_END(z0);

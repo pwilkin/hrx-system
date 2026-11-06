@@ -537,36 +537,59 @@ static iree_status_t loom_serve_text_keep_backing(
       }
     }
   }
-  for (uint32_t i = 0;
-       i < state->recurrent.pool.capacity && iree_status_is_ok(status); ++i) {
-    if (state->recurrent.pool.references[i]) {
-      iree_hal_buffer_t* view = state->recurrent.buffers[i];
-      status = loom_serve_text_keep_range(
-          state->memory.buffers[1], iree_hal_buffer_byte_offset(view),
-          iree_hal_buffer_byte_length(view), &bytes);
+  uint32_t slot = 0;
+  while (slot < state->recurrent.pool.capacity && iree_status_is_ok(status)) {
+    while (slot < state->recurrent.pool.capacity &&
+           !state->recurrent.pool.references[slot]) {
+      ++slot;
     }
+    if (slot == state->recurrent.pool.capacity) {
+      break;
+    }
+    iree_hal_buffer_t* view = state->recurrent.buffers[slot++];
+    const iree_device_size_t offset = iree_hal_buffer_byte_offset(view);
+    iree_device_size_t end = offset + iree_hal_buffer_byte_length(view);
+    while (slot < state->recurrent.pool.capacity &&
+           state->recurrent.pool.references[slot]) {
+      view = state->recurrent.buffers[slot];
+      if (iree_hal_buffer_byte_offset(view) != end) {
+        break;
+      }
+      end += iree_hal_buffer_byte_length(view);
+      ++slot;
+    }
+    status = loom_serve_text_keep_range(state->memory.buffers[1], offset,
+                                        end - offset, &bytes);
   }
   const uint32_t block_count =
       compact ? state->cache.pool.capacity - state->cache.pool.available
               : state->cache.pool.capacity;
-  const uint32_t range_blocks = compact ? block_count : 1;
-  for (iree_host_size_t i = 0;
-       i < state->storage.region_count && iree_status_is_ok(status); ++i) {
-    const loom_serve_text_cache_region_t* region = &state->storage.regions[i];
-    for (uint32_t block = 0; block < block_count && iree_status_is_ok(status);
-         block += range_blocks) {
-      if (!compact && !state->cache.pool.references[block]) {
-        continue;
-      }
+  uint32_t block = 0;
+  while (block < block_count && iree_status_is_ok(status)) {
+    while (!compact && block < block_count &&
+           !state->cache.pool.references[block]) {
+      ++block;
+    }
+    if (block == block_count) {
+      break;
+    }
+    uint32_t end = compact ? block_count : block + 1;
+    while (!compact && end < block_count && state->cache.pool.references[end]) {
+      ++end;
+    }
+    for (iree_host_size_t i = 0;
+         i < state->storage.region_count && iree_status_is_ok(status); ++i) {
+      const loom_serve_text_cache_region_t* region = &state->storage.regions[i];
       for (iree_host_size_t plane = 0;
            plane < region->blocks.count && iree_status_is_ok(status); ++plane) {
         status = loom_serve_text_keep_range(
             state->memory.buffers[region->allocation],
             region->blocks.origin + plane * region->blocks.stride +
                 block * region->blocks.block_bytes,
-            range_blocks * region->blocks.block_bytes, &bytes);
+            (end - block) * region->blocks.block_bytes, &bytes);
       }
     }
+    block = end;
   }
   if (out_bytes) {
     *out_bytes = bytes;
