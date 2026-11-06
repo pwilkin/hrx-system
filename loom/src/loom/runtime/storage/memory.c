@@ -14,6 +14,7 @@
 #include "iree/hal/pool_wait.h"
 #include "loom/runtime/storage/backing_directory.h"
 #include "loom/runtime/storage/backing_pages.h"
+#include "loom/runtime/storage/memory_mappings.h"
 
 struct loom_runtime_memory_pool_t {
   // Allocator owning pool, buffer, and slab metadata.
@@ -1287,7 +1288,9 @@ static void loom_runtime_memory_stage_completed(
             1, &operation->stages[1].semaphore, &value};
         next_status = iree_hal_queue_map(
             operation->pool->queue, operation->mapping_waits, signal,
-            operation->count, operation->mappings, 0);
+            loom_runtime_memory_mappings_coalesce(operation->count,
+                                                  operation->mappings),
+            operation->mappings, 0);
       }
     }
     for (iree_host_size_t i = 0; i < operation->mapping_waits.count; ++i) {
@@ -1486,10 +1489,13 @@ static void loom_runtime_memory_operation_enqueue(
     }
   }
   loom_runtime_backing_pages_submit(&operation->growth);
+  iree_host_size_t mapping_count = 0;
   if (iree_status_is_ok(status)) {
     if (operation->releasing || operation->growing) {
+      mapping_count = loom_runtime_memory_mappings_coalesce(
+          operation->count, operation->mappings);
       status = iree_hal_queue_map(pool->queue, operation->mapping_waits, first,
-                                  operation->count, operation->mappings, 0);
+                                  mapping_count, operation->mappings, 0);
     } else if (operation->allocation_waits.count) {
       status = iree_hal_queue_barrier(pool->queue, operation->allocation_waits,
                                       first, NULL, 0);
@@ -1503,18 +1509,17 @@ static void loom_runtime_memory_operation_enqueue(
                             iree_status_clone(status));
     iree_hal_semaphore_fail(operation->stages[1].semaphore, status);
   } else if (operation->growing) {
-    for (iree_host_size_t i = 0; i < operation->count; ++i) {
-      operation->mappings[i].target = operation->growing->previous_handle;
-      operation->mappings[i].previous_source = operation->mappings[i].source;
-      operation->mappings[i].previous_source_offset =
-          operation->mappings[i].source_offset;
-      operation->mappings[i].source = NULL;
-      operation->mappings[i].source_offset = 0;
-      operation->mappings[i].access = IREE_HAL_MEMORY_ACCESS_NONE;
-      operation->mappings[i].operation =
-          IREE_HAL_MEMORY_MAPPING_OPERATION_UNBIND;
+    for (iree_host_size_t i = 0; i < mapping_count; ++i) {
+      iree_hal_memory_mapping_t* mapping = &operation->mappings[i];
+      mapping->target = operation->growing->previous_handle;
+      mapping->previous_source = mapping->source;
+      mapping->previous_source_offset = mapping->source_offset;
+      mapping->source = NULL;
+      mapping->source_offset = 0;
+      mapping->access = IREE_HAL_MEMORY_ACCESS_NONE;
+      mapping->operation = IREE_HAL_MEMORY_MAPPING_OPERATION_UNBIND;
     }
-    status = iree_hal_queue_map(pool->queue, first, second, operation->count,
+    status = iree_hal_queue_map(pool->queue, first, second, mapping_count,
                                 operation->mappings, 0);
     if (!iree_status_is_ok(status)) {
       iree_hal_semaphore_fail(operation->stages[1].semaphore, status);

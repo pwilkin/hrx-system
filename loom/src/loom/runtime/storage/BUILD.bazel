@@ -76,10 +76,12 @@ loom_cc_library(
     name = "memory",
     srcs = [
         "memory.c",
+        "memory_mappings.c",
         "memory_ranges.c",
     ],
     hdrs = [
         "memory.h",
+        "memory_mappings.h",
         "memory_ranges.h",
     ],
     visibility = ["//visibility:public"],
@@ -213,6 +215,7 @@ loom_cc_library(
     srcs = [
         "memory_directory_test.cc",
         "memory_failure_test.cc",
+        "memory_mappings_test.cc",
         "memory_query_test.cc",
         "memory_ranges_test.cc",
         "memory_test.cc",
