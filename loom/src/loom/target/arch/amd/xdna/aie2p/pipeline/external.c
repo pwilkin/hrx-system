@@ -195,10 +195,14 @@ static iree_status_t loom_aie2p_native_input_receivers(
     }
     phase->receiver.wait_for_idle = true;
   }
-  const loom_aie2p_native_input_phase_t* bulk = &input->phases[tail];
+  loom_aie2p_native_input_phase_t* bulk = &input->phases[tail];
   const uint32_t repetitions =
       (uint32_t)(input->source->admissions * bulk->source->transfers);
   if (window && repetitions > window) {
+    bulk->receiver.sequence.terminal_slot =
+        repetitions % bulk->destination->source->capacity;
+    bulk->receiver.sequence.rewind_iteration =
+        bulk->receiver.sequence.terminal_slot != 0;
     loom_aie2p_native_refill_queue_t* queue;
     IREE_RETURN_IF_ERROR(loom_aie2p_native_add_refill(
         context, context->pool_tiles[bulk->destination->pool_index],

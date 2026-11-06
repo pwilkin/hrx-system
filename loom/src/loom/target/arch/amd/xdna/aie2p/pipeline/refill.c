@@ -273,7 +273,8 @@ iree_status_t loom_aie2p_native_select_refill(
   if (!*out_valid) {
     return iree_ok_status();
   }
-  sequence->rewind_iteration = repetitions % capacity != 0;
+  sequence->terminal_slot = repetitions % capacity;
+  sequence->rewind_iteration = sequence->terminal_slot != 0;
   loom_aie2p_native_refill_queue_t* queue;
   return loom_aie2p_native_add_refill(context, tile, engine, direction, channel,
                                       repetitions, window, sequence, &queue);
