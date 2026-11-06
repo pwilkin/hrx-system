@@ -83,6 +83,9 @@ extern "C" {
 // If a death frontier exceeds the inline capacity, the block is marked
 // tainted. Taint is self-healing: when a tainted block is freed with a
 // frontier that fits, the taint is cleared.
+// A caller that returns blocks only after actual completion selects
+// release_after_completion. Its blocks share the immutable initial prerequisite
+// and need only the allocation bitmap; no independent history is allocated.
 //
 // ### Capacity
 //
@@ -148,6 +151,10 @@ typedef struct iree_hal_memory_fixed_block_allocator_options_t {
   // Maximum number of frontier entries per block. Set to 0 to use
   // IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_DEFAULT_FRONTIER_CAPACITY.
   uint16_t frontier_capacity;
+  // The caller returns blocks only after actual completion, or cancels an
+  // unused acquisition with its original prerequisite. Store only the shared
+  // initial history and allocation bitmap instead of per-block histories.
+  bool release_after_completion;
   // Exact prerequisite for the entire initial range, copied during creation.
   // NULL means no prerequisite. A frontier wider than capacity is rejected.
   const iree_async_frontier_t* initial_frontier;
@@ -220,7 +227,7 @@ typedef struct iree_hal_memory_fixed_block_allocator_t {
   // Number of 64-bit bitmap words in use: ceil(block_count / 64).
   uint32_t word_count;
 
-  // Byte stride between adjacent blocks' metadata, computed during creation.
+  // Byte stride between block histories; zero for completed-return ownership.
   iree_host_size_t block_stride;
   // Byte offset of the inline frontier within each block's metadata.
   iree_host_size_t frontier_offset;
@@ -229,7 +236,7 @@ typedef struct iree_hal_memory_fixed_block_allocator_t {
   uint32_t generation;
   // Owned initial history for blocks not yet returned in this generation.
   iree_async_frontier_t* initial_frontier;
-  // One bit per block whose history has been written in this generation.
+  // One bit per block whose history was written; NULL for completed returns.
   iree_atomic_uint64_t* returned_bitmap;
   // Cache-line-aligned trailing bitmap: set bits are allocated blocks.
   // Invalid bits in the final word stay set and cannot be acquired.
@@ -376,6 +383,9 @@ iree_status_t iree_hal_memory_fixed_block_allocator_acquire(
 //
 // If |death_frontier| exceeds the per-block capacity, the block is marked
 // tainted (IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_BLOCK_FLAG_TAINTED).
+// With release_after_completion, no new history may be supplied: NULL denotes
+// completed use, and the initial prerequisite permits unused acquisition
+// rollback.
 //
 // Thread-safety: Lock-free. Safe to call concurrently from any thread.
 void iree_hal_memory_fixed_block_allocator_release(

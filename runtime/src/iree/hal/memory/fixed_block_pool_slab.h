@@ -28,6 +28,8 @@ typedef struct iree_hal_fixed_block_pool_geometry_t {
   uint32_t blocks_per_slab;
   // Exact history capacity for every block and whole-range return.
   uint8_t frontier_capacity;
+  // Page returns require actual completion; only initial parent history exists.
+  bool release_after_completion;
 } iree_hal_fixed_block_pool_geometry_t;
 
 // One ordinary backing reservation and its fixed-block offset allocator.
@@ -52,7 +54,7 @@ struct iree_hal_fixed_block_pool_slab_t {
   iree_hal_pool_reservation_t reservation;
   // Prepared parent view retained independently of the explicit token.
   iree_hal_pool_buffer_range_t range;
-  // Offset allocator retaining each block's exact history.
+  // Offset allocator retaining the selected per-block or shared history.
   iree_hal_memory_fixed_block_allocator_t* allocator;
 #if IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
   // One unique address per block for optional logical allocation tracing.

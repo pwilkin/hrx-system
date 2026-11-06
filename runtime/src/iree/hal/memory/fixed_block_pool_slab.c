@@ -56,6 +56,7 @@ iree_status_t iree_hal_fixed_block_pool_slab_allocate(
       .block_size = geometry->backing_block_size,
       .block_count = slab->block_count,
       .frontier_capacity = geometry->frontier_capacity,
+      .release_after_completion = geometry->release_after_completion,
       .initial_frontier = initial_frontier,
   };
   iree_status_t status = iree_hal_memory_fixed_block_allocator_allocate(

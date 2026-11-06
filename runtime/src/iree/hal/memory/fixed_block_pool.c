@@ -46,6 +46,12 @@ typedef struct iree_hal_fixed_block_pool_t {
   // allocation and eligibility queries remain outside this mutex.
   iree_slim_mutex_t acquisition_mutex;
 
+  // One acquisition owns unpublished shared growth. Competing misses observe
+  // its capacity publication instead of requesting redundant native slabs.
+  // Guarded by acquisition_mutex; existing capacity remains independently
+  // usable.
+  bool growth_pending;
+
   // Owned slab inventory, guarded by acquisition_mutex.
   struct {
     // First owned slab.
@@ -163,14 +169,11 @@ typedef struct iree_hal_fixed_block_pool_acquire_element_t {
   // Slab pinned while this transaction borrows a candidate from it.
   iree_hal_fixed_block_pool_slab_t* slab;
 
-  // Candidate with a copied frontier until commit, then the acquired block.
+  // Candidate history protected by the slab pin, then the acquired block.
   iree_hal_memory_fixed_block_allocator_allocation_t allocation;
 
   // Eligibility result established outside the acquisition mutex.
   iree_hal_pool_acquire_result_t result;
-
-  // Request layout prepared before any block is claimed.
-  iree_hal_asan_allocation_layout_t asan_layout;
 } iree_hal_fixed_block_pool_acquire_element_t;
 
 static const iree_hal_pool_vtable_t iree_hal_fixed_block_pool_vtable;
@@ -510,6 +513,7 @@ static iree_status_t iree_hal_fixed_block_pool_resolve_geometry(
         IREE_STATUS_INVALID_ARGUMENT,
         "protected block alignment exceeds backing support");
   }
+  const iree_device_size_t required_alignment = alignment;
   // Padding separates independently maintained storage regions. It does not
   // increase the native address alignment advertised for each block.
   alignment = iree_max(alignment, capabilities->maintenance_alignment);
@@ -521,6 +525,9 @@ static iree_status_t iree_hal_fixed_block_pool_resolve_geometry(
   max_alignment =
       iree_min(max_alignment,
                iree_hal_fixed_block_pool_size_alignment(backing_block_size));
+  if (options->alignment) {
+    max_alignment = iree_min(max_alignment, required_alignment);
+  }
   const iree_device_size_t capacity =
       capabilities->max_allocation_size
           ? capabilities->max_allocation_size / backing_block_size
@@ -545,6 +552,7 @@ static iree_status_t iree_hal_fixed_block_pool_resolve_geometry(
           options->frontier_capacity
               ? (uint8_t)options->frontier_capacity
               : IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_DEFAULT_FRONTIER_CAPACITY,
+      .release_after_completion = options->release_after_completion,
   };
   return iree_ok_status();
 }
@@ -795,14 +803,14 @@ static iree_status_t iree_hal_fixed_block_pool_validate_reservation_request(
   return iree_ok_status();
 }
 
-// Copies a candidate frontier into transaction-owned storage. Acquisitions
-// remain excluded while |source| borrows the allocator's metadata.
+// Copies mutable history into transaction storage. Completed-return pools
+// instead borrow immutable parent history under the candidate's slab pin.
 static void iree_hal_fixed_block_pool_copy_candidate(
     const iree_hal_memory_fixed_block_allocator_allocation_t* source,
     iree_async_frontier_t* frontier_storage,
     iree_hal_memory_fixed_block_allocator_allocation_t* out_candidate) {
   *out_candidate = *source;
-  if (source->death_frontier) {
+  if (source->death_frontier && frontier_storage) {
     memcpy(
         frontier_storage, source->death_frontier,
         sizeof(*frontier_storage) + source->death_frontier->entry_count *
@@ -836,8 +844,10 @@ static iree_host_size_t iree_hal_fixed_block_pool_select_candidates(
     uint8_t* frontier_storage,
     iree_hal_fixed_block_pool_acquire_element_t* elements) {
   iree_async_frontier_t* scratch_frontier =
-      (iree_async_frontier_t*)(frontier_storage +
-                               request_count * frontier_stride);
+      frontier_storage
+          ? (iree_async_frontier_t*)(frontier_storage +
+                                     request_count * frontier_stride)
+          : NULL;
   iree_host_size_t ready_count = 0;
   iree_host_size_t pending_count = 0;
   iree_slim_mutex_lock(&pool->acquisition_mutex);
@@ -896,8 +906,10 @@ static iree_host_size_t iree_hal_fixed_block_pool_select_candidates(
         pool, &elements[selected_index], slab);
     iree_hal_fixed_block_pool_copy_candidate(
         &candidate,
-        (iree_async_frontier_t*)(frontier_storage +
-                                 selected_index * frontier_stride),
+        frontier_storage
+            ? (iree_async_frontier_t*)(frontier_storage +
+                                       selected_index * frontier_stride)
+            : NULL,
         &elements[selected_index].allocation);
     elements[selected_index].result = result;
   }
@@ -925,7 +937,9 @@ static iree_host_size_t iree_hal_fixed_block_pool_select_candidates(
     elements[target].result = elements[source].result;
     iree_hal_fixed_block_pool_copy_candidate(
         &elements[source].allocation,
-        (iree_async_frontier_t*)(frontier_storage + target * frontier_stride),
+        frontier_storage ? (iree_async_frontier_t*)(frontier_storage +
+                                                    target * frontier_stride)
+                         : NULL,
         &elements[target].allocation);
   }
   iree_slim_mutex_unlock(&pool->acquisition_mutex);
@@ -991,7 +1005,9 @@ typedef struct iree_hal_fixed_block_pool_acquire_t {
   } call;
   // Selected blocks, including a claimed prefix and unclaimed snapshots.
   iree_hal_fixed_block_pool_acquire_element_t* elements;
-  // Snapshot array plus one scratch frontier for unlocked eligibility checks.
+  // Request-owned protection layouts, NULL when ASAN is disabled.
+  iree_hal_asan_allocation_layout_t* asan_layouts;
+  // Mutable snapshots and scratch; NULL when parent history is immutable.
   uint8_t* frontiers;
   // Byte stride of each frontier snapshot.
   iree_host_size_t frontier_stride;
@@ -1003,6 +1019,8 @@ typedef struct iree_hal_fixed_block_pool_acquire_t {
   iree_host_size_t element_capacity;
   // Prefix capacity was withheld across an unlocked parent preparation.
   bool exposed_prefix;
+  // This acquisition owns the pool's unpublished shared backing growth.
+  bool owns_growth;
   // New slabs pinned against trim until this transaction finishes.
   iree_hal_fixed_block_pool_slab_t* preparations;
   // Terminal infrastructure failure, transferred to completion.
@@ -1032,6 +1050,7 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_promote(
   iree_host_size_t total_size = 0;
   iree_host_size_t elements_offset = 0;
   iree_host_size_t frontiers_offset = 0;
+  iree_host_size_t layouts_offset = 0;
   const iree_host_size_t capacity =
       iree_max(source->call.count,
                IREE_HAL_FIXED_BLOCK_POOL_INLINE_TRANSACTION_CAPACITY);
@@ -1039,6 +1058,8 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_promote(
       sizeof(*source), &total_size,
       IREE_STRUCT_FIELD(capacity, iree_hal_fixed_block_pool_acquire_element_t,
                         &elements_offset),
+      IREE_STRUCT_FIELD(source->pool->base.asan_enabled ? capacity : 0,
+                        iree_hal_asan_allocation_layout_t, &layouts_offset),
       IREE_STRUCT_ARRAY_FIELD_ALIGNED(capacity, source->frontier_stride,
                                       uint8_t, IREE_ASYNC_FRONTIER_ALIGNMENT,
                                       &frontiers_offset),
@@ -1062,12 +1083,22 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_promote(
   acquire->elements =
       (iree_hal_fixed_block_pool_acquire_element_t*)((uint8_t*)acquire +
                                                      elements_offset);
-  acquire->frontiers = (uint8_t*)acquire + frontiers_offset;
+  acquire->frontiers =
+      source->frontier_stride ? (uint8_t*)acquire + frontiers_offset : NULL;
+  acquire->asan_layouts =
+      source->pool->base.asan_enabled
+          ? (iree_hal_asan_allocation_layout_t*)((uint8_t*)acquire +
+                                                 layouts_offset)
+          : NULL;
   // Large transactions allocate before initialization; promotion after a miss
   // copies the already initialized elements and their acquired histories.
   if (source->elements) {
     memcpy(acquire->elements, source->elements,
            source->call.count * sizeof(*source->elements));
+    if (source->asan_layouts) {
+      memcpy(acquire->asan_layouts, source->asan_layouts,
+             source->call.count * sizeof(*source->asan_layouts));
+    }
   }
   *inout_acquire = acquire;
   return iree_ok_status();
@@ -1089,7 +1120,8 @@ static void iree_hal_fixed_block_pool_acquire_finish(
             &acquire->elements[i];
         iree_hal_fixed_block_pool_return_allocation(
             pool, element->slab, &element->allocation,
-            acquire->call.requests[i].allocation_size, &element->asan_layout,
+            acquire->call.requests[i].allocation_size,
+            acquire->asan_layouts ? &acquire->asan_layouts[i] : NULL,
             element->result, &acquire->call.reservations[i],
             &acquire->call.infos[i]);
         if (element->result == IREE_HAL_POOL_ACQUIRE_OK_NEEDS_WAIT ||
@@ -1137,6 +1169,18 @@ static void iree_hal_fixed_block_pool_acquire_finish(
   iree_slim_mutex_unlock(&pool->acquisition_mutex);
   iree_hal_fixed_block_pool_return_unused_slabs(pool, 0,
                                                 /*retain_metadata=*/true);
+  if (acquire->owns_growth) {
+    iree_slim_mutex_lock(&pool->acquisition_mutex);
+    pool->growth_pending = false;
+    iree_slim_mutex_unlock(&pool->acquisition_mutex);
+    // Parent pressure publishes through the parent's notification. A local
+    // notification for that outcome would cause an immediate retry loop.
+    if (acquire->parent.result != IREE_HAL_POOL_ACQUIRE_EXHAUSTED &&
+        acquire->parent.result != IREE_HAL_POOL_ACQUIRE_OVER_BUDGET) {
+      iree_async_notification_signal_if_observed(pool->base.notification,
+                                                 INT32_MAX);
+    }
+  }
   if (!committed && acquire->exposed_prefix) {
     iree_async_notification_signal_if_observed(pool->base.notification,
                                                INT32_MAX);
@@ -1147,8 +1191,9 @@ static void iree_hal_fixed_block_pool_acquire_finish(
   if (acquire->element_capacity) {
     iree_hal_fixed_block_pool_acquire_t* discarded = acquire;
     iree_slim_mutex_lock(&pool->acquisition_mutex);
-    if (!pool->reusable.acquire ||
-        pool->reusable.acquire->element_capacity < acquire->element_capacity) {
+    if (!pool->geometry.release_after_completion &&
+        (!pool->reusable.acquire || pool->reusable.acquire->element_capacity <
+                                        acquire->element_capacity)) {
       discarded = pool->reusable.acquire;
       pool->reusable.acquire = acquire;
     }
@@ -1240,13 +1285,30 @@ static void iree_hal_fixed_block_pool_acquire_progress(
         iree_hal_fixed_block_pool_select_candidates(
             pool, remaining, acquire->call.frontier, acquire->call.flags,
             acquire->frontier_stride,
-            acquire->frontiers +
-                acquire->acquired_count * acquire->frontier_stride,
+            acquire->frontiers
+                ? acquire->frontiers +
+                      acquire->acquired_count * acquire->frontier_stride
+                : NULL,
             elements);
     if (selected_count < remaining && !pool->backing_pool) {
       acquire->result = IREE_HAL_POOL_ACQUIRE_EXHAUSTED;
       acquire->unavailable_index = acquire->acquired_count + selected_count;
       break;
+    }
+    if (selected_count < remaining && !acquire->owns_growth) {
+      iree_slim_mutex_lock(&pool->acquisition_mutex);
+      acquire->owns_growth = !pool->growth_pending;
+      pool->growth_pending = true;
+      iree_slim_mutex_unlock(&pool->acquisition_mutex);
+      if (!acquire->owns_growth) {
+        acquire->result = IREE_HAL_POOL_ACQUIRE_EXHAUSTED;
+        acquire->unavailable_index = acquire->acquired_count + selected_count;
+        break;
+      }
+      // Capacity may have been published after the unlocked selection. Once
+      // growth is owned, retry selection before asking for another parent.
+      // Competing misses have not claimed any prefix or published scarcity.
+      continue;
     }
     if (selected_count) {
       if (!iree_hal_fixed_block_pool_commit_candidates(
@@ -1308,6 +1370,8 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_reservations(
   iree_hal_fixed_block_pool_t* pool = (iree_hal_fixed_block_pool_t*)base_pool;
   iree_hal_fixed_block_pool_acquire_element_t
       inline_elements[IREE_HAL_FIXED_BLOCK_POOL_INLINE_TRANSACTION_CAPACITY];
+  iree_hal_asan_allocation_layout_t
+      inline_layouts[IREE_HAL_FIXED_BLOCK_POOL_INLINE_TRANSACTION_CAPACITY];
   iree_alignas(IREE_ASYNC_FRONTIER_ALIGNMENT) uint8_t
       inline_frontiers[(IREE_HAL_FIXED_BLOCK_POOL_INLINE_TRANSACTION_CAPACITY +
                         1) *
@@ -1316,8 +1380,9 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_reservations(
                             sizeof(iree_async_frontier_entry_t))];
   const bool needs_storage =
       request_count > IREE_ARRAYSIZE(inline_elements) ||
-      pool->geometry.frontier_capacity >
-          IREE_HAL_FIXED_BLOCK_POOL_INLINE_FRONTIER_CAPACITY;
+      (!pool->geometry.release_after_completion &&
+       pool->geometry.frontier_capacity >
+           IREE_HAL_FIXED_BLOCK_POOL_INLINE_FRONTIER_CAPACITY);
   iree_hal_fixed_block_pool_acquire_t inline_acquire = {
       .pool = pool,
       .call =
@@ -1331,10 +1396,15 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_reservations(
               .flags = flags,
           },
       .elements = needs_storage ? NULL : inline_elements,
-      .frontiers = inline_frontiers,
-      .frontier_stride = sizeof(iree_async_frontier_t) +
-                         pool->geometry.frontier_capacity *
-                             sizeof(iree_async_frontier_entry_t),
+      .asan_layouts =
+          !needs_storage && pool->base.asan_enabled ? inline_layouts : NULL,
+      .frontiers =
+          pool->geometry.release_after_completion ? NULL : inline_frontiers,
+      .frontier_stride = pool->geometry.release_after_completion
+                             ? 0
+                             : sizeof(iree_async_frontier_t) +
+                                   pool->geometry.frontier_capacity *
+                                       sizeof(iree_async_frontier_entry_t),
   };
   iree_hal_fixed_block_pool_acquire_t* acquire = &inline_acquire;
   if (needs_storage) {
@@ -1345,7 +1415,8 @@ static iree_status_t iree_hal_fixed_block_pool_acquire_reservations(
   for (iree_host_size_t i = 0; i < request_count && iree_status_is_ok(status);
        ++i) {
     status = iree_hal_fixed_block_pool_validate_reservation_request(
-        pool, &requests[i], &acquire->elements[i].asan_layout);
+        pool, &requests[i],
+        acquire->asan_layouts ? &acquire->asan_layouts[i] : NULL);
   }
   iree_device_size_t charged_length = 0;
   if (iree_status_is_ok(status) &&

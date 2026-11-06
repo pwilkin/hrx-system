@@ -36,8 +36,10 @@ static void iree_hal_memory_fixed_block_allocator_read_block(
     const iree_hal_memory_fixed_block_allocator_t* pool, uint32_t block_index,
     iree_hal_memory_fixed_block_allocator_allocation_t* out_allocation) {
   iree_hal_memory_fixed_block_allocator_block_t* block =
-      iree_hal_memory_fixed_block_allocator_block_at(pool, block_index);
-  const bool returned = block->generation == pool->generation;
+      pool->block_stride
+          ? iree_hal_memory_fixed_block_allocator_block_at(pool, block_index)
+          : NULL;
+  const bool returned = block && block->generation == pool->generation;
   const iree_async_frontier_t* frontier =
       returned
           ? iree_hal_memory_fixed_block_allocator_block_frontier_at(pool, block)
@@ -114,6 +116,9 @@ iree_status_t iree_hal_memory_fixed_block_allocator_allocate(
                                     &frontier_offset),
           IREE_STRUCT_FIELD(options.frontier_capacity,
                             iree_async_frontier_entry_t, NULL)));
+  if (options.release_after_completion) {
+    block_stride = 0;
+  }
 
   // Compute one allocation for the header, histories, and sized bitmaps.
   // Divide before rounding to cover the full uint32_t block-count range.
@@ -134,8 +139,8 @@ iree_status_t iree_hal_memory_fixed_block_allocator_allocate(
                                     &initial_frontier_offset),
           IREE_STRUCT_FIELD(options.frontier_capacity,
                             iree_async_frontier_entry_t, NULL),
-          IREE_STRUCT_FIELD(word_count, iree_atomic_uint64_t,
-                            &returned_bitmap_offset),
+          IREE_STRUCT_FIELD(options.release_after_completion ? 0 : word_count,
+                            iree_atomic_uint64_t, &returned_bitmap_offset),
           IREE_STRUCT_FIELD_ALIGNED(word_count, iree_atomic_uint64_t,
                                     iree_hardware_destructive_interference_size,
                                     &bitmap_offset)));
@@ -160,7 +165,9 @@ iree_status_t iree_hal_memory_fixed_block_allocator_allocate(
   pool->initial_frontier =
       (iree_async_frontier_t*)((uint8_t*)pool + initial_frontier_offset);
   pool->returned_bitmap =
-      (iree_atomic_uint64_t*)((uint8_t*)pool + returned_bitmap_offset);
+      options.release_after_completion
+          ? NULL
+          : (iree_atomic_uint64_t*)((uint8_t*)pool + returned_bitmap_offset);
   pool->bitmap = (iree_atomic_uint64_t*)((uint8_t*)pool + bitmap_offset);
   iree_atomic_store(&pool->alloc_hint_word, 0, iree_memory_order_relaxed);
   iree_atomic_store(&pool->allocation_count, 0, iree_memory_order_relaxed);
@@ -213,7 +220,7 @@ void iree_hal_memory_fixed_block_allocator_reset(
     const iree_async_frontier_t* initial_frontier) {
   IREE_ASSERT(iree_atomic_load(&pool->allocation_count,
                                iree_memory_order_relaxed) == 0);
-  if (++pool->generation == 0) {
+  if (pool->block_stride && ++pool->generation == 0) {
     for (uint32_t i = 0; i < pool->block_count; ++i) {
       iree_hal_memory_fixed_block_allocator_block_at(pool, i)->generation = 0;
     }
@@ -227,8 +234,11 @@ void iree_hal_memory_fixed_block_allocator_reset(
   } else if (!initial_frontier) {
     iree_async_frontier_initialize(pool->initial_frontier, 0);
   }
-  for (uint32_t i = 0; i < pool->word_count; ++i) {
-    iree_atomic_store(&pool->returned_bitmap[i], 0, iree_memory_order_relaxed);
+  if (pool->returned_bitmap) {
+    for (uint32_t i = 0; i < pool->word_count; ++i) {
+      iree_atomic_store(&pool->returned_bitmap[i], 0,
+                        iree_memory_order_relaxed);
+    }
   }
   iree_atomic_store(&pool->alloc_hint_word, 0, iree_memory_order_relaxed);
 }
@@ -241,6 +251,16 @@ bool iree_hal_memory_fixed_block_allocator_merge_free_frontiers(
   IREE_ASSERT(iree_atomic_load(&pool->allocation_count,
                                iree_memory_order_relaxed) == 0);
   iree_async_frontier_initialize(out_frontier, 0);
+  if (!pool->block_stride) {
+    if (!iree_async_frontier_merge(out_frontier, capacity,
+                                   pool->initial_frontier)) {
+      if (!overflow) {
+        return false;
+      }
+      overflow(user_data, out_frontier, pool->initial_frontier);
+    }
+    return true;
+  }
   bool has_untouched_blocks = false;
   for (uint32_t i = 0; i < pool->word_count; ++i) {
     uint64_t returned =
@@ -428,6 +448,17 @@ void iree_hal_memory_fixed_block_allocator_release(
   IREE_ASSERT_ARGUMENT(pool);
   IREE_ASSERT(block_index < pool->block_count);
 
+  if (!pool->block_stride) {
+    // Unused acquisition rollback preserves the parent's initial prerequisite.
+    // Every actual use has already completed before this ownership transfer.
+    IREE_ASSERT(
+        !death_frontier || !death_frontier->entry_count ||
+        iree_async_frontier_compare(death_frontier, pool->initial_frontier) ==
+            IREE_ASYNC_FRONTIER_EQUAL);
+    iree_hal_memory_fixed_block_allocator_release_bit(pool, block_index);
+    return;
+  }
+
   // Write the death frontier into the block's inline storage BEFORE releasing
   // the bitmap bit. Release semantics on the bitmap AND ensure these writes
   // are visible to the next acquirer (which uses acquire on bitmap OR).
@@ -505,7 +536,8 @@ iree_hal_memory_fixed_block_allocator_block_flags(
     const iree_hal_memory_fixed_block_allocator_t* pool, uint32_t block_index) {
   IREE_ASSERT_ARGUMENT(pool);
   IREE_ASSERT(block_index < pool->block_count);
-  const iree_hal_memory_fixed_block_allocator_block_t* block =
-      iree_hal_memory_fixed_block_allocator_block_at(pool, block_index);
-  return block->generation == pool->generation ? block->flags : 0;
+  iree_hal_memory_fixed_block_allocator_allocation_t allocation;
+  iree_hal_memory_fixed_block_allocator_read_block(pool, block_index,
+                                                   &allocation);
+  return allocation.block_flags;
 }

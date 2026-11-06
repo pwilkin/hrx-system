@@ -931,26 +931,36 @@ TEST_P(PoolCompositionTest, ConcurrentGrowthAndReturnPreserveLiveBytes) {
   IREE_ASSERT_OK(CreateSource(0, 4096, 512, &source));
   iree_hal_pool_t* child = nullptr;
   IREE_ASSERT_OK(CreateChild(source, 512, 2, &child));
+  auto exercise = [&](size_t i) {
+    for (uint32_t iteration = 0; iteration < 100; ++iteration) {
+      iree_hal_buffer_t* buffer = nullptr;
+      IREE_ASSERT_OK(iree_hal_pool_allocate_buffer(
+          child, iree_hal_make_pool_reservation_request(256, kMinAlignment),
+          iree_infinite_timeout(), &buffer));
+      const uint8_t pattern = i * 100 + iteration;
+      IREE_EXPECT_OK(iree_hal_buffer_map_fill(buffer, 0, 256, &pattern, 1));
+      std::this_thread::yield();
+      std::array<uint8_t, 256> bytes;
+      IREE_EXPECT_OK(
+          iree_hal_buffer_map_read(buffer, 0, bytes.data(), bytes.size()));
+      for (uint8_t value : bytes) {
+        EXPECT_EQ(value, pattern);
+      }
+      iree_hal_buffer_release(buffer);
+    }
+  };
+  std::atomic<uint32_t> completed{0};
   std::array<std::thread, 4> threads;
   for (size_t i = 0; i < threads.size(); ++i) {
     threads[i] = std::thread([&, i] {
-      for (uint32_t iteration = 0; iteration < 100; ++iteration) {
-        iree_hal_buffer_t* buffer = nullptr;
-        IREE_ASSERT_OK(iree_hal_pool_allocate_buffer(
-            child, iree_hal_make_pool_reservation_request(256, kMinAlignment),
-            iree_infinite_timeout(), &buffer));
-        const uint8_t pattern = i * 100 + iteration;
-        IREE_EXPECT_OK(iree_hal_buffer_map_fill(buffer, 0, 256, &pattern, 1));
-        std::this_thread::yield();
-        std::array<uint8_t, 256> bytes;
-        IREE_EXPECT_OK(
-            iree_hal_buffer_map_read(buffer, 0, bytes.data(), bytes.size()));
-        for (uint8_t value : bytes) {
-          EXPECT_EQ(value, pattern);
-        }
-        iree_hal_buffer_release(buffer);
-      }
+      exercise(i);
+      ++completed;
+      iree_async_proactor_wake(proactor_);
     });
+  }
+  while (completed.load() != threads.size()) {
+    IREE_ASSERT_OK(
+        iree_async_proactor_poll(proactor_, iree_infinite_timeout(), nullptr));
   }
   for (auto& thread : threads) {
     thread.join();

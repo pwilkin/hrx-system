@@ -34,7 +34,15 @@ typedef struct iree_hal_fixed_block_pool_options_t {
   // point covering every original prerequisite before backing is returned.
   uint32_t frontier_capacity;
 
-  // Required absolute block alignment; zero selects source requirements.
+  // Caller-owned completion makes returned blocks immediately reusable. All
+  // actual accesses must retire before release, which supplies NULL history;
+  // unused acquisitions may return their original prerequisite. Retain only
+  // the parent's initial history, not an independent frontier for every block.
+  bool release_after_completion;
+
+  // Selected absolute block alignment, strengthened only for hidden guards.
+  // Zero selects the strongest alignment supported by the source and stride.
+  // Explicit selection avoids native padding for unused alignment capability.
   iree_device_size_t alignment;
 
   // ASAN policy used to shape hidden backing ranges for reservations.
