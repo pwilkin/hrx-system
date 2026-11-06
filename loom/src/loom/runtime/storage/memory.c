@@ -661,7 +661,7 @@ void loom_runtime_virtual_buffer_select_backing(
   const iree_device_size_t slab_size = buffer->geometry.mapping_size;
   const iree_host_size_t begin = offset / slab_size;
   const iree_host_size_t end = (offset + length - 1) / slab_size + 1;
-  if (end - begin < buffer->backing.capacity) {
+  if (end - begin < buffer->backing.count) {
     for (iree_host_size_t i = begin; i < end; ++i) {
       loom_runtime_backing_entry_t* entry =
           loom_runtime_backing_directory_find(&buffer->backing, i);
@@ -670,9 +670,11 @@ void loom_runtime_virtual_buffer_select_backing(
       }
     }
   } else {
-    for (iree_host_size_t i = 0; i < buffer->backing.capacity; ++i) {
-      loom_runtime_backing_entry_t* entry = &buffer->backing.entries[i];
-      if (entry->occupied && entry->index >= begin && entry->index < end &&
+    loom_runtime_backing_cursor_t cursor = {0};
+    loom_runtime_backing_entry_t* entry;
+    while ((entry = loom_runtime_backing_directory_next(&buffer->backing,
+                                                        &cursor))) {
+      if (entry->index >= begin && entry->index < end &&
           (entry->physical || entry->in_flight)) {
         entry->counted = true;
       }
@@ -686,8 +688,10 @@ iree_status_t loom_runtime_virtual_buffer_visit_backing(
                              iree_device_size_t length),
     void* user_data) {
   iree_status_t status = iree_ok_status();
-  for (iree_host_size_t i = 0; i < buffer->backing.capacity; ++i) {
-    loom_runtime_backing_entry_t* entry = &buffer->backing.entries[i];
+  loom_runtime_backing_cursor_t cursor = {0};
+  loom_runtime_backing_entry_t* entry;
+  while ((entry =
+              loom_runtime_backing_directory_next(&buffer->backing, &cursor))) {
     if (entry->counted) {
       entry->counted = false;
       if (iree_status_is_ok(status) && visitor) {
@@ -712,7 +716,7 @@ loom_runtime_memory_footprint_t loom_runtime_virtual_buffer_footprint(
       .total_bytes = total,
       .missing_bytes = total,
   };
-  if (end - begin < buffer->backing.capacity) {
+  if (end - begin < buffer->backing.count) {
     for (iree_host_size_t index = begin; index < end; ++index) {
       const loom_runtime_backing_entry_t* entry =
           loom_runtime_backing_directory_find_const(&buffer->backing, index);
@@ -722,11 +726,11 @@ loom_runtime_memory_footprint_t loom_runtime_virtual_buffer_footprint(
       }
     }
   } else {
-    for (iree_host_size_t index = 0; index < buffer->backing.capacity;
-         ++index) {
-      const loom_runtime_backing_entry_t* entry =
-          &buffer->backing.entries[index];
-      if (entry->occupied && entry->index >= begin && entry->index < end &&
+    loom_runtime_backing_cursor_t cursor = {0};
+    const loom_runtime_backing_entry_t* entry;
+    while ((entry = loom_runtime_backing_directory_next_const(&buffer->backing,
+                                                              &cursor))) {
+      if (entry->index >= begin && entry->index < end &&
           (entry->physical || entry->in_flight)) {
         footprint.missing_bytes -=
             loom_runtime_memory_slab_length(buffer, entry->index);
@@ -1106,7 +1110,6 @@ static void loom_runtime_memory_slab_publish(
   const bool keep = entry->keep;
   *entry = *result;
   entry->index = index;
-  entry->occupied = true;
   entry->keep |= keep;
   entry->in_flight = false;
   if (!entry->physical && !entry->keep) {
@@ -1580,12 +1583,12 @@ iree_status_t loom_runtime_virtual_buffer_grow_async(
   operation->value = value;
   iree_hal_semaphore_retain(readiness);
   iree_host_size_t edit_count = 0;
-  for (iree_host_size_t i = 0; i < buffer->backing.capacity; ++i) {
-    loom_runtime_backing_entry_t* entry = &buffer->backing.entries[i];
-    if (entry->occupied) {
-      IREE_ASSERT(!entry->in_flight);
-    }
-    if (entry->occupied && entry->physical) {
+  loom_runtime_backing_cursor_t cursor = {0};
+  loom_runtime_backing_entry_t* entry;
+  while ((entry =
+              loom_runtime_backing_directory_next(&buffer->backing, &cursor))) {
+    IREE_ASSERT(!entry->in_flight);
+    if (entry->physical) {
       operation->edits[edit_count++] =
           (loom_runtime_memory_edit_t){buffer, entry->index, *entry};
       entry->in_flight = true;
@@ -1741,10 +1744,11 @@ iree_status_t loom_runtime_memory_pool_trim_async(
   IREE_RETURN_AND_END_ZONE_IF_ERROR(z0, status);
   iree_host_size_t count = 0;
   for (iree_host_size_t b = 0; b < buffer_count; ++b) {
-    for (iree_host_size_t i = 0; i < buffers[b]->backing.capacity; ++i) {
-      const loom_runtime_backing_entry_t* entry =
-          &buffers[b]->backing.entries[i];
-      if (entry->occupied && !entry->keep && entry->physical) {
+    loom_runtime_backing_cursor_t cursor = {0};
+    const loom_runtime_backing_entry_t* entry;
+    while ((entry = loom_runtime_backing_directory_next_const(
+                &buffers[b]->backing, &cursor))) {
+      if (!entry->keep && entry->physical) {
         IREE_ASSERT(!entry->in_flight);
         ++count;
       }
@@ -1771,9 +1775,11 @@ iree_status_t loom_runtime_memory_pool_trim_async(
   iree_host_size_t index = 0;
   for (iree_host_size_t b = 0; b < buffer_count; ++b) {
     loom_runtime_virtual_buffer_t* buffer = buffers[b];
-    for (iree_host_size_t i = 0; i < buffer->backing.capacity; ++i) {
-      loom_runtime_backing_entry_t* entry = &buffer->backing.entries[i];
-      if (entry->occupied && !entry->keep && entry->physical) {
+    loom_runtime_backing_cursor_t cursor = {0};
+    loom_runtime_backing_entry_t* entry;
+    while ((entry = loom_runtime_backing_directory_next(&buffer->backing,
+                                                        &cursor))) {
+      if (!entry->keep && entry->physical) {
         operation->edits[index++] =
             (loom_runtime_memory_edit_t){buffer, entry->index, *entry};
         entry->in_flight = true;
@@ -1902,29 +1908,34 @@ iree_status_t loom_runtime_virtual_buffer_commit(
 
 void loom_runtime_virtual_buffer_begin_trim(
     loom_runtime_virtual_buffer_t* buffer) {
+  IREE_TRACE_ZONE_BEGIN(z0);
   loom_runtime_backing_directory_discard_empty(&buffer->backing);
-  for (iree_host_size_t i = 0; i < buffer->backing.capacity; ++i) {
-    if (buffer->backing.entries[i].occupied) {
-      buffer->backing.entries[i].keep = false;
-    }
+  loom_runtime_backing_cursor_t cursor = {0};
+  loom_runtime_backing_entry_t* entry;
+  while ((entry =
+              loom_runtime_backing_directory_next(&buffer->backing, &cursor))) {
+    entry->keep = false;
   }
+  IREE_TRACE_ZONE_END(z0);
 }
 
 iree_status_t loom_runtime_virtual_buffer_keep(
     loom_runtime_virtual_buffer_t* buffer, iree_device_size_t offset,
     iree_device_size_t length, uint64_t* out_added_bytes) {
+  IREE_TRACE_ZONE_BEGIN(z0);
   if (out_added_bytes) {
     *out_added_bytes = 0;
   }
   if (!length) {
+    IREE_TRACE_ZONE_END(z0);
     return iree_ok_status();
   }
   const iree_device_size_t slab_size = buffer->geometry.mapping_size;
   const iree_host_size_t end = (offset + length - 1) / slab_size + 1;
   for (iree_host_size_t i = offset / slab_size; i < end; ++i) {
     loom_runtime_backing_entry_t* entry = NULL;
-    IREE_RETURN_IF_ERROR(
-        loom_runtime_backing_directory_insert(&buffer->backing, i, &entry));
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, loom_runtime_backing_directory_insert(&buffer->backing, i, &entry));
     if (!entry->keep) {
       if (out_added_bytes) {
         *out_added_bytes += loom_runtime_memory_slab_length(buffer, i);
@@ -1932,6 +1943,7 @@ iree_status_t loom_runtime_virtual_buffer_keep(
       entry->keep = true;
     }
   }
+  IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
 
@@ -1982,11 +1994,10 @@ iree_status_t loom_runtime_virtual_buffer_free(
     IREE_RETURN_IF_ERROR(
         iree_hal_virtual_buffer_detach(buffer->handle, pool->mapping_scope));
   }
-  for (iree_host_size_t i = 0; i < buffer->backing.capacity; ++i) {
-    loom_runtime_backing_entry_t* entry = &buffer->backing.entries[i];
-    if (!entry->occupied) {
-      continue;
-    }
+  loom_runtime_backing_cursor_t cursor = {0};
+  loom_runtime_backing_entry_t* entry;
+  while ((entry =
+              loom_runtime_backing_directory_next(&buffer->backing, &cursor))) {
     IREE_ASSERT(!entry->in_flight);
     IREE_ASSERT(entry->physical);
     const iree_host_size_t index = entry->index;

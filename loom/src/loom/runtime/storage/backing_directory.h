@@ -33,11 +33,9 @@ typedef struct loom_runtime_backing_entry_t {
   bool counted;
   // Accepted asynchronous operation excludes another editor of this slot.
   bool in_flight;
-  // Entry contains a live logical slot.
-  bool occupied;
-  // Vacant entry preserves a linear-probing chain until the next rehash.
-  bool tombstone;
 } loom_runtime_backing_entry_t;
+
+typedef struct loom_runtime_backing_bucket_t loom_runtime_backing_bucket_t;
 
 // Sparse slot directory whose storage scales with touched slots, not the
 // reservation's logical extent. Mutations are serialized by its outer owner.
@@ -46,13 +44,23 @@ typedef struct loom_runtime_backing_directory_t {
   iree_allocator_t host_allocator;
   // Number of live entries.
   iree_host_size_t count;
-  // Vacant probe-chain entries awaiting reuse or the next rehash.
-  iree_host_size_t tombstone_count;
-  // Power-of-two entry capacity.
+  // Number of root buckets, independent of the virtual reservation extent.
   iree_host_size_t capacity;
-  // Owned linear-probing table.
-  loom_runtime_backing_entry_t* entries;
+  // Occupied root buckets, each owning one logical page group.
+  iree_host_size_t group_count;
+  // Deleted root buckets preserving probe chains until rehash.
+  iree_host_size_t tombstone_count;
+  // Owned sparse root indexing compact groups of adjacent logical slots.
+  loom_runtime_backing_bucket_t* buckets;
 } loom_runtime_backing_directory_t;
+
+// A logical traversal position survives removal of the returned entry.
+typedef struct loom_runtime_backing_cursor_t {
+  // Root bucket containing the next logical slot to inspect.
+  iree_host_size_t bucket;
+  // Next logical offset within that group, including its end sentinel.
+  uint16_t offset;
+} loom_runtime_backing_cursor_t;
 
 // Initializes an empty directory without allocating storage.
 void loom_runtime_backing_directory_initialize(
@@ -69,23 +77,34 @@ loom_runtime_backing_entry_t* loom_runtime_backing_directory_find(
 const loom_runtime_backing_entry_t* loom_runtime_backing_directory_find_const(
     const loom_runtime_backing_directory_t* directory, iree_host_size_t index);
 
-// Finds or inserts an empty entry for index. Table growth is proportional to
-// the live entry count and may fail without changing existing entries.
+// Finds or inserts an empty entry for index. Payload growth moves at most one
+// bounded logical group; root growth moves only group keys and pointers.
+// Failure preserves existing entries and their ownership.
 iree_status_t loom_runtime_backing_directory_insert(
     loom_runtime_backing_directory_t* directory, iree_host_size_t index,
     loom_runtime_backing_entry_t** out_entry);
 
-// Removes an entry while preserving its probe chain.
+// Removes an entry and makes its payload slot reusable.
 void loom_runtime_backing_directory_remove(
     loom_runtime_backing_directory_t* directory,
     loom_runtime_backing_entry_t* entry);
+
+// Visits occupied payloads in root/group order. Initialize *cursor to zero;
+// each call advances it and returns NULL at the end. Removing the returned
+// entry is allowed. Insertion or shrink invalidates an active traversal.
+loom_runtime_backing_entry_t* loom_runtime_backing_directory_next(
+    loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_cursor_t* cursor);
+const loom_runtime_backing_entry_t* loom_runtime_backing_directory_next_const(
+    const loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_cursor_t* cursor);
 
 // Removes marker-only entries with neither physical nor in-flight ownership.
 void loom_runtime_backing_directory_discard_empty(
     loom_runtime_backing_directory_t* directory);
 
-// Shrinks the table to the minimum capacity required by its live entries.
-// Empty directories release all storage without allocating.
+// Compacts payloads at a cold reclamation boundary when at least half the
+// storage is unused. Empty directories release all storage without allocating.
 iree_status_t loom_runtime_backing_directory_shrink(
     loom_runtime_backing_directory_t* directory);
 

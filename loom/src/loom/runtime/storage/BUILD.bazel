@@ -41,7 +41,11 @@ loom_cc_library(
     srcs = ["backing_directory.c"],
     hdrs = ["backing_directory.h"],
     visibility = ["//visibility:private"],
-    deps = ["//runtime/src/iree/base"],
+    deps = [
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal",
+        "//runtime/src/iree/base/internal:prng",
+    ],
 )
 
 loom_cc_library(
@@ -207,6 +211,7 @@ loom_cc_library(
     name = "memory_tests",
     testonly = True,
     srcs = [
+        "memory_directory_test.cc",
         "memory_failure_test.cc",
         "memory_query_test.cc",
         "memory_ranges_test.cc",

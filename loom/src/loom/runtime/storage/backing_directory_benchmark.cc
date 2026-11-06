@@ -26,7 +26,7 @@ static std::vector<iree_host_size_t> Populate(
   return indexes;
 }
 
-// Models a warm footprint query over already resident state. Each item is one
+// Models repeated selection of already resident backing. Each item is one
 // logical slot lookup and mark plus the corresponding cleanup lookup.
 static void BM_MarkResidentSlots(benchmark::State& state) {
   loom_runtime_backing_directory_t directory;
@@ -52,8 +52,8 @@ static void BM_MarkResidentSlots(benchmark::State& state) {
 }
 BENCHMARK(BM_MarkResidentSlots)->Arg(16)->Arg(256)->Arg(4096);
 
-// Models a capacity probe that discovers missing slots and is then denied.
-// The live directory must return to its prior footprint after each query.
+// Models commitment that discovers missing slots and is then denied.
+// Rollback preserves live entries and releases unused directory capacity.
 static void BM_DeniedSparseGrowth(benchmark::State& state) {
   loom_runtime_backing_directory_t directory;
   loom_runtime_backing_directory_initialize(iree_allocator_system(),
