@@ -820,15 +820,16 @@ static iree_status_t loom_aie2p_native_select(
             loom_cfg_execution_count_is_exact(&source->execution_counts,
                                               op->parent_block->region_index) &&
             (cursor->worker != i || cursor->exact_admissions);
+        const bool imported =
+            realization->invocations.channels[channel - context->channels]
+                .invocation != realization->invocations.workers[i].invocation;
         *cursor = (loom_aie2p_native_cursor_t){
             .worker = (uint32_t)i,
             .maximum_admissions = maximum_admissions,
             .exact_admissions = exact_admissions,
             .shared = shared,
-            .advances =
-                channel->source->capacity > 1 &&
-                (maximum_admissions > 1 || shared ||
-                 realization->invocations.workers[i].invocation->ordinal != 0)};
+            .advances = channel->source->capacity > 1 &&
+                        (maximum_admissions > 1 || shared || imported)};
       }
     }
   }
