@@ -127,6 +127,16 @@ typedef struct loom_aie2p_native_input_t {
   struct loom_aie2p_native_input_t* next;
 } loom_aie2p_native_input_t;
 
+// Whether two selected input continuations can advance the same external
+// read cursor. Controller selection and common execution admission precede
+// this query. Both inputs must inherit their controllers' disjoint lifetimes
+// on one core; borrowing the same controller does not order two input leases.
+bool loom_aie2p_native_input_cursors_compatible(
+    const loom_aie2p_native_context_t* context,
+    const loom_pipeline_invocations_t* invocations,
+    const loom_aie2p_native_input_t* first,
+    const loom_aie2p_native_input_t* second);
+
 // Admits native phased input mechanics before assigning instruction engines.
 // No core or shadow payload allocation is introduced. False eligibility keeps
 // ordinary execution selection; authored unsupported external use is diagnosed

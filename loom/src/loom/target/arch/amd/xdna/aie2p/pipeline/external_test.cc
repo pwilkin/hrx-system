@@ -13,6 +13,68 @@
 
 namespace {
 
+class InputCursorOwnershipTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // Common execution admission assigned two serial child controllers to
+    // one core. Communication-only workers have no instruction engine.
+    for (size_t i = 0; i < inputs_.size(); ++i) {
+      workers_[i * 2].invocation = &children_[i];
+      workers_[i * 2 + 1].invocation = &children_[i];
+      inputs_[i].worker = i * 2;
+      inputs_[i].controller = i * 2 + 1;
+      inputs_[i].invocation = &children_[i];
+    }
+    invocations_.workers = workers_.data();
+    invocations_.worker_count = workers_.size();
+    context_.core_engines = engines_.data();
+  }
+
+  bool Compatible() const {
+    return loom_aie2p_native_input_cursors_compatible(&context_, &invocations_,
+                                                      &inputs_[0], &inputs_[1]);
+  }
+
+  // Distinct serial construction identities whose controllers were admitted.
+  std::array<loom_pipeline_invocation_t, 2> children_ = {};
+  // Two input/controller pairs, one pair per construction.
+  std::array<loom_pipeline_invocation_worker_t, 4> workers_ = {};
+  // Retained worker-to-construction correspondence.
+  loom_pipeline_invocations_t invocations_ = {};
+  // Physical instruction-engine assignments; inputs are excluded.
+  std::array<iree_host_size_t, 4> engines_ = {IREE_HOST_SIZE_MAX, 7,
+                                              IREE_HOST_SIZE_MAX, 7};
+  // Selected existing controllers, without additional instruction workers.
+  std::array<loom_aie2p_native_input_t, 2> inputs_ = {};
+  // Native realization's admitted instruction-engine map.
+  loom_aie2p_native_context_t context_ = {};
+};
+
+TEST_F(InputCursorOwnershipTest, SerialContinuationsShareTheirCoreCursor) {
+  EXPECT_TRUE(Compatible());
+  engines_[3] = 8;
+  EXPECT_FALSE(Compatible());
+}
+
+TEST_F(InputCursorOwnershipTest, IndependentInputsCannotShareAnEntrySnapshot) {
+  inputs_[1].controller = inputs_[0].controller;
+  inputs_[1].invocation = inputs_[0].invocation;
+  EXPECT_FALSE(Compatible());
+  EXPECT_TRUE(loom_aie2p_native_input_cursors_compatible(
+      &context_, &invocations_, &inputs_[0], &inputs_[0]));
+}
+
+TEST_F(InputCursorOwnershipTest, AncestorInputCannotBorrowAChildLifetime) {
+  // A root input may select a downstream child as its observer. That does not
+  // make the input's lifetime disjoint from the child's other imported work.
+  const loom_pipeline_invocation_t parent = {};
+  inputs_[0].invocation = &parent;
+  EXPECT_FALSE(Compatible());
+  inputs_[0].invocation = &children_[0];
+  inputs_[1].invocation = &parent;
+  EXPECT_FALSE(Compatible());
+}
+
 class ExternalSlotsTest : public ::testing::Test {
  protected:
   void SetUp() override {

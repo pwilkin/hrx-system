@@ -9,6 +9,24 @@
 #include "loom/analysis/storage_geometry.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 
+bool loom_aie2p_native_input_cursors_compatible(
+    const loom_aie2p_native_context_t* context,
+    const loom_pipeline_invocations_t* invocations,
+    const loom_aie2p_native_input_t* first,
+    const loom_aie2p_native_input_t* second) {
+  // Borrow the selected controllers' nonoverlap proof only when each input
+  // has the same lifetime as its controller. Two inputs attached to one
+  // controller have independent entry snapshots, not a shared cursor state.
+  return invocations->workers[first->controller].invocation ==
+             first->invocation &&
+         invocations->workers[second->controller].invocation ==
+             second->invocation &&
+         (first->worker == second->worker ||
+          first->controller != second->controller) &&
+         context->core_engines[first->controller] ==
+             context->core_engines[second->controller];
+}
+
 iree_status_t loom_aie2p_native_select_input(
     loom_aie2p_native_context_t* context,
     const loom_pipeline_realization_t* realization, iree_host_size_t worker,

@@ -962,35 +962,6 @@ static iree_status_t loom_aie2p_native_select(
         IREE_SV("nonoverlapping child lifetimes for shared distribution "
                 "endpoints"));
   }
-  // A shared cursor follows its admitted engine across child calls. Equal
-  // placement alone is insufficient: the execution plan above proves that
-  // these workers cannot require progress concurrently. Instruction and
-  // distribution engines remain independent even at equal coordinates.
-  for (iree_host_size_t i = 0; i < worker_count; ++i) {
-    const loom_pipeline_worker_t* source = &realization->workers[i];
-    const iree_host_size_t* engines =
-        context->workers[i].execution ==
-                LOOM_AIE2P_NATIVE_EXECUTION_DISTRIBUTION
-            ? distribution_engines
-            : core_engines;
-    for (iree_host_size_t j = 0; j < source->channels.action_count; ++j) {
-      const loom_channel_plan_action_t* action = &source->channels.actions[j];
-      const bool reader = action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE;
-      if (!reader && action->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE) {
-        continue;
-      }
-      const loom_aie2p_native_channel_t* channel =
-          loom_aie2p_native_channel(context, realization, action->channel);
-      const loom_aie2p_native_cursor_t* cursor =
-          reader ? &channel->cursor.reader : &channel->cursor.writer;
-      if (cursor->shared && (engines[i] == IREE_HOST_SIZE_MAX ||
-                             engines[cursor->worker] != engines[i])) {
-        return loom_aie2p_native_reject(
-            context, action->op,
-            IREE_SV("one admitted execution engine for a shared FIFO cursor"));
-      }
-    }
-  }
   for (iree_host_size_t i = 0; i < worker_count; ++i) {
     const loom_pipeline_worker_t* source = &realization->workers[i];
     loom_aie2p_native_worker_t* worker = &context->workers[i];
@@ -1062,6 +1033,48 @@ static iree_status_t loom_aie2p_native_select(
       loom_aie2p_native_select_progress(context, realization, out_valid));
   if (!*out_valid) {
     return iree_ok_status();
+  }
+  // A shared cursor follows its admitted engine across child calls. Equal
+  // placement alone is insufficient: the execution plan above proves that
+  // these workers cannot require progress concurrently. Instruction and
+  // distribution engines remain independent even at equal coordinates. Input
+  // continuations use the controller selected above, not a nonexistent body.
+  *out_valid = false;
+  for (iree_host_size_t i = 0; i < worker_count; ++i) {
+    const loom_pipeline_worker_t* source = &realization->workers[i];
+    const iree_host_size_t* engines =
+        context->workers[i].execution ==
+                LOOM_AIE2P_NATIVE_EXECUTION_DISTRIBUTION
+            ? distribution_engines
+            : core_engines;
+    for (iree_host_size_t j = 0; j < source->channels.action_count; ++j) {
+      const loom_channel_plan_action_t* action = &source->channels.actions[j];
+      const bool reader = action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE;
+      if (!reader && action->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE) {
+        continue;
+      }
+      const loom_aie2p_native_channel_t* channel =
+          loom_aie2p_native_channel(context, realization, action->channel);
+      const loom_aie2p_native_cursor_t* cursor =
+          reader ? &channel->cursor.reader : &channel->cursor.writer;
+      if (!cursor->shared) {
+        continue;
+      }
+      const bool input = reader && channel->external &&
+                         context->workers[i].input &&
+                         context->workers[cursor->worker].input;
+      const bool ordered = input ? loom_aie2p_native_input_cursors_compatible(
+                                       context, &realization->invocations,
+                                       context->workers[i].input,
+                                       context->workers[cursor->worker].input)
+                                 : engines[i] != IREE_HOST_SIZE_MAX &&
+                                       engines[cursor->worker] == engines[i];
+      if (!ordered) {
+        return loom_aie2p_native_reject(
+            context, action->op,
+            IREE_SV("one admitted execution engine for a shared FIFO cursor"));
+      }
+    }
   }
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_select_collectives(context, realization, out_valid));
