@@ -103,6 +103,11 @@ const loom_runtime_backing_entry_t* loom_runtime_backing_directory_next_const(
 void loom_runtime_backing_directory_discard_empty(
     loom_runtime_backing_directory_t* directory);
 
+// Removes marker-only entries and clears surviving keep flags in one pass,
+// beginning a new retained-range selection without changing page ownership.
+void loom_runtime_backing_directory_begin_trim(
+    loom_runtime_backing_directory_t* directory);
+
 // Compacts payloads at a cold reclamation boundary when at least half the
 // storage is unused. Empty directories release all storage without allocating.
 iree_status_t loom_runtime_backing_directory_shrink(

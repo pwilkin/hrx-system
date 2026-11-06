@@ -93,6 +93,53 @@ TEST(BackingDirectoryTest, ReusesRemovedSlotsWithoutGrowing) {
   loom_runtime_backing_directory_deinitialize(&directory);
 }
 
+TEST(BackingDirectoryTest, TrimSelectionPreservesLiveAndPendingOwnership) {
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(iree_allocator_system(),
+                                            &directory);
+  for (iree_host_size_t index : {0u, 1u, 2u, 512u}) {
+    loom_runtime_backing_entry_t* entry = nullptr;
+    IREE_ASSERT_OK(
+        loom_runtime_backing_directory_insert(&directory, index, &entry));
+    entry->keep = true;
+    if (index == 1) {
+      entry->physical_offset = 1024;
+      entry->physical = reinterpret_cast<loom_runtime_backing_parent_t*>(99);
+      entry->mapped = true;
+      entry->counted = true;
+    } else if (index == 2) {
+      entry->in_flight = true;
+    }
+  }
+  // Finalizing a selection discards empty markers without clearing live marks.
+  loom_runtime_backing_directory_discard_empty(&directory);
+  EXPECT_EQ(directory.count, 2u);
+  EXPECT_EQ(loom_runtime_backing_directory_find(&directory, 0), nullptr);
+  EXPECT_EQ(loom_runtime_backing_directory_find(&directory, 512), nullptr);
+  ASSERT_TRUE(loom_runtime_backing_directory_find(&directory, 1)->keep);
+  ASSERT_TRUE(loom_runtime_backing_directory_find(&directory, 2)->keep);
+
+  loom_runtime_backing_entry_t* marker = nullptr;
+  IREE_ASSERT_OK(loom_runtime_backing_directory_insert(&directory, 0, &marker));
+  marker->keep = true;
+  loom_runtime_backing_directory_begin_trim(&directory);
+  EXPECT_EQ(directory.count, 2u);
+  EXPECT_EQ(loom_runtime_backing_directory_find(&directory, 0), nullptr);
+  const auto* resident = loom_runtime_backing_directory_find(&directory, 1);
+  ASSERT_NE(resident, nullptr);
+  EXPECT_FALSE(resident->keep);
+  EXPECT_TRUE(resident->counted);
+  EXPECT_EQ(resident->physical_offset, 1024u);
+  EXPECT_TRUE(resident->mapped);
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(resident->physical), 99u);
+  const auto* pending = loom_runtime_backing_directory_find(&directory, 2);
+  ASSERT_NE(pending, nullptr);
+  EXPECT_FALSE(pending->keep);
+  EXPECT_TRUE(pending->in_flight);
+  EXPECT_EQ(pending->physical, nullptr);
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+
 TEST(BackingDirectoryTest, RemovalDuringTraversalVisitsEveryDensePayload) {
   loom_runtime_backing_directory_t directory;
   loom_runtime_backing_directory_initialize(iree_allocator_system(),

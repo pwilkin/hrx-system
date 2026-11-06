@@ -1909,13 +1909,7 @@ iree_status_t loom_runtime_virtual_buffer_commit(
 void loom_runtime_virtual_buffer_begin_trim(
     loom_runtime_virtual_buffer_t* buffer) {
   IREE_TRACE_ZONE_BEGIN(z0);
-  loom_runtime_backing_directory_discard_empty(&buffer->backing);
-  loom_runtime_backing_cursor_t cursor = {0};
-  loom_runtime_backing_entry_t* entry;
-  while ((entry =
-              loom_runtime_backing_directory_next(&buffer->backing, &cursor))) {
-    entry->keep = false;
-  }
+  loom_runtime_backing_directory_begin_trim(&buffer->backing);
   IREE_TRACE_ZONE_END(z0);
 }
 

@@ -285,8 +285,8 @@ loom_runtime_backing_entry_t* loom_runtime_backing_directory_next(
       loom_runtime_backing_directory_next_const(directory, cursor);
 }
 
-void loom_runtime_backing_directory_discard_empty(
-    loom_runtime_backing_directory_t* directory) {
+static void loom_runtime_backing_directory_compact(
+    loom_runtime_backing_directory_t* directory, bool reset_keep) {
   for (iree_host_size_t i = 0; i < directory->capacity; ++i) {
     loom_runtime_backing_group_t* group = directory->buckets[i].group;
     if (!group) {
@@ -298,6 +298,9 @@ void loom_runtime_backing_directory_discard_empty(
       if (entry.physical || entry.in_flight) {
         if (count != j) {
           group->entries[count] = entry;
+        }
+        if (reset_keep) {
+          group->entries[count].keep = false;
         }
         ++count;
       } else {
@@ -316,6 +319,16 @@ void loom_runtime_backing_directory_discard_empty(
   if (!directory->count) {
     loom_runtime_backing_release_storage(directory);
   }
+}
+
+void loom_runtime_backing_directory_discard_empty(
+    loom_runtime_backing_directory_t* directory) {
+  loom_runtime_backing_directory_compact(directory, false);
+}
+
+void loom_runtime_backing_directory_begin_trim(
+    loom_runtime_backing_directory_t* directory) {
+  loom_runtime_backing_directory_compact(directory, true);
 }
 
 iree_status_t loom_runtime_backing_directory_shrink(
