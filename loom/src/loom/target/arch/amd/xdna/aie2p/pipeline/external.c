@@ -187,9 +187,10 @@ static uint32_t loom_aie2p_native_input_receive_window(
 }
 
 static iree_status_t loom_aie2p_native_input_receivers(
-    loom_aie2p_native_context_t* context, loom_aie2p_native_input_t* input,
-    const loom_aie2p_native_input_t* shared, uint32_t window,
-    iree_string_view_t* reason, bool* out_valid) {
+    loom_aie2p_native_context_t* context,
+    const loom_pipeline_realization_t* realization,
+    loom_aie2p_native_input_t* input, const loom_aie2p_native_input_t* shared,
+    uint32_t window, iree_string_view_t* reason, bool* out_valid) {
   const iree_host_size_t tail = input->source->phase_count - 1;
   for (iree_host_size_t i = 0; i <= tail; ++i) {
     loom_aie2p_native_input_phase_t* phase = &input->phases[i];
@@ -207,7 +208,8 @@ static iree_status_t loom_aie2p_native_input_receivers(
             ? (i == tail ? window : (uint32_t)phase->source->transfers)
             : (uint32_t)(input->source->admissions * phase->source->transfers);
     IREE_RETURN_IF_ERROR(loom_aie2p_native_select_channel_endpoint(
-        context, phase->destination, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+        context, &realization->invocations, input->invocation,
+        phase->destination, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
         repetitions, 1, 0,
         shared ? &shared->phases[i].receiver
                : (window && i ? &input->phases[0].receiver : NULL),
@@ -430,7 +432,7 @@ iree_status_t loom_aie2p_native_route_input(
   iree_string_view_t receiver_reason;
   bool receivers_valid = false;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_input_receivers(
-      context, input, shared_path ? path->first : NULL, window,
+      context, realization, input, shared_path ? path->first : NULL, window,
       &receiver_reason, &receivers_valid));
   if (!receivers_valid) {
     return loom_aie2p_native_reject(context, declaration, receiver_reason);

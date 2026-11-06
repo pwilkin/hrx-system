@@ -91,6 +91,15 @@ class SerialEndpointRefillTest
     context_.family = loom_xdna_npu2_array_family();
     context_.pool_tiles = pools_.data();
     context_.workers = workers_.data();
+    context_.core_engines = engines_.data();
+    context_.channels = channels_.data();
+    invocations_.channels = ownership_.data();
+    invocations_.entries = entries_.data();
+    invocations_.count = entries_.size();
+    invocations_.workers = controller_owners_.data();
+    invocations_.worker_count = controller_owners_.size();
+    invocations_.channel_count = ownership_.size();
+    invocations_.lifetimes.has_serial = true;
     tile_.coordinate = {0, 2};
     tile_.facts = loom_xdna_array_tile_facts(context_.family, tile_.coordinate);
     tile_.memory_layout = &loom_aie2p_compute_memory;
@@ -105,9 +114,13 @@ class SerialEndpointRefillTest
       channel.free_lock = i * 2;
       channel.ready_lock = i * 2 + 1;
       channel.cursor.reader.worker = i;
+      channel.cursor.writer.worker = i;
       channel.cursor.reader.maximum_admissions = 32769 + i;
       channel.cursor.reader.exact_admissions = true;
       channel.progress = &channel;
+      children_[i].ordinal = i + 1;
+      ownership_[i].invocation = &children_[i];
+      controller_owners_[i].invocation = &children_[i];
     }
   }
 
@@ -132,6 +145,21 @@ class SerialEndpointRefillTest
   std::array<loom_aie2p_native_channel_t, 2> channels_ = {};
   // Independent continuation owners for the serial child occurrences.
   std::array<loom_aie2p_native_worker_t, 2> workers_ = {};
+  // Physical core assignments already admitted by common execution.
+  std::array<iree_host_size_t, 2> engines_ = {0, 0};
+  // Resident parent containing the two serial child calls.
+  loom_pipeline_invocation_t root_ = {};
+  // Construction identities of the independent ring/continuation state.
+  std::array<loom_pipeline_invocation_t, 2> children_ = {};
+  // Complete construction domain containing both serial children.
+  std::array<const loom_pipeline_invocation_t*, 3> entries_ = {
+      &root_, &children_[0], &children_[1]};
+  // Each continuation belongs to its own serial child.
+  std::array<loom_pipeline_invocation_worker_t, 2> controller_owners_ = {};
+  // Retained channel construction ownership.
+  std::array<loom_pipeline_invocation_channel_t, 2> ownership_ = {};
+  // Retained construction ownership supplied to native selection.
+  loom_pipeline_invocations_t invocations_ = {};
   // Selected physical resources consumed by endpoint selection.
   loom_aie2p_native_context_t context_ = {};
 };
@@ -143,7 +171,7 @@ TEST_P(SerialEndpointRefillTest, QueueSharingPreservesEachReaderContinuation) {
     bool valid = false;
     const auto* channel = &channels_[i];
     IREE_ASSERT_OK(loom_aie2p_native_select_channel_endpoint(
-        &context_, channel, GetParam(),
+        &context_, &invocations_, &children_[i], channel, GetParam(),
         channel->cursor.reader.maximum_admissions, 1, 0,
         i ? &endpoints[0] : nullptr, channel, &endpoints[i], &reason, &valid));
     ASSERT_TRUE(valid) << std::string(reason.data, reason.size);

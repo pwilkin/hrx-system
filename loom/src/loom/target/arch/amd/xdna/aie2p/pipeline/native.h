@@ -158,6 +158,9 @@ typedef struct loom_aie2p_native_tile_t {
   // Allocated descriptor count per channel-parity bank. Compute and Shim
   // modules use only bank zero; SRAM even/odd channels own disjoint banks.
   uint16_t descriptor_counts[2];
+  // Reusable private ranges in each physical descriptor bank. Controller
+  // engine identity carries the common execution nonoverlap proof.
+  struct loom_aie2p_native_endpoint_storage_t* descriptor_storage[2];
   // Next available memory-to-stream DMA engine.
   uint8_t next_mm2s;
   // Next available stream-to-memory DMA engine.
@@ -360,9 +363,38 @@ typedef struct loom_aie2p_native_distribution_endpoint_t {
   uint8_t engine;
   // Descriptor images, finite queued tasks, and invocation rewind state.
   loom_aie2p_native_dma_sequence_t sequence;
+  // Existing producer/reader controlling this endpoint, with input workers
+  // resolved to their selected core continuation. UINT32_MAX means none.
+  uint32_t controller;
+  // Assigned private descriptor range, or NULL for resident geometry.
+  struct loom_aie2p_native_endpoint_storage_t* storage;
+  // Next geometry assigned to this range, finalized before boundary emission.
+  struct loom_aie2p_native_distribution_endpoint_t* next_geometry;
   // Invocation retirement must explicitly observe this DMA channel idle.
   bool wait_for_idle;
 } loom_aie2p_native_distribution_endpoint_t;
+
+// Descriptor capacity shared by private children controlled on one core.
+// Common core execution admission proves these construction lifetimes cannot
+// overlap. Several endpoints within one child still require distinct ranges.
+typedef struct loom_aie2p_native_endpoint_storage_t {
+  // Next range in increasing capacity order, bounded by the descriptor bank.
+  struct loom_aie2p_native_endpoint_storage_t* next;
+  // Initial geometry, also installed by configuration.
+  const loom_aie2p_native_distribution_endpoint_t* first;
+  // All selected geometries; framing selection may refine them before emission.
+  loom_aie2p_native_distribution_endpoint_t* geometries;
+  // Reserved physical capacity, independent of later sequence shortening.
+  uint16_t descriptor_count;
+  // Admitted instruction engine whose child occurrence controls this range.
+  iree_host_size_t controller_engine;
+  // Highest construction ordinal assigned to this range. Later selection
+  // sweeps cannot alias an earlier construction back onto its own live state.
+  const loom_pipeline_invocation_t* last;
+  // Per-descriptor word masks unioned across all geometries. NULL when no
+  // runtime word replacement is needed. Mutable iterators are included.
+  uint8_t* changed_words;
+} loom_aie2p_native_endpoint_storage_t;
 
 // One immutable packet class selecting a set of independently published FIFOs.
 typedef struct loom_aie2p_native_distribution_packet_t {
@@ -461,7 +493,7 @@ typedef struct loom_aie2p_native_distribution_command_t {
 typedef struct loom_aie2p_native_endpoint_initialization_t {
   // Next distinct endpoint initialized by this construction on this engine.
   const struct loom_aie2p_native_endpoint_initialization_t* next;
-  // Selected partial-ring iterator, already retired before owner reentry.
+  // Selected geometry/iterator, already retired before owner reentry.
   const loom_aie2p_native_distribution_endpoint_t* endpoint;
 } loom_aie2p_native_endpoint_initialization_t;
 
@@ -653,8 +685,8 @@ typedef struct loom_aie2p_native_context_t {
   // NULL when there are no ordered distributions. Each row retains the
   // invocation's complete transitive execution participants.
   iree_host_size_t* distribution_controllers;
-  // Invocation-major per-engine descriptor initialization. NULL when every
-  // endpoint finishes a complete ring turn or belongs to root configuration.
+  // Invocation-major per-engine descriptor initialization. NULL when all
+  // geometry is resident and every private endpoint finishes a ring turn.
   const loom_aie2p_native_endpoint_initialization_t** endpoint_initializers;
   // Selected private credit retirement by serial child, or NULL when every
   // private protocol already restores its initial state.
@@ -829,6 +861,12 @@ iree_status_t loom_aie2p_native_queue_retire(
     uint16_t engine, loom_xdna_dma_direction_t direction, uint8_t packet,
     uint8_t reply);
 
+// Finalizes descriptor activation after all sequence/framing selection.
+// Consumes retained physical ranges and their variants, without revisiting
+// source IR.
+iree_status_t loom_aie2p_native_finalize_endpoints(
+    loom_aie2p_native_context_t* context);
+
 // Binds unique native endpoint state to its channel's constructing owner.
 // Existing distribution/input controller selection and retirement precede this
 // step. It consumes retained geometry and ownership, without source traversal.
@@ -887,8 +925,12 @@ iree_status_t loom_aie2p_native_select_sequence(
 // externally admitted input. The source channel owns its payload and credits.
 // shared selects a physical engine. progress_channel independently supplies
 // reader-driven refill ownership; ordered phases provide their own admission.
+// A private child can reuse descriptor capacity controlled by the same admitted
+// core engine in an earlier construction. Imported state remains resident.
 iree_status_t loom_aie2p_native_select_channel_endpoint(
     loom_aie2p_native_context_t* context,
+    const loom_pipeline_invocations_t* invocations,
+    const loom_pipeline_invocation_t* invocation,
     const loom_aie2p_native_channel_t* channel,
     loom_xdna_dma_direction_t direction, uint32_t repetitions,
     uint32_t credit_interval, uint32_t reserved_tasks,
