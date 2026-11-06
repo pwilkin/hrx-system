@@ -318,21 +318,22 @@ static iree_status_t loom_aie2p_native_config_transfers(
     const loom_aie2p_native_worker_t* worker = &context->workers[i];
     if (worker->input) {
       const loom_aie2p_native_input_t* input = worker->input;
-      if (input->binding) {
-        const uint16_t engine = input->credit_engine;
+      if (input == input->path->first && input->binding) {
+        const uint16_t engine = input->path->credit_engine;
         const loom_xdna_register_field_id_t controller =
             LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_CONTROL_CONTROLLER_ID;
         IREE_RETURN_IF_ERROR(loom_aie2p_native_config_write(
             config,
             loom_xdna_register_field_address(context->family, controller,
-                                             input->shim->coordinate, &engine),
+                                             input->path->shim->coordinate,
+                                             &engine),
             loom_xdna_register_field_encode(controller,
-                                            input->completion_packet)));
+                                            input->path->completion_packet)));
       }
       for (iree_host_size_t j = 0; j < input->source->phase_count; ++j) {
         const loom_aie2p_native_distribution_endpoint_t* receiver =
             &input->phases[j].receiver;
-        if (!input->shared_receiver || !j) {
+        if (input == input->path->first && (!input->shared_receiver || !j)) {
           IREE_RETURN_IF_ERROR(
               loom_aie2p_native_config_reset_distribution_endpoint(
                   config, receiver, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY));
@@ -1151,13 +1152,13 @@ iree_status_t loom_aie2p_native_emit_configuration(
   // an immutable descriptor or reuse its storage.
   for (iree_host_size_t i = 0; i < realization->invocations.worker_count; ++i) {
     const loom_aie2p_native_input_t* input = context->workers[i].input;
-    if (input) {
+    if (input && input == input->path->first) {
       IREE_RETURN_IF_ERROR(loom_aie2p_native_config_wait_queue(
-          &config, input->shim, input->input_engine,
+          &config, input->path->shim, input->path->input_engine,
           LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM));
       if (input->binding) {
         IREE_RETURN_IF_ERROR(loom_aie2p_native_config_wait_queue(
-            &config, input->shim, input->credit_engine,
+            &config, input->path->shim, input->path->credit_engine,
             LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY));
       }
       const iree_host_size_t queue_count =

@@ -67,10 +67,11 @@ class ExternalInputActionsTest : public ::testing::Test {
     input_.source = &source_;
     input_.continuation = &continuation_;
     input_.phases = phases_.data();
-    input_.shim = &tiles_[0];
-    input_.control_packet = packets_[0];
-    input_.completion_packet = replies_[0];
-    input_.credit_packet = 6;
+    input_.path = &path_;
+    path_.shim = &tiles_[0];
+    path_.control_packet = packets_[0];
+    path_.completion_packet = replies_[0];
+    path_.credit_packet = 6;
     input_.ready_descriptor = 8;
     input_.credit_descriptor = 10;
     source_.phase_count = phases_.size();
@@ -229,6 +230,8 @@ class ExternalInputActionsTest : public ::testing::Test {
   loom_pipeline_invocation_t invocation_ = {};
   // Input plan consumed by the helper emitter.
   loom_aie2p_native_input_t input_ = {};
+  // Physical queues and packet classes selected for the input.
+  loom_aie2p_native_input_path_t path_ = {};
   // Physical core representative and its control routes.
   loom_aie2p_native_worker_t controller_ = {};
   // Sole instruction engine and its representative worker.

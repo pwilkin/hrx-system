@@ -61,6 +61,34 @@ typedef enum loom_aie2p_native_input_slots_e {
   LOOM_AIE2P_NATIVE_INPUT_SLOTS_PAYLOAD,
 } loom_aie2p_native_input_slots_t;
 
+// Queues and packet routes shared by nonoverlapping input occurrences on one
+// admitted controller core. Descriptor geometry remains occurrence-owned.
+typedef struct loom_aie2p_native_input_path_t {
+  // Next physical path owned by the same instruction engine.
+  struct loom_aie2p_native_input_path_t* next;
+  // First occurrence supplying the fixed receiver topology and configuration.
+  const struct loom_aie2p_native_input_t* first;
+  // Last assigned occurrence in invocation-major selection order. Independent
+  // inputs in that invocation cannot borrow this path's retirement boundary.
+  const struct loom_aie2p_native_input_t* last;
+  // Physical shim serving payload, readiness queries, and credit return.
+  loom_aie2p_native_tile_t* shim;
+  // One memory-to-stream engine shared by queries and admitted input phases.
+  uint8_t input_engine;
+  // Stream-to-memory engine returning the external source credit.
+  uint8_t credit_engine;
+  // Selected core-to-shim control packet class.
+  uint8_t control_packet;
+  // Selected core-to-shim credit payload class.
+  uint8_t credit_packet;
+  // Shim completion reply for terminal credits or each iterated-slot credit.
+  uint8_t completion_packet;
+  // Tile-relative input task publication register.
+  uint32_t input_queue;
+  // Tile-relative credit task publication register.
+  uint32_t credit_queue;
+} loom_aie2p_native_input_path_t;
+
 typedef struct loom_aie2p_native_input_t {
   // Communication-only source worker.
   uint32_t worker;
@@ -86,26 +114,12 @@ typedef struct loom_aie2p_native_input_t {
   // Selected ring realization. Shared notifications select readiness only
   // after queue retirement and await each returned credit.
   loom_aie2p_native_input_slots_t slots;
-  // Physical shim serving payload, readiness queries, and credit return.
-  loom_aie2p_native_tile_t* shim;
-  // One memory-to-stream engine shared by queries and admitted input phases.
-  uint8_t input_engine;
-  // Stream-to-memory engine returning the external source credit.
-  uint8_t credit_engine;
+  // Physical queues and routes, independent of this occurrence's descriptors.
+  loom_aie2p_native_input_path_t* path;
   // First ready-query descriptor, or the sole descriptor for iterated slots.
   uint16_t ready_descriptor;
   // First credit-return descriptor, or the sole descriptor for iterated slots.
   uint16_t credit_descriptor;
-  // Selected core-to-shim control packet class.
-  uint8_t control_packet;
-  // Selected core-to-shim credit payload class.
-  uint8_t credit_packet;
-  // Shim completion reply for terminal credits or each iterated-slot credit.
-  uint8_t completion_packet;
-  // Tile-relative input task publication register.
-  uint32_t input_queue;
-  // Tile-relative credit task publication register.
-  uint32_t credit_queue;
   // Tile-relative payload iteration register for compact replayed periods.
   uint32_t payload_iteration_register;
   // Tile-relative ready descriptor iteration register for iterated slots.

@@ -30,7 +30,8 @@ static iree_status_t loom_aie2p_native_input_write_slot(
       loom_aie2p_worker_binary(code, builder, AIE2P_CORE_DESCRIPTOR_REF_OR_I32,
                                geometry, current_slot, &iteration));
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
-      code, builder, input->control_packet, register_offset, &iteration, 1));
+      code, builder, input->path->control_packet, register_offset, &iteration,
+      1));
   return iree_ok_status();
 }
 
@@ -41,9 +42,9 @@ static iree_status_t loom_aie2p_native_input_select_slot(
     loom_region_t* region, const loom_aie2p_native_input_t* input,
     uint32_t register_offset, uint32_t geometry_word, loom_value_id_t slot) {
   IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
-      context, builder, region, input->shim, input->input_engine,
-      LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, input->control_packet,
-      input->completion_packet));
+      context, builder, region, input->path->shim, input->path->input_engine,
+      LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, input->path->control_packet,
+      input->path->completion_packet));
   return loom_aie2p_native_input_write_slot(
       context, builder, input, register_offset, geometry_word, slot);
 }
@@ -103,9 +104,9 @@ static iree_status_t loom_aie2p_native_input_begin(
             context, &builder, body, input, input->ready_iteration_register,
             input->ready_iteration, values[0]));
       }
-      IREE_RETURN_IF_ERROR(
-          loom_aie2p_worker_control_write(code, &builder, input->control_packet,
-                                          input->input_queue, &ready, 1));
+      IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
+          code, &builder, input->path->control_packet, input->path->input_queue,
+          &ready, 1));
       loom_value_id_t header, observed, available;
       IREE_RETURN_IF_ERROR(loom_aie2p_worker_op(
           code, &builder, AIE2P_CORE_DESCRIPTOR_REF_STREAM_READ_I32, NULL, 0,
@@ -135,7 +136,8 @@ static iree_status_t loom_aie2p_native_input_begin(
     IREE_RETURN_IF_ERROR(
         loom_aie2p_worker_constant(code, &builder, word, &task));
     IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
-        code, &builder, input->control_packet, input->input_queue, &task, 1));
+        code, &builder, input->path->control_packet, input->path->input_queue,
+        &task, 1));
   }
   if (payload) {
     loom_op_t* op;
@@ -166,7 +168,8 @@ static iree_status_t loom_aie2p_native_input_begin(
         &task));
   }
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
-      code, &builder, input->control_packet, input->input_queue, &task, 1));
+      code, &builder, input->path->control_packet, input->path->input_queue,
+      &task, 1));
   return loom_aie2p_worker_return(&builder, NULL, 0);
 }
 
@@ -193,10 +196,11 @@ static iree_status_t loom_aie2p_native_input_complete(
       loom_aie2p_worker_binary(code, &builder, AIE2P_CORE_DESCRIPTOR_REF_OR_I32,
                                descriptor, values[2], &task));
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_control_write(
-      code, &builder, input->control_packet, input->credit_queue, &task, 1));
+      code, &builder, input->path->control_packet, input->path->credit_queue,
+      &task, 1));
   const uint32_t packet =
-      input->credit_packet |
-      ((iree_math_count_ones_u32(input->credit_packet) & 1u) ^ 1u) << 31;
+      input->path->credit_packet |
+      ((iree_math_count_ones_u32(input->path->credit_packet) & 1u) ^ 1u) << 31;
   loom_value_id_t header;
   IREE_RETURN_IF_ERROR(
       loom_aie2p_worker_constant(code, &builder, packet, &header));
@@ -249,7 +253,7 @@ iree_status_t loom_aie2p_native_prepare_input(
     if (initializes_slot) {
       const loom_value_id_t slot =
           loom_region_entry_block(loom_low_func_def_body(function))->arg_ids[0];
-      const uint64_t origin = (uint64_t)input->shim->coordinate.column
+      const uint64_t origin = (uint64_t)input->path->shim->coordinate.column
                               << context->family->column_shift;
       const iree_host_size_t phase_count =
           input->source->phase_count -
@@ -260,7 +264,7 @@ iree_status_t loom_aie2p_native_prepare_input(
             (uint32_t)(loom_xdna_register_field_address(
                            context->family,
                            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT,
-                           input->shim->coordinate, &phase->descriptor) -
+                           input->path->shim->coordinate, &phase->descriptor) -
                        origin);
         IREE_RETURN_IF_ERROR(loom_aie2p_native_input_write_slot(
             context, &builder, input, offset, phase->words[6], slot));
@@ -270,7 +274,8 @@ iree_status_t loom_aie2p_native_prepare_input(
             (uint32_t)(loom_xdna_register_field_address(
                            context->family,
                            LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_BD_WORD6_ITERATION_CURRENT,
-                           input->shim->coordinate, &input->credit_descriptor) -
+                           input->path->shim->coordinate,
+                           &input->credit_descriptor) -
                        origin);
         IREE_RETURN_IF_ERROR(loom_aie2p_native_input_write_slot(
             context, &builder, input, offset, input->ready_iteration, slot));
@@ -291,15 +296,16 @@ iree_status_t loom_aie2p_native_prepare_input(
     loom_op_t* function;
     IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(
         &context->code, NULL, 0, NULL, 0, &builder, &input->retire, &function));
-    const iree_host_size_t shim = input->shim - context->tiles;
+    const iree_host_size_t shim = input->path->shim - context->tiles;
     IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
-        context, &builder, loom_low_func_def_body(function), input->shim,
-        input->input_engine, LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM,
+        context, &builder, loom_low_func_def_body(function), input->path->shim,
+        input->path->input_engine, LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM,
         owner->control_packets[shim], owner->control_replies[shim]));
     if (input->binding) {
       IREE_RETURN_IF_ERROR(loom_aie2p_native_queue_retire(
-          context, &builder, loom_low_func_def_body(function), input->shim,
-          input->credit_engine, LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
+          context, &builder, loom_low_func_def_body(function),
+          input->path->shim, input->path->credit_engine,
+          LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY,
           owner->control_packets[shim], owner->control_replies[shim]));
     }
     const iree_host_size_t count =

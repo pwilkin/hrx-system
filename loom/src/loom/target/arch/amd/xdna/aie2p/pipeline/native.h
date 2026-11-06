@@ -581,6 +581,8 @@ typedef struct loom_aie2p_native_worker_t {
   struct loom_aie2p_native_input_t* input;
   // External input continuations assigned to this instruction worker.
   struct loom_aie2p_native_input_t* inputs;
+  // Phased input queues/routes owned by this physical instruction engine.
+  struct loom_aie2p_native_input_path_t* input_paths;
 } loom_aie2p_native_worker_t;
 
 typedef struct loom_aie2p_native_join_function_t {
@@ -883,12 +885,15 @@ iree_status_t loom_aie2p_native_select_sequence(
 
 // Selects a local record-credit DMA endpoint shared by distributions and
 // externally admitted input. The source channel owns its payload and credits.
+// shared selects a physical engine. progress_channel independently supplies
+// reader-driven refill ownership; ordered phases provide their own admission.
 iree_status_t loom_aie2p_native_select_channel_endpoint(
     loom_aie2p_native_context_t* context,
     const loom_aie2p_native_channel_t* channel,
     loom_xdna_dma_direction_t direction, uint32_t repetitions,
     uint32_t credit_interval, uint32_t reserved_tasks,
     const loom_aie2p_native_distribution_endpoint_t* shared,
+    const loom_aie2p_native_channel_t* progress_channel,
     loom_aie2p_native_distribution_endpoint_t* out_endpoint,
     iree_string_view_t* out_reason, bool* out_valid);
 

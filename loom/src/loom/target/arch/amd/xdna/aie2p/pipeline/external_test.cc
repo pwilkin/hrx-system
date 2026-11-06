@@ -7,8 +7,13 @@
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 
 #include <array>
+#include <string>
 
+#include "iree/base/internal/arena.h"
 #include "iree/testing/gtest.h"
+#include "iree/testing/status_matchers.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/dma_plan.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
 #include "loom/target/arch/amd/xdna/array/facts.h"
 
 namespace {
@@ -74,6 +79,93 @@ TEST_F(InputCursorOwnershipTest, AncestorInputCannotBorrowAChildLifetime) {
   inputs_[1].invocation = &parent;
   EXPECT_FALSE(Compatible());
 }
+
+class SerialEndpointRefillTest
+    : public ::testing::TestWithParam<loom_xdna_dma_direction_t> {
+ protected:
+  void SetUp() override {
+    iree_arena_block_pool_initialize(32768, iree_allocator_system(), &blocks_);
+    iree_arena_initialize(&blocks_, &arena_);
+    pass_.arena = &arena_;
+    context_.pass = &pass_;
+    context_.family = loom_xdna_npu2_array_family();
+    context_.pool_tiles = pools_.data();
+    context_.workers = workers_.data();
+    tile_.coordinate = {0, 2};
+    tile_.facts = loom_xdna_array_tile_facts(context_.family, tile_.coordinate);
+    tile_.memory_layout = &loom_aie2p_compute_memory;
+    for (size_t i = 0; i < channels_.size(); ++i) {
+      sources_[i].capacity = 2;
+      auto& channel = channels_[i];
+      channel.source = &sources_[i];
+      channel.byte_offset = i * 128;
+      channel.byte_stride = 64;
+      channel.record_byte_length = 64;
+      channel.record_dense = true;
+      channel.free_lock = i * 2;
+      channel.ready_lock = i * 2 + 1;
+      channel.cursor.reader.worker = i;
+      channel.cursor.reader.maximum_admissions = 32769 + i;
+      channel.cursor.reader.exact_admissions = true;
+      channel.progress = &channel;
+    }
+  }
+
+  void TearDown() override {
+    iree_arena_deinitialize(&arena_);
+    iree_arena_block_pool_deinitialize(&blocks_);
+  }
+
+  // Arena-backed selected descriptors and reader continuations.
+  iree_arena_block_pool_t blocks_ = {};
+  // Temporary allocation domain for the native selection API.
+  iree_arena_allocator_t arena_ = {};
+  // Compiler lifetime supplying the selection arena.
+  loom_pass_t pass_ = {};
+  // Physical tile shared by two admitted serial owners.
+  loom_aie2p_native_tile_t tile_ = {};
+  // Both channel pools resolve to the same physical memory.
+  std::array<loom_aie2p_native_tile_t*, 1> pools_ = {&tile_};
+  // Distinct construction channels with identical two-slot geometry.
+  std::array<loom_pipeline_resource_channel_t, 2> sources_ = {};
+  // Retained per-channel exact reader progress.
+  std::array<loom_aie2p_native_channel_t, 2> channels_ = {};
+  // Independent continuation owners for the serial child occurrences.
+  std::array<loom_aie2p_native_worker_t, 2> workers_ = {};
+  // Selected physical resources consumed by endpoint selection.
+  loom_aie2p_native_context_t context_ = {};
+};
+
+TEST_P(SerialEndpointRefillTest, QueueSharingPreservesEachReaderContinuation) {
+  std::array<loom_aie2p_native_distribution_endpoint_t, 2> endpoints = {};
+  for (size_t i = 0; i < channels_.size(); ++i) {
+    iree_string_view_t reason;
+    bool valid = false;
+    const auto* channel = &channels_[i];
+    IREE_ASSERT_OK(loom_aie2p_native_select_channel_endpoint(
+        &context_, channel, GetParam(),
+        channel->cursor.reader.maximum_admissions, 1, 0,
+        i ? &endpoints[0] : nullptr, channel, &endpoints[i], &reason, &valid));
+    ASSERT_TRUE(valid) << std::string(reason.data, reason.size);
+    const auto* refill = workers_[i].refills;
+    ASSERT_NE(refill, nullptr);
+    EXPECT_EQ(refill->progress, channel);
+    EXPECT_GT(refill->remaining_tasks, 0u);
+    EXPECT_EQ(refill->queues->tile, &tile_);
+    EXPECT_EQ(refill->queues->engine, endpoints[0].engine);
+    EXPECT_EQ(refill->queues->direction, GetParam());
+    EXPECT_LE(endpoints[i].sequence.task_count,
+              tile_.facts->dma.task_queue_depth);
+  }
+  EXPECT_EQ(endpoints[0].engine, endpoints[1].engine);
+  EXPECT_NE(endpoints[0].sequence.descriptor, endpoints[1].sequence.descriptor);
+  EXPECT_EQ(tile_.next_mm2s + tile_.next_s2mm, 1u);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Directions, SerialEndpointRefillTest,
+    ::testing::Values(LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM,
+                      LOOM_XDNA_DMA_DIRECTION_STREAM_TO_MEMORY));
 
 class ExternalSlotsTest : public ::testing::Test {
  protected:
