@@ -1587,6 +1587,35 @@ TEST(FixedBlockPool, ASANAdvisesBackingBlockAndExposesUserRange) {
   EXPECT_EQ(provider->last_asan_layout.user_length, 13u);
   EXPECT_EQ(provider->last_asan_layout.right_redzone_length, 115u);
 
+  // Keep the first block live while using a sibling with a different layout.
+  // The visible offset includes the left redzone, not just the block index.
+  iree_hal_pool_reservation_t sibling;
+  IREE_ASSERT_OK(AcquireOneReservation(
+      pool, 31, 16, /*requester_frontier=*/NULL,
+      IREE_HAL_POOL_RESERVE_FLAG_NONE, &sibling, &reserve_info, &result));
+  EXPECT_EQ(sibling.offset, 256u);
+  iree_hal_pool_advise_asan_reservations(
+      pool, 1, &sibling, IREE_HAL_ASAN_RANGE_ADVICE_FLAG_ALLOCATED);
+  EXPECT_EQ(provider->last_asan_backing_offset, 192u);
+  EXPECT_EQ(provider->last_asan_layout.user_length, 31u);
+  EXPECT_EQ(provider->last_asan_layout.right_redzone_length, 97u);
+  const iree_hal_pool_reservation_t siblings[] = {reservation, sibling};
+  iree_hal_pool_reservation_view_t views[2];
+  ASSERT_TRUE(iree_hal_pool_query_reservation_views(pool, 2, siblings, views));
+  EXPECT_EQ(views[0].buffer, views[1].buffer);
+  EXPECT_EQ(views[1].byte_offset - views[0].byte_offset, 192u);
+  EXPECT_EQ(views[0].byte_length, 13u);
+  EXPECT_EQ(views[1].byte_length, 31u);
+  iree_hal_buffer_t* sibling_buffer = nullptr;
+  IREE_ASSERT_OK(MaterializeOneReservation(
+      pool, &sibling,
+      IREE_HAL_POOL_MATERIALIZE_FLAG_TRANSFER_RESERVATION_OWNERSHIP,
+      &sibling_buffer));
+  EXPECT_EQ(iree_hal_buffer_byte_length(sibling_buffer), 31u);
+  iree_hal_buffer_release(sibling_buffer);
+  EXPECT_EQ(provider->last_asan_backing_offset, 192u);
+  EXPECT_EQ(provider->last_asan_layout.user_length, 31u);
+
   iree_hal_pool_stats_t stats;
   iree_hal_pool_query_stats(pool, &stats);
   EXPECT_EQ(stats.bytes_reserved, 192u);
@@ -1604,7 +1633,9 @@ TEST(FixedBlockPool, ASANAdvisesBackingBlockAndExposesUserRange) {
 
   EXPECT_EQ(iree_atomic_load(&provider->asan_released_count,
                              iree_memory_order_relaxed),
-            1);
+            2);
+  EXPECT_EQ(provider->last_asan_backing_offset, 0u);
+  EXPECT_EQ(provider->last_asan_layout.user_length, 13u);
   const int32_t first_release_sequence = provider->last_asan_released_sequence;
   EXPECT_LT(provider->last_asan_allocated_sequence, first_release_sequence);
   iree_hal_pool_query_stats(pool, &stats);
@@ -1619,7 +1650,7 @@ TEST(FixedBlockPool, ASANAdvisesBackingBlockAndExposesUserRange) {
       pool, 1, &reservation, IREE_HAL_ASAN_RANGE_ADVICE_FLAG_ALLOCATED);
   EXPECT_EQ(iree_atomic_load(&provider->asan_allocated_count,
                              iree_memory_order_relaxed),
-            2);
+            3);
   EXPECT_LT(first_release_sequence, provider->last_asan_allocated_sequence);
 
   iree_hal_pool_advise_asan_reservations(
@@ -1628,7 +1659,7 @@ TEST(FixedBlockPool, ASANAdvisesBackingBlockAndExposesUserRange) {
                         /*death_frontier=*/NULL);
   EXPECT_EQ(iree_atomic_load(&provider->asan_released_count,
                              iree_memory_order_relaxed),
-            2);
+            3);
   EXPECT_LT(provider->last_asan_allocated_sequence,
             provider->last_asan_released_sequence);
 

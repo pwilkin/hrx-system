@@ -292,8 +292,7 @@ static void iree_hal_fixed_block_pool_return_allocation(
   out_reservation->offset =
       allocation->offset + (asan_enabled ? asan_layout->user_offset : 0);
   out_reservation->byte_length = byte_length;
-  out_reservation->block_handle =
-      (uint64_t)(uintptr_t)&slab->blocks[allocation->block_index];
+  out_reservation->block_handle = (uint64_t)(uintptr_t)slab;
 
   // Tainted blocks never reach this helper: frontier_is_satisfied rejects
   // them (so they never become OK/OK_FRESH) and can_wait_for_allocation
@@ -324,7 +323,8 @@ static void iree_hal_fixed_block_pool_return_allocation(
     slab->asan_layouts[allocation->block_index] = *asan_layout;
   }
   iree_hal_memory_trace_alloc(&pool->trace,
-                              &slab->blocks[allocation->block_index],
+                              iree_hal_fixed_block_pool_slab_trace_identity(
+                                  slab, allocation->block_index),
                               out_reservation->byte_length);
 }
 
@@ -1368,11 +1368,13 @@ static void iree_hal_fixed_block_pool_release_one_reservation(
     iree_hal_pool_t* base_pool, const iree_hal_pool_reservation_t* reservation,
     const iree_async_frontier_t* death_frontier) {
   iree_hal_fixed_block_pool_t* pool = (iree_hal_fixed_block_pool_t*)base_pool;
-  iree_hal_fixed_block_pool_block_t* block =
-      (iree_hal_fixed_block_pool_block_t*)(uintptr_t)reservation->block_handle;
-  iree_hal_fixed_block_pool_slab_t* slab = block->slab;
-  const uint32_t block_index = (uint32_t)(block - slab->blocks);
-  iree_hal_memory_trace_free(&pool->trace, block);
+  iree_hal_fixed_block_pool_slab_t* slab =
+      (iree_hal_fixed_block_pool_slab_t*)(uintptr_t)reservation->block_handle;
+  const uint32_t block_index =
+      (uint32_t)(reservation->offset / pool->geometry.backing_block_size);
+  iree_hal_memory_trace_free(
+      &pool->trace,
+      iree_hal_fixed_block_pool_slab_trace_identity(slab, block_index));
   iree_async_single_frontier_t compact_storage;
   if (death_frontier &&
       death_frontier->entry_count > pool->geometry.frontier_capacity &&
@@ -1425,11 +1427,11 @@ static void iree_hal_fixed_block_pool_advise_asan_reservations(
     iree_hal_asan_range_advice_flags_t flags) {
   iree_hal_fixed_block_pool_t* pool = (iree_hal_fixed_block_pool_t*)base_pool;
   for (iree_host_size_t i = 0; i < reservation_count; ++i) {
-    iree_hal_fixed_block_pool_block_t* block =
-        (iree_hal_fixed_block_pool_block_t*)(uintptr_t)reservations[i]
+    iree_hal_fixed_block_pool_slab_t* slab =
+        (iree_hal_fixed_block_pool_slab_t*)(uintptr_t)reservations[i]
             .block_handle;
-    iree_hal_fixed_block_pool_slab_t* slab = block->slab;
-    const uint32_t block_index = (uint32_t)(block - slab->blocks);
+    const uint32_t block_index =
+        (uint32_t)(reservations[i].offset / pool->geometry.backing_block_size);
     iree_hal_pool_buffer_range_advise_asan(
         &slab->range, block_index * pool->geometry.backing_block_size, flags,
         &slab->asan_layouts[block_index]);
@@ -1461,16 +1463,16 @@ static void iree_hal_fixed_block_pool_query_reservation_views(
     iree_hal_pool_t* base_pool, iree_host_size_t reservation_count,
     const iree_hal_pool_reservation_t* reservations,
     iree_hal_pool_reservation_view_t* out_views) {
-  (void)base_pool;
+  iree_hal_fixed_block_pool_t* pool = (iree_hal_fixed_block_pool_t*)base_pool;
   for (iree_host_size_t i = 0; i < reservation_count; ++i) {
-    iree_hal_fixed_block_pool_block_t* block =
-        (iree_hal_fixed_block_pool_block_t*)(uintptr_t)reservations[i]
+    iree_hal_fixed_block_pool_slab_t* slab =
+        (iree_hal_fixed_block_pool_slab_t*)(uintptr_t)reservations[i]
             .block_handle;
-    iree_hal_fixed_block_pool_slab_t* slab = block->slab;
     iree_hal_pool_buffer_range_query_reservation_view(
         &slab->range, reservations[i].offset, reservations[i].byte_length,
         iree_hal_memory_fixed_block_allocator_block_death_frontier(
-            slab->allocator, (uint32_t)(block - slab->blocks)),
+            slab->allocator, (uint32_t)(reservations[i].offset /
+                                        pool->geometry.backing_block_size)),
         &out_views[i]);
   }
 }
@@ -1551,16 +1553,17 @@ static iree_status_t iree_hal_fixed_block_pool_materialize_reservations(
       release_callback.user_data = element;
       staged_buffer = &element->buffer;
     }
-    iree_hal_fixed_block_pool_block_t* block =
-        (iree_hal_fixed_block_pool_block_t*)(uintptr_t)
+    iree_hal_fixed_block_pool_slab_t* slab =
+        (iree_hal_fixed_block_pool_slab_t*)(uintptr_t)
             reservations[materialized_count]
                 .block_handle;
-    iree_hal_fixed_block_pool_slab_t* slab = block->slab;
     status = iree_hal_pool_buffer_range_materialize(
         &slab->range, reservations[materialized_count].offset,
         reservations[materialized_count].byte_length,
         iree_hal_memory_fixed_block_allocator_block_death_frontier(
-            slab->allocator, (uint32_t)(block - slab->blocks)),
+            slab->allocator,
+            (uint32_t)(reservations[materialized_count].offset /
+                       pool->geometry.backing_block_size)),
         release_callback, pool->host_allocator, staged_buffer);
     if (iree_status_is_ok(status)) {
       ++materialized_count;

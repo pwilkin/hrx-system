@@ -10,16 +10,11 @@
 #include "iree/hal/memory/buffer_range.h"
 #include "iree/hal/memory/fixed_block_allocator.h"
 #include "iree/hal/memory/pool_history.h"
+#include "iree/hal/memory/tracing.h"
 #include "iree/hal/pool.h"
 
 typedef struct iree_hal_fixed_block_pool_slab_t
     iree_hal_fixed_block_pool_slab_t;
-
-// Stable reservation identity, allocated with the owning slab's metadata.
-typedef struct iree_hal_fixed_block_pool_block_t {
-  // Owning prepared range; the block's index is its position in slab->blocks.
-  iree_hal_fixed_block_pool_slab_t* slab;
-} iree_hal_fixed_block_pool_block_t;
 
 // Immutable geometry resolved once against captured storage capabilities.
 typedef struct iree_hal_fixed_block_pool_geometry_t {
@@ -59,8 +54,10 @@ struct iree_hal_fixed_block_pool_slab_t {
   iree_hal_pool_buffer_range_t range;
   // Offset allocator retaining each block's exact history.
   iree_hal_memory_fixed_block_allocator_t* allocator;
-  // Stable identities for the allocator's blocks, in this metadata allocation.
-  iree_hal_fixed_block_pool_block_t* blocks;
+#if IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
+  // One unique address per block for optional logical allocation tracing.
+  uint8_t* trace_identities;
+#endif  // IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
   // Per-block protection geometry, NULL when ASAN is disabled.
   iree_hal_asan_allocation_layout_t* asan_layouts;
   // Merged return history, with geometry.frontier_capacity inline entries.
@@ -68,6 +65,18 @@ struct iree_hal_fixed_block_pool_slab_t {
   // Number of managed blocks; any remaining bytes retain source history.
   uint32_t block_count;
 };
+
+// Diagnostic identity is independent of the slab-plus-offset ownership token.
+static inline void* iree_hal_fixed_block_pool_slab_trace_identity(
+    iree_hal_fixed_block_pool_slab_t* slab, uint32_t block_index) {
+#if IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
+  return &slab->trace_identities[block_index];
+#else
+  (void)slab;
+  (void)block_index;
+  return NULL;
+#endif  // IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
+}
 
 #ifdef __cplusplus
 extern "C" {

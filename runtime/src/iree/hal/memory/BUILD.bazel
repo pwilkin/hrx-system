@@ -138,6 +138,7 @@ iree_runtime_cc_library(
         ":buffer_range",
         ":fixed_block_allocator",
         ":pool_history",
+        ":tracing",
         "//runtime/src/iree/async",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal",

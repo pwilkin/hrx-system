@@ -118,7 +118,7 @@ typedef struct iree_hal_pool_reservation_t {
 
   // Pool-internal opaque handle for returning the block on release.
   // Interpretation is strategy-specific: a TLSF release-node pointer,
-  // fixed-block block index, pass-through reservation-state pointer, etc.
+  // fixed-block slab pointer, pass-through reservation-state pointer, etc.
   // 64-bit to accommodate pointer-sized handles on all platforms.
   uint64_t block_handle;
 } iree_hal_pool_reservation_t;

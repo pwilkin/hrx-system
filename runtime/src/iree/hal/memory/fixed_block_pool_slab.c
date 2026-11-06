@@ -23,13 +23,14 @@ iree_status_t iree_hal_fixed_block_pool_slab_allocate(
   }
   const bool asan_enabled = iree_hal_asan_pool_options_is_enabled(asan);
   iree_host_size_t total_size = 0;
-  iree_host_size_t blocks_offset = 0;
+  iree_host_size_t trace_identities_offset = 0;
   iree_host_size_t layouts_offset = 0;
   iree_host_size_t frontier_offset = 0;
   IREE_RETURN_IF_ERROR(IREE_STRUCT_LAYOUT(
       sizeof(iree_hal_fixed_block_pool_slab_t), &total_size,
-      IREE_STRUCT_FIELD(block_count, iree_hal_fixed_block_pool_block_t,
-                        &blocks_offset),
+      IREE_STRUCT_FIELD(
+          IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS ? block_count : 0, uint8_t,
+          &trace_identities_offset),
       IREE_STRUCT_FIELD(asan_enabled ? block_count : 0,
                         iree_hal_asan_allocation_layout_t, &layouts_offset),
       IREE_STRUCT_FIELD_ALIGNED(1, iree_async_frontier_t,
@@ -43,17 +44,15 @@ iree_status_t iree_hal_fixed_block_pool_slab_allocate(
   slab->range = *range;
   iree_hal_buffer_retain(range->buffer);
   slab->block_count = (uint32_t)block_count;
-  slab->blocks =
-      (iree_hal_fixed_block_pool_block_t*)((uint8_t*)slab + blocks_offset);
+#if IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
+  slab->trace_identities = (uint8_t*)slab + trace_identities_offset;
+#endif  // IREE_HAL_MEMORY_TRACE_ENABLE_POOL_STREAMS
   slab->asan_layouts =
       asan_enabled ? (iree_hal_asan_allocation_layout_t*)((uint8_t*)slab +
                                                           layouts_offset)
                    : NULL;
   slab->return_frontier =
       (iree_async_frontier_t*)((uint8_t*)slab + frontier_offset);
-  for (uint32_t i = 0; i < slab->block_count; ++i) {
-    slab->blocks[i].slab = slab;
-  }
   const iree_hal_memory_fixed_block_allocator_options_t allocator_options = {
       .block_size = geometry->backing_block_size,
       .block_count = slab->block_count,
