@@ -13,6 +13,7 @@
 #include "loom/ops/type_registry.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/semaphores.h"
 #include "loom/target/arch/amd/xdna/error_catalog.h"
 #include "loom/target/function_version.h"
 #include "loom/util/fact_extensions.h"
@@ -849,6 +850,12 @@ static iree_status_t loom_aie2p_native_select(
           IREE_SV("a hardware semaphore pair with enough slot credits"));
     }
   }
+  IREE_RETURN_IF_ERROR(
+      loom_aie2p_native_assign_channel_locks(context, realization, out_valid));
+  if (!*out_valid) {
+    return iree_ok_status();
+  }
+  *out_valid = false;
   // The invocation command stream is one sequential engine. Selecting at most
   // one strand preserves concurrency between independently authored strands.
   // Every other strand retains its own execution engine.

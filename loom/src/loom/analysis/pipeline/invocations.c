@@ -151,6 +151,7 @@ static iree_status_t loom_pipeline_invocations_finish(
   for (loom_pipeline_invocation_frame_t* frame = root; frame;
        frame = frame->ordered_next) {
     loom_pipeline_invocation_t* invocation = &frame->invocation;
+    invocation->lifetime = invocations->lifetimes.owners[invocation->ordinal];
     invocation->storage = storage[invocation->ordinal];
     IREE_RETURN_IF_ERROR(
         loom_pipeline_invocations_bind_allocations(invocation, arena));

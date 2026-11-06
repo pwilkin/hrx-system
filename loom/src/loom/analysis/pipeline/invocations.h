@@ -53,6 +53,9 @@ struct loom_pipeline_invocation_schedule_t {
 struct loom_pipeline_invocation_t {
   // Position in the graph's parent-before-child occurrence table.
   iree_host_size_t ordinal;
+  // OWNER node in the complete graph's lifetime tree. Subtree projections
+  // preserve this identity while renumbering their local invocation tables.
+  iree_host_size_t lifetime;
   // Source callable whose construction is being bound.
   loom_func_like_t function;
   // Actual composition, or NULL for the root invocation.

@@ -1,0 +1,474 @@
+// RUN: emit source-low @entry target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=low
+
+// Equal private credits share a physical pair after each child retires.
+// The imported parent FIFO stays live and must keep a distinct pair.
+pipeline.def @consume_record() run(%input: channel<tile<16xi32>>, %capacity: index) {
+  %origin = index.constant 0 : offset
+  %record_bytes = index.constant 64 : offset
+  %bytes = index.scale %capacity, %record_bytes : index, offset -> offset
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %storage = buffer.alloca<workgroup> pool(%memory) align(64) %bytes : buffer
+  %slots = buffer.view %storage[%origin] : buffer -> view<[%capacity]x16xi32>
+  %channel = channel.bind<fifo> %slots, %capacity : view<[%capacity]x16xi32>, index -> channel<tile<16xi32>>
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    %input_read, %source = channel.acquire %input : channel<tile<16xi32>> -> (read<tile<16xi32>>, view<16xi32>)
+    %write, %destination = channel.reserve %channel : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+    %value = vector.load %source[0] : view<16xi32> -> vector<16xi32>
+    vector.store %value, %destination[0] : vector<16xi32>, view<16xi32>
+    channel.publish %write : write<tile<16xi32>>
+    channel.release %input_read : read<tile<16xi32>>
+    %read, %record = channel.acquire %channel : channel<tile<16xi32>> -> (read<tile<16xi32>>, view<16xi32>)
+    channel.release %read : read<tile<16xi32>>
+  }
+}
+
+pipeline.def<kernel> public @entry() run() {
+  %capacity = index.constant 1 : index
+  %origin = index.constant 0 : offset
+  %record_bytes = index.constant 64 : offset
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %records = index.constant 2 : index
+  %second_capacity = index.constant 1 : index
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %storage = buffer.alloca<workgroup> pool(%memory) align(64) %record_bytes : buffer
+  %slots = buffer.view %storage[%origin] : buffer -> view<1x16xi32>
+  %input = channel.bind<fifo> %slots, %capacity : view<1x16xi32>, index -> channel<tile<16xi32>>
+  pipeline.strand workers([0, 3], [1, 1], [1, 1]) {
+    scf.for %record = [%begin to %records step %step] {
+      %write, %destination = channel.reserve %input : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+      %value = index.cast %record : index to i32
+      %values = vector.splat %value : vector<16xi32>
+      vector.store %values, %destination[0] : vector<16xi32>, view<16xi32>
+      channel.publish %write : write<tile<16xi32>>
+    }
+  }
+  pipeline.serial {
+    pipeline.compose @consume_record(%input, %capacity) : (channel<tile<16xi32>>, index)
+    pipeline.compose @consume_record(%input, %second_capacity) : (channel<tile<16xi32>>, index)
+  }
+}
+
+// ----
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_23() asm {
+  %219 = mov.short 1
+  %111 = mov.short -1
+  %106 = mov.local-address 458816
+  %108 = mov.local-address 458752
+  acq %111, 49
+  acq %111, 50
+  %value$223 = vlda.512.i32x16 %108, 0
+  vst.512.i32x16 %value$223, %106, 0
+  rel %219, 51
+  rel %219, 48
+  acq %111, 51
+  rel %219, 50
+  acq %111, 49
+  acq %111, 50
+  %value$227 = vlda.512.i32x16 %108, 0
+  vst.512.i32x16 %value$227, %106, 0
+  rel %219, 51
+  rel %219, 48
+  acq %111, 51
+  rel %219, 50
+  rel %219, 52
+  low.br ^_bb1
+^_bb1:
+  %196 = mov.ss
+  low.br ^_bb1
+}
+
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
+  %229 = mov.short 1
+  %94 = mov.short -1
+  %91 = mov.local-address 262144
+  %232 = mov.short 0
+  %234 = mov.short 2
+  low.br ^_bb1(%232: reg<aie2p.er>)
+^_bb1(%value: reg<aie2p.er>):
+  %235 = lt %value, %234
+  low.cond_br %235, ^_bb2, ^_bb3 : reg<aie2p.er>
+^_bb2:
+  acq %94, 0
+  %values = vbcst.32 %value
+  vst.512.i32x16 %values, %91, 0
+  rel %229, 1
+  %237 = add.nc %value, %229
+  low.br ^_bb1(%237: reg<aie2p.er>)
+^_bb3:
+  rel %229, 48
+  low.br ^_bb4
+^_bb4:
+  %198 = mov.ss
+  low.br ^_bb4
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_26) @__aie2p_worker_helper_27() asm {
+  %199 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  %200 = constant 3 : reg<aie2p.config.scalar : i64>
+  %201 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %199, %200, %201
+  %202 = constant 0 : reg<aie2p.config.scalar : i64>
+  program.load %202, %200, @__aie2p_worker_helper_25
+  %203 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %203, %200, %201
+  program.load %202, %201, @__aie2p_worker_helper_23
+  %204 = constant 128 : reg<aie2p.config.scalar : i64>
+  data.reserve %202, %201, %202, %204
+  return
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_26) @__aie2p_worker_helper_28() asm {
+  %205 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  %206 = constant 1 : reg<aie2p.config.scalar : i64>
+  write32 %205, %206
+  %207 = constant 2224144 : reg<aie2p.config.scalar : i64>
+  %208 = constant 0 : reg<aie2p.config.scalar : i64>
+  write32 %207, %208
+  %209 = constant 2224160 : reg<aie2p.config.scalar : i64>
+  write32 %209, %206
+  %210 = constant 2224176 : reg<aie2p.config.scalar : i64>
+  write32 %210, %208
+  %211 = constant 3272704 : reg<aie2p.config.scalar : i64>
+  write32 %211, %208
+  %212 = constant 2224192 : reg<aie2p.config.scalar : i64>
+  write32 %212, %208
+  measure.begin
+  %213 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  %214 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %213, %214, %208
+  write.mask32 %213, %206, %206
+  %215 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %215, %214, %208
+  write.mask32 %215, %206, %206
+  %216 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %211, %216, %206
+  wait.mask32 %212, %216, %206
+  measure.end
+  %217 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %213, %217, %214
+  write.mask32 %215, %217, %214
+  return
+}
+
+low.func.def public target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_26) abi(array_program) @entry() asm {
+  %218 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %218, @__aie2p_worker_helper_27, @__aie2p_worker_helper_28
+  return
+}
+
+// ====
+
+// RUN: emit source-low @entry target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=low
+
+// Serial lifetimes alone are insufficient: different initial free credits
+// require distinct semaphore pairs even though payload storage can overlap.
+pipeline.def @consume_record() run(%input: channel<tile<16xi32>>, %capacity: index) {
+  %origin = index.constant 0 : offset
+  %record_bytes = index.constant 64 : offset
+  %bytes = index.scale %capacity, %record_bytes : index, offset -> offset
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %storage = buffer.alloca<workgroup> pool(%memory) align(64) %bytes : buffer
+  %slots = buffer.view %storage[%origin] : buffer -> view<[%capacity]x16xi32>
+  %channel = channel.bind<fifo> %slots, %capacity : view<[%capacity]x16xi32>, index -> channel<tile<16xi32>>
+  pipeline.strand workers([0, 2], [1, 1], [1, 1]) {
+    %input_read, %source = channel.acquire %input : channel<tile<16xi32>> -> (read<tile<16xi32>>, view<16xi32>)
+    %write, %destination = channel.reserve %channel : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+    %value = vector.load %source[0] : view<16xi32> -> vector<16xi32>
+    vector.store %value, %destination[0] : vector<16xi32>, view<16xi32>
+    channel.publish %write : write<tile<16xi32>>
+    channel.release %input_read : read<tile<16xi32>>
+    %read, %record = channel.acquire %channel : channel<tile<16xi32>> -> (read<tile<16xi32>>, view<16xi32>)
+    channel.release %read : read<tile<16xi32>>
+  }
+}
+
+pipeline.def<kernel> public @entry() run() {
+  %capacity = index.constant 1 : index
+  %origin = index.constant 0 : offset
+  %record_bytes = index.constant 64 : offset
+  %begin = index.constant 0 : index
+  %step = index.constant 1 : index
+  %records = index.constant 2 : index
+  %second_capacity = index.constant 2 : index
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %storage = buffer.alloca<workgroup> pool(%memory) align(64) %record_bytes : buffer
+  %slots = buffer.view %storage[%origin] : buffer -> view<1x16xi32>
+  %input = channel.bind<fifo> %slots, %capacity : view<1x16xi32>, index -> channel<tile<16xi32>>
+  pipeline.strand workers([0, 3], [1, 1], [1, 1]) {
+    scf.for %record = [%begin to %records step %step] {
+      %write, %destination = channel.reserve %input : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+      %value = index.cast %record : index to i32
+      %values = vector.splat %value : vector<16xi32>
+      vector.store %values, %destination[0] : vector<16xi32>, view<16xi32>
+      channel.publish %write : write<tile<16xi32>>
+    }
+  }
+  pipeline.serial {
+    pipeline.compose @consume_record(%input, %capacity) : (channel<tile<16xi32>>, index)
+    pipeline.compose @consume_record(%input, %second_capacity) : (channel<tile<16xi32>>, index)
+  }
+}
+
+// ----
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_23() asm {
+  %221 = mov.short 1
+  %111 = mov.short -1
+  %106 = mov.local-address 458816
+  %108 = mov.local-address 458752
+  acq %111, 49
+  acq %111, 50
+  %value$225 = vlda.512.i32x16 %108, 0
+  vst.512.i32x16 %value$225, %106, 0
+  rel %221, 51
+  rel %221, 48
+  acq %111, 51
+  rel %221, 50
+  acq %111, 49
+  acq %111, 52
+  %value$229 = vlda.512.i32x16 %108, 0
+  vst.512.i32x16 %value$229, %106, 0
+  rel %221, 53
+  rel %221, 48
+  acq %111, 53
+  rel %221, 52
+  rel %221, 54
+  low.br ^_bb1
+^_bb1:
+  %196 = mov.ss
+  low.br ^_bb1
+}
+
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_25() asm {
+  %231 = mov.short 1
+  %94 = mov.short -1
+  %91 = mov.local-address 262144
+  %234 = mov.short 0
+  %236 = mov.short 2
+  low.br ^_bb1(%234: reg<aie2p.er>)
+^_bb1(%value: reg<aie2p.er>):
+  %237 = lt %value, %236
+  low.cond_br %237, ^_bb2, ^_bb3 : reg<aie2p.er>
+^_bb2:
+  acq %94, 0
+  %values = vbcst.32 %value
+  vst.512.i32x16 %values, %91, 0
+  rel %231, 1
+  %239 = add.nc %value, %231
+  low.br ^_bb1(%239: reg<aie2p.er>)
+^_bb3:
+  rel %231, 48
+  low.br ^_bb4
+^_bb4:
+  %198 = mov.ss
+  low.br ^_bb4
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_26) @__aie2p_worker_helper_27() asm {
+  %199 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  %200 = constant 3 : reg<aie2p.config.scalar : i64>
+  %201 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %199, %200, %201
+  %202 = constant 0 : reg<aie2p.config.scalar : i64>
+  program.load %202, %200, @__aie2p_worker_helper_25
+  %203 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %203, %200, %201
+  program.load %202, %201, @__aie2p_worker_helper_23
+  %204 = constant 192 : reg<aie2p.config.scalar : i64>
+  data.reserve %202, %201, %202, %204
+  return
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_26) @__aie2p_worker_helper_28() asm {
+  %205 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  %206 = constant 1 : reg<aie2p.config.scalar : i64>
+  write32 %205, %206
+  %207 = constant 2224144 : reg<aie2p.config.scalar : i64>
+  %208 = constant 0 : reg<aie2p.config.scalar : i64>
+  write32 %207, %208
+  %209 = constant 2224160 : reg<aie2p.config.scalar : i64>
+  write32 %209, %206
+  %210 = constant 2224176 : reg<aie2p.config.scalar : i64>
+  write32 %210, %208
+  %211 = constant 2224192 : reg<aie2p.config.scalar : i64>
+  %212 = constant 2 : reg<aie2p.config.scalar : i64>
+  write32 %211, %212
+  %213 = constant 2224208 : reg<aie2p.config.scalar : i64>
+  write32 %213, %208
+  %214 = constant 3272704 : reg<aie2p.config.scalar : i64>
+  write32 %214, %208
+  %215 = constant 2224224 : reg<aie2p.config.scalar : i64>
+  write32 %215, %208
+  measure.begin
+  %216 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  write.mask32 %216, %212, %208
+  write.mask32 %216, %206, %206
+  %217 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %217, %212, %208
+  write.mask32 %217, %206, %206
+  %218 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %214, %218, %206
+  wait.mask32 %215, %218, %206
+  measure.end
+  %219 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %216, %219, %212
+  write.mask32 %217, %219, %212
+  return
+}
+
+low.func.def public target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_26) abi(array_program) @entry() asm {
+  %220 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %220, @__aie2p_worker_helper_27, @__aie2p_worker_helper_28
+  return
+}
+
+// ====
+
+// RUN: emit source-low @entry target=amd.xdna.aie2p:amd.xdna.strix.17f0_10 output=low
+
+// Concurrent children share the same physical memory bank through neighboring
+// tile apertures, but their payload and semaphore lifetimes remain disjoint.
+pipeline.def @round_trip() run(%row: index) {
+  %capacity = index.constant 1 : index
+  %origin = index.constant 0 : offset
+  %record_bytes = index.constant 64 : offset
+  %memory = pipeline.memory<workgroup>[0, 2] : pool
+  %storage = buffer.alloca<workgroup> pool(%memory) align(64) %record_bytes : buffer
+  %slots = buffer.view %storage[%origin] : buffer -> view<1x16xi32>
+  %channel = channel.bind<fifo> %slots, %capacity : view<1x16xi32>, index -> channel<tile<16xi32>>
+  pipeline.strand workers([0, %row], [1, 1], [1, 1]) {
+    %write, %destination = channel.reserve %channel : channel<tile<16xi32>> -> (write<tile<16xi32>>, view<16xi32>)
+    %values = vector.splati 37 : vector<16xi32>
+    vector.store %values, %destination[0] : vector<16xi32>, view<16xi32>
+    channel.publish %write : write<tile<16xi32>>
+    %read, %record = channel.acquire %channel : channel<tile<16xi32>> -> (read<tile<16xi32>>, view<16xi32>)
+    channel.release %read : read<tile<16xi32>>
+  }
+}
+
+pipeline.def @pair() run() {
+  %local_row = index.constant 2 : index
+  %neighbor_row = index.constant 3 : index
+  pipeline.compose @round_trip(%local_row) : (index)
+  pipeline.compose @round_trip(%neighbor_row) : (index)
+}
+
+pipeline.def<kernel> public @entry() run() {
+  pipeline.serial {
+    pipeline.compose @pair() : ()
+    pipeline.compose @pair() : ()
+  }
+}
+
+// ----
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_27() asm {
+  %201 = mov.short 1
+  %57 = mov.short -1
+  %54 = mov.local-address 458752
+  acq %57, 50
+  %204 = mov.short 37
+  %values = vbcst.32 %204
+  vst.512.i32x16 %values, %54, 0
+  rel %201, 51
+  acq %57, 51
+  rel %201, 50
+  acq %57, 33
+  rel %201, 34
+  acq %57, 50
+  vst.512.i32x16 %values, %54, 0
+  rel %201, 51
+  acq %57, 51
+  rel %201, 50
+  acq %57, 33
+  rel %201, 34
+  rel %201, 52
+  low.br ^_bb1
+^_bb1:
+  %176 = mov.ss
+  low.br ^_bb1
+}
+
+low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_29() asm {
+  %208 = mov.short 1
+  %73 = mov.short -1
+  %70 = mov.local-address 262208
+  acq %73, 0
+  %211 = mov.short 37
+  %values = vbcst.32 %211
+  vst.512.i32x16 %values, %70, 0
+  rel %208, 1
+  acq %73, 1
+  rel %208, 0
+  rel %208, 49
+  acq %73, 50
+  acq %73, 0
+  vst.512.i32x16 %values, %70, 0
+  rel %208, 1
+  acq %73, 1
+  rel %208, 0
+  rel %208, 49
+  acq %73, 50
+  rel %208, 48
+  low.br ^_bb1
+^_bb1:
+  %178 = mov.ss
+  low.br ^_bb1
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_30) @__aie2p_worker_helper_31() asm {
+  %179 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  %180 = constant 3 : reg<aie2p.config.scalar : i64>
+  %181 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %179, %180, %181
+  %182 = constant 0 : reg<aie2p.config.scalar : i64>
+  program.load %182, %181, @__aie2p_worker_helper_27
+  %183 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  write.mask32 %183, %180, %181
+  program.load %182, %180, @__aie2p_worker_helper_29
+  %184 = constant 128 : reg<aie2p.config.scalar : i64>
+  data.reserve %182, %181, %182, %184
+  return
+}
+
+low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_30) @__aie2p_worker_helper_32() asm {
+  %185 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  %186 = constant 1 : reg<aie2p.config.scalar : i64>
+  write32 %185, %186
+  %187 = constant 2224144 : reg<aie2p.config.scalar : i64>
+  %188 = constant 0 : reg<aie2p.config.scalar : i64>
+  write32 %187, %188
+  %189 = constant 2224160 : reg<aie2p.config.scalar : i64>
+  write32 %189, %186
+  %190 = constant 2224176 : reg<aie2p.config.scalar : i64>
+  write32 %190, %188
+  %191 = constant 2224192 : reg<aie2p.config.scalar : i64>
+  write32 %191, %188
+  %192 = constant 3272704 : reg<aie2p.config.scalar : i64>
+  write32 %192, %188
+  %193 = constant 3272720 : reg<aie2p.config.scalar : i64>
+  write32 %193, %188
+  %194 = constant 3272736 : reg<aie2p.config.scalar : i64>
+  write32 %194, %188
+  measure.begin
+  %195 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  %196 = constant 2 : reg<aie2p.config.scalar : i64>
+  write.mask32 %195, %196, %188
+  write.mask32 %195, %186, %186
+  %197 = constant 3350528 : reg<aie2p.config.scalar : i64>
+  write.mask32 %197, %196, %188
+  write.mask32 %197, %186, %186
+  %198 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %191, %198, %186
+  wait.mask32 %192, %198, %186
+  measure.end
+  %199 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %195, %199, %196
+  write.mask32 %197, %199, %196
+  return
+}
+
+low.func.def public target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_30) abi(array_program) @entry() asm {
+  %200 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %200, @__aie2p_worker_helper_31, @__aie2p_worker_helper_32
+  return
+}

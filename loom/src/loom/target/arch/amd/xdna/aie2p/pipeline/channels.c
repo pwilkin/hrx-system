@@ -65,8 +65,6 @@ iree_status_t loom_aie2p_native_select_channels(
           IREE_SV("on-chip storage or a jointly selected external channel "
                   "protocol"));
     }
-    loom_aie2p_native_tile_t* owner =
-        context->pool_tiles[allocation->source->pool_index];
     const loom_pipeline_channel_geometry_t* geometry = source->geometry;
     int64_t offset = 0;
     uint64_t extent = 0;
@@ -86,11 +84,6 @@ iree_status_t loom_aie2p_native_select_channels(
           context, source->binding,
           IREE_SV("specialized byte-addressable channel slot geometry"));
     }
-    if (owner->next_lock + 2 > owner->facts->lock_count) {
-      return loom_aie2p_native_reject(
-          context, source->binding,
-          IREE_SV("a hardware semaphore pair with enough slot credits"));
-    }
     context->channels[i] = (loom_aie2p_native_channel_t){
         .source = source,
         .pool_index = allocation->source->pool_index,
@@ -98,8 +91,6 @@ iree_status_t loom_aie2p_native_select_channels(
         .byte_stride = (uint32_t)(geometry->slot_bit_stride / 8),
         .record_byte_length = (uint32_t)(geometry->record_bit_span / 8),
         .record_dense = geometry->record_dense,
-        .free_lock = owner->next_lock++,
-        .ready_lock = owner->next_lock++,
         .cursor = {.reader = {.worker = UINT32_MAX},
                    .writer = {.worker = UINT32_MAX}}};
   }

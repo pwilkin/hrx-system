@@ -10,6 +10,7 @@
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 #include "loom/analysis/pipeline/execution.h"
+#include "loom/analysis/pipeline/lifetime_layout.h"
 #include "loom/analysis/source_storage_packing.h"
 
 namespace loom {
@@ -94,6 +95,9 @@ class PipelineInvocationsTest : public ::testing::Test {
     invocations_ = {entries_, 5, workers_, 5, channels_, 3, channel_order_};
     IREE_ASSERT_OK(loom_pipeline_lifetimes_build(&invocations_, &arena_,
                                                  &invocations_.lifetimes));
+    for (size_t i = 0; i < 5; ++i) {
+      occurrences_[i].lifetime = invocations_.lifetimes.owners[i];
+    }
   }
 
   void TearDown() override {
@@ -168,6 +172,7 @@ TEST_F(PipelineInvocationsTest, IndependentSubtreeKeepsProtocolsAndJoins) {
   EXPECT_EQ(root->parent, nullptr);
   EXPECT_EQ(root->call, nullptr);
   EXPECT_EQ(root->schedule, nullptr);
+  EXPECT_EQ(root->lifetime, occurrences_[1].lifetime);
   EXPECT_EQ(root->resources, &resources_[1]);
   EXPECT_EQ(root->arguments.channels, imports_);
   EXPECT_EQ(root->first_channel, 1u);
@@ -221,6 +226,93 @@ TEST_F(PipelineInvocationsTest, IndependentSubtreeKeepsProtocolsAndJoins) {
   EXPECT_EQ(leaf.channels[1].invocation, root);
   EXPECT_EQ(leaf.entries[0]->first_channel, 2u);
   EXPECT_EQ(leaf.entries[0]->subtree.channels, 0u);
+}
+
+TEST_F(PipelineInvocationsTest, ResourceRangesComposeAcrossPoolsAndLifetimes) {
+  // Root and wrapper state coexist with the concurrent child and whichever
+  // serial child is active. Distinct requests within one owner also coexist.
+  const uint64_t lengths[] = {3, 5, 7, 11, 13};
+  loom_pipeline_lifetime_request_t requests[9] = {};
+  for (size_t i = 0; i < 5; ++i) {
+    requests[i] = {
+        .lifetime = occurrences_[i].lifetime,
+        .pool = 0,
+        .length = lengths[i],
+        .alignment = 1,
+    };
+  }
+  requests[5] = {
+      .lifetime = occurrences_[3].lifetime,
+      .pool = 0,
+      .length = 2,
+      .alignment = 1,
+  };
+  requests[6] = {
+      .lifetime = occurrences_[0].lifetime,
+      .pool = 1,
+      .length = 1,
+      .alignment = 1,
+  };
+  requests[7] = {
+      .lifetime = occurrences_[3].lifetime,
+      .pool = 1,
+      .length = 3,
+      .alignment = 8,
+  };
+  requests[8] = {
+      .lifetime = occurrences_[4].lifetime,
+      .pool = 1,
+      .length = 17,
+      .alignment = 16,
+  };
+  const loom_pipeline_lifetime_extent_t* extents = nullptr;
+  IREE_ASSERT_OK(loom_pipeline_lifetime_layout(
+      &invocations_.lifetimes, requests, IREE_ARRAYSIZE(requests), 2, &arena_,
+      &extents));
+  const uint64_t offsets[] = {0, 3, 8, 15, 15, 26, 0, 16, 16};
+  for (size_t i = 0; i < IREE_ARRAYSIZE(requests); ++i) {
+    EXPECT_EQ(requests[i].offset, offsets[i]) << i;
+  }
+  EXPECT_EQ(extents[0].length, 28u);
+  EXPECT_EQ(extents[0].alignment, 1u);
+  EXPECT_EQ(extents[1].length, 33u);
+  EXPECT_EQ(extents[1].alignment, 16u);
+}
+
+TEST_F(PipelineInvocationsTest, ProjectedResourceRangesRetainOuterOwnership) {
+  loom_pipeline_invocations_t projected;
+  IREE_ASSERT_OK(loom_pipeline_invocations_project(&invocations_, entries_[1],
+                                                   &arena_, &projected));
+  // One imported parent resource remains live around the projected wrapper.
+  // The two serial child resources can share, but neither aliases that import.
+  loom_pipeline_lifetime_request_t requests[] = {
+      {
+          .lifetime = projected.channels[0].invocation->lifetime,
+          .pool = 0,
+          .length = 1,
+          .alignment = 1,
+      },
+      {
+          .lifetime = projected.entries[2]->lifetime,
+          .pool = 0,
+          .length = 1,
+          .alignment = 1,
+      },
+      {
+          .lifetime = projected.entries[3]->lifetime,
+          .pool = 0,
+          .length = 1,
+          .alignment = 1,
+      },
+  };
+  const loom_pipeline_lifetime_extent_t* extents = nullptr;
+  IREE_ASSERT_OK(loom_pipeline_lifetime_layout(&projected.lifetimes, requests,
+                                               IREE_ARRAYSIZE(requests), 1,
+                                               &arena_, &extents));
+  EXPECT_EQ(requests[0].offset, 0u);
+  EXPECT_EQ(requests[1].offset, 1u);
+  EXPECT_EQ(requests[2].offset, 1u);
+  EXPECT_EQ(extents[0].length, 2u);
 }
 
 TEST_F(PipelineInvocationsTest, StorageRespectsOwnersAndCanonicalBackings) {

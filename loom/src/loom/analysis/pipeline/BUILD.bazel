@@ -126,11 +126,13 @@ loom_cc_library(
     srcs = [
         "construction_storage.c",
         "invocations.c",
+        "lifetime_layout.c",
         "lifetimes.c",
     ],
     hdrs = [
         "construction_storage.h",
         "invocations.h",
+        "lifetime_layout.h",
         "lifetimes.h",
     ],
     deps = [

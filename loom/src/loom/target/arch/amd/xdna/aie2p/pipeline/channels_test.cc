@@ -7,9 +7,11 @@
 #include "iree/base/internal/arena.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
+#include "loom/analysis/pipeline/invocations.h"
 #include "loom/analysis/pipeline/resources.h"
 #include "loom/pass/types.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/semaphores.h"
 #include "loom/target/arch/amd/xdna/array/facts.h"
 #include "loom/testing/diagnostic_matchers.h"
 #include "loom/transforms/pipeline/memory_channel.h"
@@ -112,6 +114,10 @@ TEST_F(Aie2pChannelsTest, ExternalProtocolDoesNotConsumeLocalStorageOrLocks) {
       source_.storage.memory_space = space;
       occurrence_.allocation = parent_allocated ? &placement_ : nullptr;
       Select(true);
+      bool valid = false;
+      IREE_ASSERT_OK(loom_aie2p_native_assign_channel_locks(
+          &context_, &realization_, &valid));
+      ASSERT_TRUE(valid);
       const auto& channel = context_.channels[0];
       EXPECT_EQ(channel.external, &binding_);
       EXPECT_EQ(channel.pool_index, UINT32_MAX);
@@ -122,7 +128,7 @@ TEST_F(Aie2pChannelsTest, ExternalProtocolDoesNotConsumeLocalStorageOrLocks) {
   }
 }
 
-TEST_F(Aie2pChannelsTest, LocalStorageSelectsOffsetsAndOneSemaphorePair) {
+TEST_F(Aie2pChannelsTest, LocalStoragePrecedesSemaphoreAssignment) {
   Select(true);
   const auto& channel = context_.channels[0];
   EXPECT_EQ(channel.external, nullptr);
@@ -130,9 +136,71 @@ TEST_F(Aie2pChannelsTest, LocalStorageSelectsOffsetsAndOneSemaphorePair) {
   EXPECT_EQ(channel.byte_offset, 544u);
   EXPECT_EQ(channel.byte_stride, 96u);
   EXPECT_EQ(channel.record_byte_length, 64u);
+  EXPECT_EQ(tile_.next_lock, 3u);
+  bool valid = false;
+  IREE_ASSERT_OK(
+      loom_aie2p_native_assign_channel_locks(&context_, &realization_, &valid));
+  ASSERT_TRUE(valid);
   EXPECT_EQ(channel.free_lock, 3u);
   EXPECT_EQ(channel.ready_lock, 4u);
+  EXPECT_TRUE(channel.initializes_locks);
   EXPECT_EQ(tile_.next_lock, 5u);
+}
+
+TEST_F(Aie2pChannelsTest, SerialReplayCompatibilityUsesPhysicalCredits) {
+  // A root owning one channel invokes two children in one serial scope.
+  // Their retained nodes preserve parent-before-child order and owner leaves.
+  constexpr auto none = IREE_HOST_SIZE_MAX;
+  const loom_pipeline_lifetime_t nodes[] = {
+      {LOOM_PIPELINE_LIFETIME_CONCURRENT, 0, none, 1, none},
+      {LOOM_PIPELINE_LIFETIME_OWNER, 0, 0, none, 2},
+      {LOOM_PIPELINE_LIFETIME_SERIAL, 0, 0, 3, none},
+      {LOOM_PIPELINE_LIFETIME_CONCURRENT, 1, 2, 5, 4},
+      {LOOM_PIPELINE_LIFETIME_CONCURRENT, 2, 2, 6, none},
+      {LOOM_PIPELINE_LIFETIME_OWNER, 1, 3, none, none},
+      {LOOM_PIPELINE_LIFETIME_OWNER, 2, 4, none, none},
+  };
+  const iree_host_size_t owners[] = {1, 5, 6};
+  loom_pipeline_invocation_t invocations[3] = {};
+  loom_pipeline_resource_channel_t sources[3] = {};
+  loom_pipeline_invocation_channel_t channels[3] = {};
+  loom_aie2p_native_channel_t selected[3] = {};
+  for (size_t i = 0; i < 3; ++i) {
+    invocations[i].ordinal = i;
+    invocations[i].lifetime = owners[i];
+    sources[i].capacity = i == 2 ? 96 : 3;
+    channels[i].invocation = &invocations[i];
+    channels[i].source = &sources[i];
+    selected[i].source = &sources[i];
+  }
+  realization_.invocations.channels = channels;
+  realization_.invocations.channel_count = IREE_ARRAYSIZE(channels);
+  realization_.invocations.lifetimes = {
+      .nodes = nodes,
+      .count = IREE_ARRAYSIZE(nodes),
+      .owners = owners,
+      .has_serial = true,
+  };
+  context_.channels = selected;
+  // Ninety-six retained records can exchange either one ownership credit or
+  // several replay credits. Capacity alone does not select the seed pair.
+  for (const uint32_t credits : {1, 3}) {
+    SCOPED_TRACE(credits);
+    tile_.next_lock = 3;
+    selected[2].replay = {.record_count = 96, .credits = credits};
+    bool valid = false;
+    IREE_ASSERT_OK(loom_aie2p_native_assign_channel_locks(
+        &context_, &realization_, &valid));
+    ASSERT_TRUE(valid);
+    EXPECT_EQ(selected[0].free_lock, 3u);
+    EXPECT_EQ(selected[1].free_lock, 5u);
+    EXPECT_EQ(selected[2].free_lock, credits == 3 ? 5u : 7u);
+    EXPECT_EQ(selected[2].ready_lock, credits == 3 ? 6u : 8u);
+    EXPECT_TRUE(selected[0].initializes_locks);
+    EXPECT_TRUE(selected[1].initializes_locks);
+    EXPECT_EQ(selected[2].initializes_locks, credits != 3);
+    EXPECT_EQ(tile_.next_lock, credits == 3 ? 7u : 9u);
+  }
 }
 
 TEST_F(Aie2pChannelsTest, GlobalAllocationRequiresAnExternalProtocol) {
