@@ -9,6 +9,7 @@
 #include "loom/ops/channel/ops.h"
 #include "loom/ops/type_registry.h"
 #include "loom/target/arch/amd/xdna/aie2p/call_abi.h"
+#include "loom/target/arch/amd/xdna/aie2p/pipeline/credits.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/external.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/native.h"
 #include "loom/target/arch/amd/xdna/aie2p/pipeline/refill.h"
@@ -1534,6 +1535,9 @@ iree_status_t loom_aie2p_native_select_transfers(
     const loom_pipeline_realization_t* realization, bool* out_valid) {
   *out_valid = false;
   iree_arena_allocator_t* arena = context->pass->arena;
+  iree_host_size_t credit_control_count = 0;
+  IREE_RETURN_IF_ERROR(loom_aie2p_native_select_credits(context, realization,
+                                                        &credit_control_count));
   iree_host_size_t transfer_count = 0;
   iree_host_size_t cohort_count = 0;
   iree_host_size_t destination_count = 0;
@@ -1567,7 +1571,7 @@ iree_status_t loom_aie2p_native_select_transfers(
   // Each distribution may also need one receiver-granted sender task route.
   iree_host_size_t source_count =
       transfer_count * 4 + cohort_count * 2 + destination_count +
-      child_control_count + input_source_count +
+      child_control_count + input_source_count + credit_control_count +
       context->collective_count * context->execution.engine_count;
   for (iree_host_size_t i = 0; i < realization->invocations.channel_count; ++i) {
     // One receiver and one sender queue per equal-ordinal channel. Shared
@@ -1769,6 +1773,10 @@ iree_status_t loom_aie2p_native_select_transfers(
                              [context->core_engines[delivery->reader_worker]]];
       delivery->packet = owner->control_packets[sender - context->tiles];
     }
+  }
+  if (iree_status_is_ok(status) && valid) {
+    status = loom_aie2p_native_route_credits(context, realization, &next_source,
+                                             next_controller, &valid);
   }
   if (iree_status_is_ok(status) && valid) {
     status = loom_aie2p_native_group_submissions(

@@ -157,6 +157,7 @@ loom_cc_library(
         "channels.c",
         "collective.c",
         "configuration.c",
+        "credits.c",
         "distribution.c",
         "dma.c",
         "external.c",
@@ -170,6 +171,7 @@ loom_cc_library(
         "transport.c",
     ],
     hdrs = [
+        "credits.h",
         "external.h",
         "native.h",
         "refill.h",

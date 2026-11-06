@@ -817,6 +817,7 @@ static iree_status_t loom_aie2p_native_select(
                            source->completion.actions[j].maximum_admissions)
                 : source->completion.actions[j].maximum_admissions;
         const bool exact_admissions =
+            maximum_admissions != UINT32_MAX &&
             loom_cfg_execution_count_is_exact(&source->execution_counts,
                                               op->parent_block->region_index) &&
             (cursor->worker != i || cursor->exact_admissions);

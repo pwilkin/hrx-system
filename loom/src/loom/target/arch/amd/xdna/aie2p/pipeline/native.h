@@ -32,8 +32,8 @@ typedef struct loom_aie2p_native_cursor_t {
   // Last claiming transport batch; each phase owns this cursor at most once.
   // Unused for instruction-executing cursor owners.
   uint32_t transport_batch;
-  // Every admission site has an exact execution count. The retained bound is
-  // therefore the complete invocation count, despite other conditional work.
+  // Every admission site has an exact execution count and the accumulated
+  // bound is unsaturated: it is the complete representative invocation count.
   bool exact_admissions;
   // Several worker occurrences use this cursor. They require one physical
   // engine with disjoint lifetimes; single-owner completion proofs do not
@@ -651,6 +651,9 @@ typedef struct loom_aie2p_native_context_t {
   // Invocation-major per-engine descriptor initialization. NULL when every
   // endpoint finishes a complete ring turn or belongs to root configuration.
   const loom_aie2p_native_endpoint_initialization_t** endpoint_initializers;
+  // Selected private credit retirement by serial child, or NULL when every
+  // private protocol already restores its initial state.
+  struct loom_aie2p_native_credit_scope_t* credit_scopes;
   // Physical join selected for each canonical execution schedule row.
   loom_aie2p_native_join_t** joins;
   // Distinct join trees; equal participant sets share one initialized instance.
@@ -752,6 +755,13 @@ iree_status_t loom_aie2p_native_select_joins(
 iree_status_t loom_aie2p_native_join_boundary(
     loom_aie2p_native_context_t* context, loom_builder_t* builder,
     iree_host_size_t engine, const loom_pipeline_invocation_schedule_t* scope);
+
+// Reclaims exact unread private records after their writer has finished. New
+// writes remain behind the enclosing child join until real readers complete.
+iree_status_t loom_aie2p_native_retire_credits(
+    loom_aie2p_native_context_t* context, loom_builder_t* builder,
+    loom_region_t* region, const loom_aie2p_native_channel_access_t* access,
+    uint32_t credits);
 
 // Forms one scalar cursor cell in an invocation-private frame. Channel ordinal
 // and direction give a stable identity across child calls. Ordinary private
