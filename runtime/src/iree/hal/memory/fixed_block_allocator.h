@@ -21,7 +21,7 @@ extern "C" {
 //
 // A lock-free fixed-size allocator that manages a contiguous range of offsets
 // [0, block_count * block_size). All blocks are the same size. The allocator
-// uses an atomic bitmap for O(1) allocation and deallocation, with no mutexes
+// uses an atomic bitmap for allocation and deallocation, with no mutexes
 // and full concurrency support for multiple threads.
 //
 // Like the TLSF allocator, this is pure bookkeeping: it tracks which blocks
@@ -33,7 +33,7 @@ extern "C" {
 // For allocation patterns where all items are the same size, a fixed-block
 // allocator is simpler and faster than a general-purpose allocator like TLSF:
 //
-//   - O(1) allocation via bitmap scan (count-trailing-zeros on inverted word)
+//   - Constant-time claims within a bitmap word, with a roving scan for space
 //   - O(1) deallocation via bit clear (atomic AND)
 //   - Zero external fragmentation (all blocks are uniform)
 //   - Lock-free: allocation uses atomic_fetch_or, deallocation uses
@@ -86,12 +86,10 @@ extern "C" {
 //
 // ### Capacity
 //
-// The bitmap is stored inline in the allocator structure: up to
-// IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_BITMAP_WORDS words * 64 bits =
-// IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS blocks. This is sufficient
-// for most fixed-block allocation use cases (KV-cache slabs, MoE expert slots,
-// signal ring entries). If larger allocators are needed, shard across multiple
-// allocator instances or switch to a dynamic bitmap plus a summary layer.
+// The bitmap is sized to the requested block count in the same allocation as
+// the block metadata. Capacity is bounded by the 32-bit block-index range and
+// available host memory. Allocation scans at most ceil(block_count / 64) words;
+// deallocation clears one bit regardless of capacity.
 //
 // ### Thread safety
 //
@@ -103,19 +101,11 @@ extern "C" {
 // Types
 //===----------------------------------------------------------------------===//
 
-// Maximum number of blocks in a single allocator instance. Limited by the
-// inline bitmap array size (IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_BITMAP_WORDS
-// words * 64 bits).
-#define IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS 4096
-
 // Default death frontier capacity per block. Covers single-queue and moderate
 // multi-queue workloads. Since blocks never coalesce, frontiers don't grow
 // through merging; the capacity only needs to cover the number of distinct
 // axes a single block's user touches.
 #define IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_DEFAULT_FRONTIER_CAPACITY 4
-
-// Number of 64-bit words in the inline bitmap array.
-#define IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_BITMAP_WORDS 64
 
 // Bitfield flags for a block's current state.
 typedef uint32_t iree_hal_memory_fixed_block_allocator_block_flags_t;
@@ -151,9 +141,8 @@ typedef struct iree_hal_memory_fixed_block_allocator_options_t {
   // choosing a block_size that meets their alignment requirements.
   iree_device_size_t block_size;
 
-  // Number of blocks in the allocator. Must be > 0 and
-  // <= IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS. The managed offset
-  // range is [0, block_count * block_size).
+  // Number of blocks in the allocator. Must be > 0. The managed offset range
+  // is [0, block_count * block_size).
   uint32_t block_count;
 
   // Maximum number of frontier entries per block. Set to 0 to use
@@ -210,14 +199,14 @@ typedef struct iree_hal_memory_fixed_block_allocator_stats_t {
 // details and must not be accessed directly by callers.
 //
 // Layout is organized by access pattern for cache efficiency:
-//   - Read-only config fields share one cache line (no coherence traffic).
+//   - Read-only configuration is separate from contended atomics.
 //   - Each contended atomic gets its own cache line to avoid false sharing.
 //   - The bitmap starts on a cache line boundary; adjacent words intentionally
 //     share lines for scan locality.
 //   - Per-block metadata is a trailing flexible array member (FAM). Untouched
 //     blocks share one initial frontier instead of duplicating that history.
 typedef struct iree_hal_memory_fixed_block_allocator_t {
-  // --- Read-only while backing is attached (one cache line) --------------
+  // --- Read-only while backing is attached ------------------------------
 
   // Size of each block in bytes.
   iree_device_size_t block_size;
@@ -229,7 +218,7 @@ typedef struct iree_hal_memory_fixed_block_allocator_t {
   uint16_t frontier_capacity;
 
   // Number of 64-bit bitmap words in use: ceil(block_count / 64).
-  uint16_t word_count;
+  uint32_t word_count;
 
   // Byte stride between adjacent blocks' metadata, computed during creation.
   iree_host_size_t block_stride;
@@ -242,6 +231,9 @@ typedef struct iree_hal_memory_fixed_block_allocator_t {
   iree_async_frontier_t* initial_frontier;
   // One bit per block whose history has been written in this generation.
   iree_atomic_uint64_t* returned_bitmap;
+  // Cache-line-aligned trailing bitmap: set bits are allocated blocks.
+  // Invalid bits in the final word stay set and cannot be acquired.
+  iree_atomic_uint64_t* bitmap;
 
   // --- Contended atomics (each on its own cache line) ---------------------
 
@@ -260,20 +252,10 @@ typedef struct iree_hal_memory_fixed_block_allocator_t {
   // Cold allocator ownership, occupying padding beside the count cache line.
   iree_allocator_t host_allocator;
 
-  // --- Bitmap (cache-line-aligned, compact for scan locality) -------------
-
-  // Atomic bitmap: bit set = allocated, bit clear = free.
-  // Trailing invalid bits in the last word (when block_count is not a multiple
-  // of 64) are set to 1 during initialization so they are never allocated.
-  // Adjacent words share cache lines by design; the bitmap is meant to be
-  // scanned sequentially.
-  iree_alignas(iree_hardware_destructive_interference_size) iree_atomic_uint64_t
-      bitmap[IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_BITMAP_WORDS];
-
   // --- Per-block metadata (FAM, cache-line-aligned) -----------------------
 
   // Flat array of per-block metadata followed by the owned initial frontier
-  // and returned-block bitmap. Each block_stride-byte entry contains a
+  // and both bitmaps. Each block_stride-byte entry contains a
   // flags/generation header followed by its frontier and entries.
   // Accessed on every alloc (to read death frontier) and free (to write it).
   iree_alignas(iree_hardware_destructive_interference_size) uint8_t
@@ -292,9 +274,9 @@ typedef struct iree_hal_memory_fixed_block_allocator_t {
 // per-block metadata). |host_allocator| is used for this allocation and stored
 // for iree_hal_memory_fixed_block_allocator_free().
 //
-// Returns IREE_STATUS_INVALID_ARGUMENT if options are invalid (zero block_size,
-// zero block_count, block_count exceeds
-// IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS).
+// Returns IREE_STATUS_INVALID_ARGUMENT for zero block_size, zero block_count,
+// or an unrepresentable managed offset range. Metadata sizing is checked
+// against the host address range before allocation.
 //
 // Thread-safety: NOT thread-safe. Must be called before any concurrent access.
 iree_status_t iree_hal_memory_fixed_block_allocator_allocate(

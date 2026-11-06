@@ -52,7 +52,7 @@ static void iree_hal_memory_fixed_block_allocator_read_block(
 
 static inline void iree_hal_memory_fixed_block_allocator_release_bit(
     iree_hal_memory_fixed_block_allocator_t* pool, uint32_t block_index) {
-  uint16_t word_index = (uint16_t)(block_index / 64);
+  uint32_t word_index = block_index / 64;
   int bit = block_index % 64;
   uint64_t bit_mask = UINT64_C(1) << bit;
   uint64_t old IREE_ATTRIBUTE_UNUSED = iree_atomic_fetch_and(
@@ -77,14 +77,6 @@ iree_status_t iree_hal_memory_fixed_block_allocator_allocate(
   if (options.block_count == 0) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "block_count must be > 0");
-  }
-  if (options.block_count > IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS) {
-    return iree_make_status(
-        IREE_STATUS_INVALID_ARGUMENT,
-        "block_count (%u) exceeds "
-        "IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS (%u)",
-        (unsigned)options.block_count,
-        (unsigned)IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS);
   }
   // Verify that the total offset range [0, block_count * block_size) doesn't
   // overflow iree_device_size_t. If it did, multiple blocks would map to the
@@ -123,24 +115,30 @@ iree_status_t iree_hal_memory_fixed_block_allocator_allocate(
           IREE_STRUCT_FIELD(options.frontier_capacity,
                             iree_async_frontier_entry_t, NULL)));
 
-  // Compute total allocation size: fixed struct (including bitmap) plus
-  // trailing per-block metadata FAM. All arithmetic is overflow-checked.
+  // Compute one allocation for the header, histories, and sized bitmaps.
+  // Divide before rounding to cover the full uint32_t block-count range.
   iree_host_size_t total_size = 0;
   iree_host_size_t initial_frontier_offset = 0;
   iree_host_size_t returned_bitmap_offset = 0;
-  const uint16_t word_count = (uint16_t)((options.block_count + 63) / 64);
+  iree_host_size_t bitmap_offset = 0;
+  const uint32_t word_count =
+      options.block_count / 64 + (options.block_count % 64 != 0);
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, IREE_STRUCT_LAYOUT(
-              sizeof(iree_hal_memory_fixed_block_allocator_t), &total_size,
-              IREE_STRUCT_ARRAY_FIELD(options.block_count, block_stride,
-                                      uint8_t, NULL),
-              IREE_STRUCT_FIELD_ALIGNED(1, iree_async_frontier_t,
-                                        IREE_ASYNC_FRONTIER_ALIGNMENT,
-                                        &initial_frontier_offset),
-              IREE_STRUCT_FIELD(options.frontier_capacity,
-                                iree_async_frontier_entry_t, NULL),
-              IREE_STRUCT_FIELD(word_count, iree_atomic_uint64_t,
-                                &returned_bitmap_offset)));
+      z0,
+      IREE_STRUCT_LAYOUT(
+          sizeof(iree_hal_memory_fixed_block_allocator_t), &total_size,
+          IREE_STRUCT_ARRAY_FIELD(options.block_count, block_stride, uint8_t,
+                                  NULL),
+          IREE_STRUCT_FIELD_ALIGNED(1, iree_async_frontier_t,
+                                    IREE_ASYNC_FRONTIER_ALIGNMENT,
+                                    &initial_frontier_offset),
+          IREE_STRUCT_FIELD(options.frontier_capacity,
+                            iree_async_frontier_entry_t, NULL),
+          IREE_STRUCT_FIELD(word_count, iree_atomic_uint64_t,
+                            &returned_bitmap_offset),
+          IREE_STRUCT_FIELD_ALIGNED(word_count, iree_atomic_uint64_t,
+                                    iree_hardware_destructive_interference_size,
+                                    &bitmap_offset)));
 
   // Single cache-line-aligned allocation for the entire allocator.
   iree_hal_memory_fixed_block_allocator_t* pool = NULL;
@@ -163,12 +161,12 @@ iree_status_t iree_hal_memory_fixed_block_allocator_allocate(
       (iree_async_frontier_t*)((uint8_t*)pool + initial_frontier_offset);
   pool->returned_bitmap =
       (iree_atomic_uint64_t*)((uint8_t*)pool + returned_bitmap_offset);
+  pool->bitmap = (iree_atomic_uint64_t*)((uint8_t*)pool + bitmap_offset);
   iree_atomic_store(&pool->alloc_hint_word, 0, iree_memory_order_relaxed);
   iree_atomic_store(&pool->allocation_count, 0, iree_memory_order_relaxed);
 
   // Initialize all bitmap words to 0 (all blocks free).
-  for (uint16_t w = 0; w < IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_BITMAP_WORDS;
-       ++w) {
+  for (uint32_t w = 0; w < word_count; ++w) {
     iree_atomic_store(&pool->bitmap[w], 0, iree_memory_order_relaxed);
   }
 
@@ -229,7 +227,7 @@ void iree_hal_memory_fixed_block_allocator_reset(
   } else if (!initial_frontier) {
     iree_async_frontier_initialize(pool->initial_frontier, 0);
   }
-  for (uint16_t i = 0; i < pool->word_count; ++i) {
+  for (uint32_t i = 0; i < pool->word_count; ++i) {
     iree_atomic_store(&pool->returned_bitmap[i], 0, iree_memory_order_relaxed);
   }
   iree_atomic_store(&pool->alloc_hint_word, 0, iree_memory_order_relaxed);
@@ -244,7 +242,7 @@ bool iree_hal_memory_fixed_block_allocator_merge_free_frontiers(
                                iree_memory_order_relaxed) == 0);
   iree_async_frontier_initialize(out_frontier, 0);
   bool has_untouched_blocks = false;
-  for (uint16_t i = 0; i < pool->word_count; ++i) {
+  for (uint32_t i = 0; i < pool->word_count; ++i) {
     uint64_t returned =
         iree_atomic_load(&pool->returned_bitmap[i], iree_memory_order_relaxed);
     const uint64_t valid = i + 1 == pool->word_count
@@ -351,18 +349,18 @@ iree_status_t iree_hal_memory_fixed_block_allocator_try_acquire(
   memset(out_allocation, 0, sizeof(*out_allocation));
   *out_result = IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_ACQUIRE_EXHAUSTED;
 
-  const uint16_t word_count = pool->word_count;
+  const uint32_t word_count = pool->word_count;
 
   // Start scanning from the roving hint for better locality.
-  uint16_t start_word = (uint16_t)iree_atomic_load(&pool->alloc_hint_word,
+  uint32_t start_word = (uint32_t)iree_atomic_load(&pool->alloc_hint_word,
                                                    iree_memory_order_relaxed);
   if (start_word >= word_count) {
     start_word = 0;
   }
 
   // Scan all bitmap words starting from the hint, wrapping around.
-  uint16_t word_index = start_word;
-  for (uint16_t pass = 0; pass < word_count; ++pass) {
+  uint32_t word_index = start_word;
+  for (uint32_t pass = 0; pass < word_count; ++pass) {
     // Load the word. If all bits are set, skip (no free blocks here).
     uint64_t word =
         iree_atomic_load(&pool->bitmap[word_index], iree_memory_order_acquire);

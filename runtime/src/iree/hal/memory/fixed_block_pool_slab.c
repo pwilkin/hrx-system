@@ -16,8 +16,7 @@ iree_status_t iree_hal_fixed_block_pool_slab_allocate(
   *out_slab = NULL;
   const iree_device_size_t block_count =
       range->length / geometry->backing_block_size;
-  if (!block_count ||
-      block_count > IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS) {
+  if (!block_count || block_count > UINT32_MAX) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "buffer range has an unsupported block count");
   }

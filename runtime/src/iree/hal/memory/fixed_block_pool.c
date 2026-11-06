@@ -96,7 +96,7 @@ typedef struct iree_hal_fixed_block_pool_t {
   iree_atomic_int64_t bytes_reserved;
 
   // Approximate live reservation count for lock-free stats queries.
-  iree_atomic_int32_t reservation_count;
+  iree_atomic_uint32_t reservation_count;
 
   // Total reservations committed by successful transactions.
   iree_atomic_int64_t reserve_count;
@@ -478,9 +478,7 @@ static iree_status_t iree_hal_fixed_block_pool_resolve_geometry(
   memset(out_geometry, 0, sizeof(*out_geometry));
   if (!options->block_size ||
       !iree_device_size_is_valid_alignment(options->alignment) ||
-      options->frontier_capacity > UINT8_MAX ||
-      options->blocks_per_slab >
-          IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS) {
+      options->frontier_capacity > UINT8_MAX) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "invalid fixed-block pool geometry");
   }
@@ -526,7 +524,7 @@ static iree_status_t iree_hal_fixed_block_pool_resolve_geometry(
   const iree_device_size_t capacity =
       capabilities->max_allocation_size
           ? capabilities->max_allocation_size / backing_block_size
-          : IREE_HAL_MEMORY_FIXED_BLOCK_ALLOCATOR_MAX_BLOCKS;
+          : UINT32_MAX;
   const uint32_t block_count = options->blocks_per_slab
                                    ? options->blocks_per_slab
                                    : (uint32_t)iree_min(64, capacity);
@@ -1390,7 +1388,7 @@ static void iree_hal_fixed_block_pool_release_one_reservation(
   // The raw bitmap is reusable now; the live count keeps this final slab
   // access ordered before cold detachment, including immediate block reuse.
   iree_slim_mutex_lock(&pool->publication.mutex);
-  const int32_t previous_live_count =
+  const uint32_t previous_live_count =
       iree_atomic_fetch_sub(&slab->live_count, 1, iree_memory_order_relaxed);
   if (pool->backing_pool && previous_live_count == 1) {
     iree_hal_fixed_block_pool_note_candidate(pool, slab);

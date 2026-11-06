@@ -47,7 +47,7 @@ struct iree_hal_fixed_block_pool_slab_t {
   // Snapshot and preparation pins, guarded by acquisition_mutex.
   uint32_t pins;
   // Live reservations, including a releasing thread's final slab access.
-  iree_atomic_int32_t live_count;
+  iree_atomic_uint32_t live_count;
   // Parent token held until all block histories can be returned together.
   iree_hal_pool_reservation_t reservation;
   // Prepared parent view retained independently of the explicit token.

@@ -407,6 +407,96 @@ static iree_hal_asan_pool_options_t ShadowOptions() {
   return options;
 }
 
+TEST(FixedBlockPool, LargeBackingRangePreservesIndependentBlocks) {
+  iree_hal_slab_provider_t* provider = nullptr;
+  IREE_ASSERT_OK(
+      iree_hal_cpu_slab_provider_create(0, iree_allocator_system(), &provider));
+  iree_async_notification_t* notification = nullptr;
+  IREE_ASSERT_OK(iree_async_notification_create(
+      test_proactor(), IREE_ASYNC_NOTIFICATION_FLAG_NONE, &notification));
+  constexpr uint32_t kBlockCount = 16385;
+  const iree_hal_fixed_block_pool_options_t options = {
+      .block_size = 64,
+      .blocks_per_slab = kBlockCount,
+      .frontier_capacity = 1,
+  };
+  for (bool finite : {true, false}) {
+    SCOPED_TRACE(finite);
+    iree_hal_pool_t* pool = nullptr;
+    iree_hal_pool_t* backing_pool = nullptr;
+    if (finite) {
+      IREE_ASSERT_OK(CreateFinitePool(
+          options, provider, notification, test_frontier_tracker(),
+          iree_allocator_system(), &backing_pool, &pool));
+    } else {
+      IREE_ASSERT_OK(CreateGrowingPool(
+          options, provider, notification, test_frontier_tracker(),
+          iree_hal_pool_epoch_query_null(), iree_allocator_system(), &pool));
+    }
+    const std::vector<iree_hal_pool_reservation_request_t> requests(
+        kBlockCount, MakeReservationRequest(64, 16));
+    std::vector<iree_hal_pool_reservation_t> reservations(kBlockCount);
+    std::vector<iree_hal_pool_acquire_info_t> infos(kBlockCount);
+    iree_hal_pool_acquire_result_t result;
+    IREE_ASSERT_OK(iree_hal_pool_acquire_reservations_sync(
+        pool, kBlockCount, requests.data(), nullptr, reservations.data(),
+        infos.data(), &result, IREE_HAL_POOL_RESERVE_FLAG_NONE));
+    ASSERT_EQ(result, IREE_HAL_POOL_ACQUIRE_OK_FRESH);
+    for (uint32_t index : {0u, 4096u, kBlockCount - 1}) {
+      EXPECT_EQ(reservations[index].offset, index * options.block_size);
+      iree_hal_buffer_t* buffer = nullptr;
+      IREE_ASSERT_OK(MaterializeOneReservation(
+          pool, &reservations[index], IREE_HAL_POOL_MATERIALIZE_FLAG_NONE,
+          &buffer));
+      const uint32_t expected = index + 1;
+      IREE_ASSERT_OK(
+          iree_hal_buffer_map_write(buffer, 0, &expected, sizeof(expected)));
+      iree_hal_buffer_release(buffer);
+    }
+
+    iree_hal_pool_reservation_t extra;
+    iree_hal_pool_acquire_info_t extra_info;
+    IREE_ASSERT_OK(AcquireOneReservation(pool, 64, 16, nullptr,
+                                         IREE_HAL_POOL_RESERVE_FLAG_NONE,
+                                         &extra, &extra_info, &result));
+    EXPECT_EQ(result, finite ? IREE_HAL_POOL_ACQUIRE_EXHAUSTED
+                             : IREE_HAL_POOL_ACQUIRE_OK_FRESH);
+    if (!finite) {
+      iree_hal_pool_release_reservations(pool, 1, &extra, nullptr);
+    }
+    // Return only the final partial-word block. Its prepared span can be
+    // reused while the other blocks retain independent live data.
+    iree_hal_pool_release_reservations(pool, 1, &reservations.back(), nullptr);
+    IREE_ASSERT_OK(AcquireOneReservation(
+        pool, 64, 16, nullptr, IREE_HAL_POOL_RESERVE_FLAG_NONE,
+        &reservations.back(), &extra_info, &result));
+    ASSERT_EQ(result, IREE_HAL_POOL_ACQUIRE_OK_FRESH);
+    EXPECT_EQ(reservations.back().offset,
+              (kBlockCount - 1) * options.block_size);
+    for (uint32_t index : {0u, 4096u, kBlockCount - 1}) {
+      iree_hal_buffer_t* buffer = nullptr;
+      IREE_ASSERT_OK(MaterializeOneReservation(
+          pool, &reservations[index], IREE_HAL_POOL_MATERIALIZE_FLAG_NONE,
+          &buffer));
+      uint32_t actual = 0;
+      IREE_ASSERT_OK(
+          iree_hal_buffer_map_read(buffer, 0, &actual, sizeof(actual)));
+      EXPECT_EQ(actual, index + 1);
+      iree_hal_buffer_release(buffer);
+    }
+    iree_hal_pool_release_reservations(pool, kBlockCount, reservations.data(),
+                                       nullptr);
+    iree_hal_pool_stats_t stats;
+    iree_hal_pool_query_stats(pool, &stats);
+    EXPECT_EQ(stats.reservation_count, 0u);
+    EXPECT_EQ(stats.slab_count, finite ? 1u : 0u);
+    iree_hal_pool_release(pool);
+    iree_hal_pool_release(backing_pool);
+  }
+  iree_async_notification_release(notification);
+  iree_hal_slab_provider_release(provider);
+}
+
 class FixedBlockPoolTest : public ::testing::Test {
  protected:
   void SetUp() override {
