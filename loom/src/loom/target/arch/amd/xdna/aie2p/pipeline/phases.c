@@ -324,9 +324,11 @@ iree_status_t loom_aie2p_native_initialize_endpoints(
   loom_op_t* function;
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_helper(code, NULL, 0, NULL, 0, &helper,
                                                 &symbol, &function));
+  bool replaces_geometry = false;
   for (; initializer; initializer = initializer->next) {
     const loom_aie2p_native_distribution_endpoint_t* endpoint =
         initializer->endpoint;
+    replaces_geometry |= endpoint->storage && endpoint->storage->changed_words;
     const loom_aie2p_native_memory_layout_t* layout =
         endpoint->tile->memory_layout;
     const loom_aie2p_native_dma_sequence_t* sequence = &endpoint->sequence;
@@ -364,6 +366,15 @@ iree_status_t loom_aie2p_native_initialize_endpoints(
         word += count;
       }
     }
+  }
+  if (replaces_geometry) {
+    // Geometry restoration runs at child entry. Its constant register writes
+    // have no values crossing into the arithmetic body's allocation scope.
+    // A simple iterator rewind remains inline.
+    const loom_func_like_t callable =
+        loom_func_like_cast(code->module, function);
+    loom_op_attrs(function)[callable.vtable->inline_policy_attr_index] =
+        loom_attr_enum(LOOM_INLINE_POLICY_NOINLINE);
   }
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&helper, NULL, 0));
   loom_op_t* call;

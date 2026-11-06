@@ -128,6 +128,21 @@ pipeline.def<kernel> public retain target(@device) @entry() run(%input_arg: buff
 }
 
 // ----
+low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_69() asm {
+  %1142 = mov.i32 81924
+  %1143 = mov.i32 -2147483648
+  %1144 = mov.i32 118816
+  mov.ms %1143
+  mov.ms %1144
+  mov.ms.last %1142
+  %1145 = mov.i32 16388
+  %1147 = mov.i32 -2147364864
+  mov.ms %1143
+  mov.ms %1147
+  mov.ms.last %1145
+  return
+}
+
 low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_72() asm {
   %1154 = mov.i32 7864380
   %1155 = mov.short 0
@@ -162,6 +177,51 @@ low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_73() as
   %1170 = ne %1169, %1163
   low.cond_br %1170, ^_bb1, ^_bb2 : reg<aie2p.er>
 ^_bb2:
+  return
+}
+
+low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_75() asm {
+  %1173 = mov.i32 49154
+  %1174 = mov.i32 -2147483648
+  %1175 = mov.i32 118816
+  mov.ms %1174
+  mov.ms %1175
+  mov.ms.last %1173
+  %1176 = mov.i32 16386
+  %1178 = mov.i32 -2147364864
+  mov.ms %1174
+  mov.ms %1178
+  mov.ms.last %1176
+  return
+}
+
+low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_78() asm {
+  %1185 = mov.i32 81924
+  %1186 = mov.i32 -2147483648
+  %1187 = mov.i32 118816
+  mov.ms %1186
+  mov.ms %1187
+  mov.ms.last %1185
+  %1188 = mov.i32 16388
+  %1190 = mov.i32 -2147364864
+  mov.ms %1186
+  mov.ms %1190
+  mov.ms.last %1188
+  return
+}
+
+low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_81() asm {
+  %1210 = mov.i32 65540
+  %1211 = mov.i32 -2147483648
+  %1212 = mov.i32 118816
+  mov.ms %1211
+  mov.ms %1212
+  mov.ms.last %1210
+  %1213 = mov.short 4
+  %1215 = mov.i32 -2147364864
+  mov.ms %1211
+  mov.ms %1215
+  mov.ms.last %1213
   return
 }
 
@@ -202,26 +262,47 @@ low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_85() as
   return
 }
 
+low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_87() asm {
+  %1241 = mov.i32 32770
+  %1242 = mov.i32 -2147483648
+  %1243 = mov.i32 118816
+  mov.ms %1242
+  mov.ms %1243
+  mov.ms.last %1241
+  %1244 = mov.short 2
+  %1246 = mov.i32 -2147364864
+  mov.ms %1242
+  mov.ms %1246
+  mov.ms.last %1244
+  return
+}
+
+low.func.def noinline target<amd.xdna.aie2p.core> @__aie2p_worker_helper_90() asm {
+  %1253 = mov.i32 65540
+  %1254 = mov.i32 -2147483648
+  %1255 = mov.i32 118816
+  mov.ms %1254
+  mov.ms %1255
+  mov.ms.last %1253
+  %1256 = mov.short 4
+  %1258 = mov.i32 -2147364864
+  mov.ms %1254
+  mov.ms %1258
+  mov.ms.last %1256
+  return
+}
+
 low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_94() asm {
-  %1185 = mov.i32 81924
-  %1186 = mov.i32 -2147483648
-  %1187 = mov.i32 118816
-  mov.ms %1186
-  mov.ms %1187
-  mov.ms.last %1185
-  %1188 = mov.i32 16388
-  %1190 = mov.i32 -2147364864
-  mov.ms %1186
-  mov.ms %1190
-  mov.ms.last %1188
+  low.func.call @__aie2p_worker_helper_78() : ()
   %1191 = mov.i32 131072
+  %1192 = mov.i32 -2147483648
   %1193 = mov.i32 122388
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %1193
   mov.ms.last %1191
   %1194 = mov.i32 131073
   %1196 = mov.i32 -2147361252
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %1196
   mov.ms.last %1194
   %1393 = mov.short 1
@@ -235,7 +316,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_94() asm {
   %703 = mov.short 2
   %704 = mov.short 0
   %706 = mov.i32 -2147361276
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %706
   mov.ms.last %703
   %708 = mov.i32 119316
@@ -279,25 +360,18 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_94() asm {
   low.func.call @__aie2p_worker_helper_73() : ()
   acq %712, 37
   rel %1393, 38
-  %1173 = mov.i32 49154
-  mov.ms %1186
-  mov.ms %1187
-  mov.ms.last %1173
-  %1176 = mov.i32 16386
-  mov.ms %1186
-  mov.ms %1190
-  mov.ms.last %1176
+  low.func.call @__aie2p_worker_helper_75() : ()
   %1179 = mov.i32 65536
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %1193
   mov.ms.last %1179
   %1182 = mov.i32 65537
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %1196
   mov.ms.last %1182
   %778 = mov.local-address 458764
   acq %712, 48
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %706
   mov.ms.last %703
   mov.ms %1393
@@ -340,20 +414,15 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_94() asm {
   low.func.call @__aie2p_worker_helper_73() : ()
   acq %712, 37
   rel %1393, 38
-  mov.ms %1186
-  mov.ms %1187
-  mov.ms.last %1185
-  mov.ms %1186
-  mov.ms %1190
-  mov.ms.last %1188
-  mov.ms %1186
+  low.func.call @__aie2p_worker_helper_69() : ()
+  mov.ms %1192
   mov.ms %1193
   mov.ms.last %1179
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %1196
   mov.ms.last %1182
   acq %712, 48
-  mov.ms %1186
+  mov.ms %1192
   mov.ms %706
   mov.ms.last %703
   mov.ms %1393
@@ -404,25 +473,16 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_94() asm {
 }
 
 low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
-  %1253 = mov.i32 65540
-  %1254 = mov.i32 -2147483648
-  %1255 = mov.i32 118816
-  mov.ms %1254
-  mov.ms %1255
-  mov.ms.last %1253
-  %1256 = mov.short 4
-  %1258 = mov.i32 -2147364864
-  mov.ms %1254
-  mov.ms %1258
-  mov.ms.last %1256
+  low.func.call @__aie2p_worker_helper_90() : ()
   %1259 = mov.i32 131072
+  %1260 = mov.i32 -2147483648
   %1261 = mov.i32 -2147361276
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %1261
   mov.ms.last %1259
   %1262 = mov.i32 131073
   %1264 = mov.i32 122380
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %1264
   mov.ms.last %1262
   %1453 = mov.short 1
@@ -430,6 +490,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   %738 = mov.local-address 458768
   %740 = mov.local-address 458752
   %1457 = mov.short 3
+  %1458 = mov.short 4
   %begin = mov.short 0
   %bytes$1461 = mov.short 16
   low.br ^_bb1(%begin: reg<aie2p.er>)
@@ -441,7 +502,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   acq %761, 49
   low.br ^_bb3(%begin: reg<aie2p.er>)
 ^_bb3(%lane$1448: reg<aie2p.er>):
-  %1463 = lt %lane$1448, %1256
+  %1463 = lt %lane$1448, %1458
   low.cond_br %1463, ^_bb4, ^_bb5 : reg<aie2p.er>
 ^_bb4:
   %1464 = mov.i32 2
@@ -474,7 +535,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   mov.ms %753
   mov.ms.last %751
   %755 = mov.i32 122388
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %755
   mov.ms.last %750
   %756 = mov.ss
@@ -486,35 +547,29 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   low.func.call @__aie2p_worker_helper_85() : ()
   rel %1453, 53
   acq %761, 54
-  %1241 = mov.i32 32770
-  mov.ms %1254
-  mov.ms %1255
-  mov.ms.last %1241
-  %1244 = mov.short 2
-  mov.ms %1254
-  mov.ms %1258
-  mov.ms.last %1244
+  low.func.call @__aie2p_worker_helper_87() : ()
   %1247 = mov.i32 65536
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %1261
   mov.ms.last %1247
   %1250 = mov.i32 65537
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %1264
   mov.ms.last %1250
   %818 = mov.local-address 458760
+  %1478 = mov.short 2
   %1479 = mov.short 48
   %bytes$1480 = mov.short 8
   low.br ^_bb7(%begin: reg<aie2p.er>)
 ^_bb7(%record$1449: reg<aie2p.er>):
-  %1481 = lt %record$1449, %1244
+  %1481 = lt %record$1449, %1478
   low.cond_br %1481, ^_bb8, ^_bb12 : reg<aie2p.er>
 ^_bb8:
   acq %761, 51
   acq %761, 49
   low.br ^_bb9(%begin: reg<aie2p.er>)
 ^_bb9(%lane$1450: reg<aie2p.er>):
-  %1482 = lt %lane$1450, %1244
+  %1482 = lt %lane$1450, %1478
   low.cond_br %1482, ^_bb10, ^_bb11 : reg<aie2p.er>
 ^_bb10:
   %1483 = mov.i32 2
@@ -547,7 +602,7 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   mov.ms %833
   mov.ms.last %831
   %835 = mov.i32 122388
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %835
   mov.ms.last %1457
   %836 = mov.ss
@@ -559,29 +614,24 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   low.func.call @__aie2p_worker_helper_85() : ()
   rel %1453, 53
   acq %761, 54
-  mov.ms %1254
-  mov.ms %1255
-  mov.ms.last %1253
-  mov.ms %1254
-  mov.ms %1258
-  mov.ms.last %1256
-  mov.ms %1254
+  low.func.call @__aie2p_worker_helper_81() : ()
+  mov.ms %1260
   mov.ms %1261
   mov.ms.last %1247
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %1264
   mov.ms.last %1250
   %1498 = mov.short 64
   low.br ^_bb13(%begin: reg<aie2p.er>)
 ^_bb13(%record$1451: reg<aie2p.er>):
-  %1499 = lt %record$1451, %1244
+  %1499 = lt %record$1451, %1478
   low.cond_br %1499, ^_bb14, ^_bb18 : reg<aie2p.er>
 ^_bb14:
   acq %761, 51
   acq %761, 49
   low.br ^_bb15(%begin: reg<aie2p.er>)
 ^_bb15(%lane$1452: reg<aie2p.er>):
-  %1500 = lt %lane$1452, %1256
+  %1500 = lt %lane$1452, %1458
   low.cond_br %1500, ^_bb16, ^_bb17 : reg<aie2p.er>
 ^_bb16:
   %1501 = mov.i32 2
@@ -614,9 +664,9 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_96() asm {
   mov.ms %913
   mov.ms.last %911
   %915 = mov.i32 122388
-  mov.ms %1254
+  mov.ms %1260
   mov.ms %915
-  mov.ms.last %1244
+  mov.ms.last %1478
   %916 = mov.ss
   rel %1453, 50
   %1512 = add.nc %record$1451, %1453
