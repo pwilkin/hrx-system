@@ -210,14 +210,16 @@ typedef struct loom_aie2p_native_dma_completion_t {
 } loom_aie2p_native_dma_completion_t;
 
 // Repeated external-address patch bodies within one source worker occurrence.
-// The local descriptor fixes the routes, chain geometry, and local patch
-// policy; relocation bases, shim commands, and shim queue words remain call
-// arguments.
+// The local descriptor family fixes routes, chain geometry, and patch policy;
+// relocation bases, shim commands, and queue words remain call arguments.
 typedef struct loom_aie2p_native_dma_submit_t {
   // Worker occurrence owning these static submission sites.
   iree_host_size_t worker;
   // Number of static sites, independent of runtime loop trip counts.
   iree_host_size_t use_count;
+  // Fixed local address variants select their descriptor through a queue word
+  // argument. Dynamic local patches retain one descriptor and its constant ID.
+  bool local_queue_argument;
   // One native leaf materialized on first use, or null before emission.
   loom_symbol_ref_t function;
 } loom_aie2p_native_dma_submit_t;
@@ -228,8 +230,16 @@ typedef struct loom_aie2p_native_dma_submit_t {
 typedef struct loom_aie2p_native_dma_descriptor_t {
   // Next physical endpoint in the worker's allocation order.
   struct loom_aie2p_native_dma_descriptor_t* next;
+  // Next fixed-address variant; the original descriptor heads this chain.
+  // Variants use spare capacity and inherit the original ordered lifetimes.
+  struct loom_aie2p_native_dma_descriptor_t* address_variants;
+  // Original admitted descriptor for a fixed variant, or NULL for the original.
+  // It retains the shared route/geometry identity after addresses specialize.
+  struct loom_aie2p_native_dma_descriptor_t* address_origin;
   // Admitted engine pair and physical routes.
   loom_aie2p_native_dma_path_t* path;
+  // First assigned copy, retaining the canonical immutable address variant.
+  const struct loom_aie2p_native_transfer_t* first_transfer;
   // Most recently assigned copy, retaining its retirement and address policy.
   const struct loom_aie2p_native_transfer_t* last_transfer;
   // Endpoint sequence, excluding dynamic addresses and completion releases.
@@ -241,9 +251,13 @@ typedef struct loom_aie2p_native_dma_descriptor_t {
   // Each issue patches this endpoint's address. Shared descriptors also patch
   // fixed offsets when their copies address different storage or record slots.
   bool address_dynamic;
-  // Most recent core worker's external-patch group. Earlier workers' tasks
-  // retain their own group after the descriptor moves to another occurrence.
-  loom_aie2p_native_dma_submit_t* submit_group;
+  // At least one assigned task needs issue-time addressing independently of
+  // descriptor sharing. Refinement also retains this when variants cannot fit.
+  bool address_required;
+  // Most recent core worker's fixed/dynamic local-address submission groups,
+  // indexed by address_dynamic on the original descriptor only. Earlier worker
+  // tasks retain their groups after this family moves to another occurrence.
+  loom_aie2p_native_dma_submit_t* submit_groups[2];
 } loom_aie2p_native_dma_descriptor_t;
 
 typedef struct loom_aie2p_native_transfer_task_t

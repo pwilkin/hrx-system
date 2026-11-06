@@ -1,6 +1,7 @@
 // RUN: with-checks emit source-low output=low
 
-// Four static submissions share one two-descriptor patch body. Each caller
+// Four static submissions per epoch share one two-descriptor patch body.
+// The surrounding loop keeps local and external addresses dynamic; each caller
 // supplies its own offsets and relocation/descriptor words.
 aie2p.target<array> @npu {device_profile = "amd.xdna.strix.17f0_10"}
 
@@ -23,26 +24,31 @@ pipeline.def<kernel> public retain target(@npu) @copy_groups() run(%output_arg: 
     %end = index.constant 4 : index
     %step = index.constant 1 : index
     %stride = index.constant 32 : index
-    scf.for %position = [%begin to %end step %step] unroll {
-      %record_offset = index.mul %position, %stride : index
-      %element0 = index.constant 0 : index
-      %word0 = index.add %position, %element0 : index
-      %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
-      %relative0 = index.constant 0 : index
-      %address0 = index.add %record_offset, %relative0 : index
-      %offset0 = index.cast %address0 : index to offset
-      %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
-      %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element1 = index.constant 1 : index
-      %word1 = index.add %position, %element1 : index
-      %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
-      %relative1 = index.constant 4 : index
-      %address1 = index.add %record_offset, %relative1 : index
-      %offset1 = index.cast %address1 : index to offset
-      %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
-      %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %group = kernel.async.group %copy0, %copy1 : kernel.async.token, kernel.async.token -> kernel.async.group
-      kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+    %epoch_count = index.constant 2 : index
+    scf.for %epoch = [%begin to %epoch_count step %step] {
+      scf.for %position = [%begin to %end step %step] unroll {
+        %batch_start = index.mul %epoch, %end : index
+        %selected = index.add %batch_start, %position : index
+        %record_offset = index.mul %selected, %stride : index
+        %element0 = index.constant 0 : index
+        %word0 = index.add %selected, %element0 : index
+        %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
+        %relative0 = index.constant 0 : index
+        %address0 = index.add %record_offset, %relative0 : index
+        %offset0 = index.cast %address0 : index to offset
+        %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
+        %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element1 = index.constant 1 : index
+        %word1 = index.add %selected, %element1 : index
+        %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
+        %relative1 = index.constant 4 : index
+        %address1 = index.add %record_offset, %relative1 : index
+        %offset1 = index.cast %address1 : index to offset
+        %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
+        %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %group = kernel.async.group %copy0, %copy1 : kernel.async.token, kernel.async.token -> kernel.async.group
+        kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+      }
     }
     channel.release %read : read<tile<32xi32>>
   }
@@ -79,26 +85,31 @@ pipeline.def<kernel> public retain target(@npu) @copy_groups() run(%output_arg: 
     %end = index.constant 2 : index
     %step = index.constant 1 : index
     %stride = index.constant 32 : index
-    scf.for %position = [%begin to %end step %step] unroll {
-      %record_offset = index.mul %position, %stride : index
-      %element0 = index.constant 0 : index
-      %word0 = index.add %position, %element0 : index
-      %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
-      %relative0 = index.constant 0 : index
-      %address0 = index.add %record_offset, %relative0 : index
-      %offset0 = index.cast %address0 : index to offset
-      %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
-      %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element1 = index.constant 1 : index
-      %word1 = index.add %position, %element1 : index
-      %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
-      %relative1 = index.constant 4 : index
-      %address1 = index.add %record_offset, %relative1 : index
-      %offset1 = index.cast %address1 : index to offset
-      %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
-      %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %group = kernel.async.group %copy0, %copy1 : kernel.async.token, kernel.async.token -> kernel.async.group
-      kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+    %epoch_count = index.constant 2 : index
+    scf.for %epoch = [%begin to %epoch_count step %step] {
+      scf.for %position = [%begin to %end step %step] unroll {
+        %batch_start = index.mul %epoch, %end : index
+        %selected = index.add %batch_start, %position : index
+        %record_offset = index.mul %selected, %stride : index
+        %element0 = index.constant 0 : index
+        %word0 = index.add %selected, %element0 : index
+        %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
+        %relative0 = index.constant 0 : index
+        %address0 = index.add %record_offset, %relative0 : index
+        %offset0 = index.cast %address0 : index to offset
+        %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
+        %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element1 = index.constant 1 : index
+        %word1 = index.add %selected, %element1 : index
+        %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
+        %relative1 = index.constant 4 : index
+        %address1 = index.add %record_offset, %relative1 : index
+        %offset1 = index.cast %address1 : index to offset
+        %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
+        %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %group = kernel.async.group %copy0, %copy1 : kernel.async.token, kernel.async.token -> kernel.async.group
+        kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+      }
     }
     channel.release %read : read<tile<32xi32>>
   }
@@ -193,26 +204,31 @@ pipeline.def<kernel> public retain target(@npu) @copy_groups() run(%output_arg: 
     %end = index.constant 4 : index
     %step = index.constant 1 : index
     %stride = index.constant 32 : index
-    scf.for %position = [%begin to %end step %step] unroll {
-      %record_offset = index.mul %begin, %stride : index
-      %element0 = index.constant 0 : index
-      %word0 = index.add %position, %element0 : index
-      %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
-      %relative0 = index.constant 0 : index
-      %address0 = index.add %record_offset, %relative0 : index
-      %offset0 = index.cast %address0 : index to offset
-      %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
-      %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element1 = index.constant 1 : index
-      %word1 = index.add %position, %element1 : index
-      %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
-      %relative1 = index.constant 4 : index
-      %address1 = index.add %record_offset, %relative1 : index
-      %offset1 = index.cast %address1 : index to offset
-      %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
-      %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %group = kernel.async.group %copy0, %copy1 : kernel.async.token, kernel.async.token -> kernel.async.group
-      kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+    %epoch_count = index.constant 2 : index
+    scf.for %epoch = [%begin to %epoch_count step %step] {
+      scf.for %position = [%begin to %end step %step] unroll {
+        %batch_start = index.mul %epoch, %end : index
+        %selected = index.add %batch_start, %position : index
+        %record_offset = index.mul %begin, %stride : index
+        %element0 = index.constant 0 : index
+        %word0 = index.add %selected, %element0 : index
+        %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
+        %relative0 = index.constant 0 : index
+        %address0 = index.add %record_offset, %relative0 : index
+        %offset0 = index.cast %address0 : index to offset
+        %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
+        %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element1 = index.constant 1 : index
+        %word1 = index.add %selected, %element1 : index
+        %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
+        %relative1 = index.constant 4 : index
+        %address1 = index.add %record_offset, %relative1 : index
+        %offset1 = index.cast %address1 : index to offset
+        %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
+        %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %group = kernel.async.group %copy0, %copy1 : kernel.async.token, kernel.async.token -> kernel.async.group
+        kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+      }
     }
     channel.release %read : read<tile<32xi32>>
   }
@@ -251,50 +267,55 @@ pipeline.def<kernel> public retain target(@npu) @copy_groups() run(%output_arg: 
     %end = index.constant 4 : index
     %step = index.constant 1 : index
     %stride = index.constant 32 : index
-    scf.for %position = [%begin to %end step %step] unroll {
-      %record_offset = index.mul %position, %stride : index
-      %element0 = index.constant 0 : index
-      %word0 = index.add %position, %element0 : index
-      %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
-      %relative0 = index.constant 0 : index
-      %address0 = index.add %record_offset, %relative0 : index
-      %offset0 = index.cast %address0 : index to offset
-      %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
-      %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element1 = index.constant 1 : index
-      %word1 = index.add %position, %element1 : index
-      %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
-      %relative1 = index.constant 4 : index
-      %address1 = index.add %record_offset, %relative1 : index
-      %offset1 = index.cast %address1 : index to offset
-      %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
-      %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element2 = index.constant 2 : index
-      %word2 = index.add %position, %element2 : index
-      %part2 = view.subview %source[%word2] : view<32xi32> -> view<1xi32>
-      %relative2 = index.constant 8 : index
-      %address2 = index.add %record_offset, %relative2 : index
-      %offset2 = index.cast %address2 : index to offset
-      %target2 = buffer.view %output[%offset2] : buffer -> view<1xi32>
-      %copy2 = kernel.async.copy %part2 to %target2 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element3 = index.constant 3 : index
-      %word3 = index.add %position, %element3 : index
-      %part3 = view.subview %source[%word3] : view<32xi32> -> view<1xi32>
-      %relative3 = index.constant 12 : index
-      %address3 = index.add %record_offset, %relative3 : index
-      %offset3 = index.cast %address3 : index to offset
-      %target3 = buffer.view %output[%offset3] : buffer -> view<1xi32>
-      %copy3 = kernel.async.copy %part3 to %target3 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %element4 = index.constant 4 : index
-      %word4 = index.add %position, %element4 : index
-      %part4 = view.subview %source[%word4] : view<32xi32> -> view<1xi32>
-      %relative4 = index.constant 16 : index
-      %address4 = index.add %record_offset, %relative4 : index
-      %offset4 = index.cast %address4 : index to offset
-      %target4 = buffer.view %output[%offset4] : buffer -> view<1xi32>
-      %copy4 = kernel.async.copy %part4 to %target4 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
-      %group = kernel.async.group %copy0, %copy1, %copy2, %copy3, %copy4 : kernel.async.token, kernel.async.token, kernel.async.token, kernel.async.token, kernel.async.token -> kernel.async.group
-      kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+    %epoch_count = index.constant 2 : index
+    scf.for %epoch = [%begin to %epoch_count step %step] {
+      scf.for %position = [%begin to %end step %step] unroll {
+        %batch_start = index.mul %epoch, %end : index
+        %selected = index.add %batch_start, %position : index
+        %record_offset = index.mul %selected, %stride : index
+        %element0 = index.constant 0 : index
+        %word0 = index.add %selected, %element0 : index
+        %part0 = view.subview %source[%word0] : view<32xi32> -> view<1xi32>
+        %relative0 = index.constant 0 : index
+        %address0 = index.add %record_offset, %relative0 : index
+        %offset0 = index.cast %address0 : index to offset
+        %target0 = buffer.view %output[%offset0] : buffer -> view<1xi32>
+        %copy0 = kernel.async.copy %part0 to %target0 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element1 = index.constant 1 : index
+        %word1 = index.add %selected, %element1 : index
+        %part1 = view.subview %source[%word1] : view<32xi32> -> view<1xi32>
+        %relative1 = index.constant 4 : index
+        %address1 = index.add %record_offset, %relative1 : index
+        %offset1 = index.cast %address1 : index to offset
+        %target1 = buffer.view %output[%offset1] : buffer -> view<1xi32>
+        %copy1 = kernel.async.copy %part1 to %target1 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element2 = index.constant 2 : index
+        %word2 = index.add %selected, %element2 : index
+        %part2 = view.subview %source[%word2] : view<32xi32> -> view<1xi32>
+        %relative2 = index.constant 8 : index
+        %address2 = index.add %record_offset, %relative2 : index
+        %offset2 = index.cast %address2 : index to offset
+        %target2 = buffer.view %output[%offset2] : buffer -> view<1xi32>
+        %copy2 = kernel.async.copy %part2 to %target2 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element3 = index.constant 3 : index
+        %word3 = index.add %selected, %element3 : index
+        %part3 = view.subview %source[%word3] : view<32xi32> -> view<1xi32>
+        %relative3 = index.constant 12 : index
+        %address3 = index.add %record_offset, %relative3 : index
+        %offset3 = index.cast %address3 : index to offset
+        %target3 = buffer.view %output[%offset3] : buffer -> view<1xi32>
+        %copy3 = kernel.async.copy %part3 to %target3 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %element4 = index.constant 4 : index
+        %word4 = index.add %selected, %element4 : index
+        %part4 = view.subview %source[%word4] : view<32xi32> -> view<1xi32>
+        %relative4 = index.constant 16 : index
+        %address4 = index.add %record_offset, %relative4 : index
+        %offset4 = index.cast %address4 : index to offset
+        %target4 = buffer.view %output[%offset4] : buffer -> view<1xi32>
+        %copy4 = kernel.async.copy %part4 to %target4 {cache_scope = workgroup, cache_temporal = regular, direction = workgroup_to_global} : view<1xi32> to view<1xi32> -> kernel.async.token
+        %group = kernel.async.group %copy0, %copy1, %copy2, %copy3, %copy4 : kernel.async.token, kernel.async.token, kernel.async.token, kernel.async.token, kernel.async.token -> kernel.async.group
+        kernel.async.wait %group {newer_groups = 0} : kernel.async.group
+      }
     }
     channel.release %read : read<tile<32xi32>>
   }

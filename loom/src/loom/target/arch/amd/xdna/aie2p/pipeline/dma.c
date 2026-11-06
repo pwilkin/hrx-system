@@ -128,6 +128,32 @@ static iree_status_t loom_aie2p_native_dma_local_word(
   return iree_ok_status();
 }
 
+static uint32_t loom_aie2p_native_dma_queue_word(
+    const loom_aie2p_native_transfer_task_t* task, bool shim) {
+  const loom_aie2p_native_dma_path_t* path = task->path;
+  const loom_xdna_register_field_id_t queue =
+      shim
+          ? (path->ingress
+                 ? LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_MM2S_TASK_QUEUE_START_BD_ID
+                 : LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_START_BD_ID)
+          : path->local->memory_layout->directions[path->ingress ? 1 : 0].start;
+  const uint16_t descriptor = shim
+                                  ? task->shim_descriptor->sequence.descriptor
+                                  : task->local_descriptor->sequence.descriptor;
+  uint32_t word = loom_xdna_register_field_encode(queue, descriptor);
+  if (path->completion_tokens && (shim || path->completion_tokens == 2)) {
+    const loom_xdna_register_field_id_t token =
+        shim
+            ? (path->ingress
+                   ? LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_MM2S_TASK_QUEUE_ENABLE_TOKEN_ISSUE
+                   : LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_ENABLE_TOKEN_ISSUE)
+            : path->local->memory_layout->directions[path->ingress ? 1 : 0]
+                  .token;
+    word |= loom_xdna_register_field_encode(token, 1);
+  }
+  return word;
+}
+
 static iree_status_t loom_aie2p_native_dma_submit_helper(
     loom_aie2p_native_context_t* context,
     loom_aie2p_native_transfer_task_t* task, bool shared,
@@ -136,10 +162,12 @@ static iree_status_t loom_aie2p_native_dma_submit_helper(
   const loom_aie2p_native_dma_path_t* path = task->path;
   const bool external_dynamic = task->shim_descriptor->address_dynamic;
   const bool local_dynamic = task->local_descriptor->address_dynamic;
+  const bool local_queue_argument =
+      shared && task->submit_group->local_queue_argument;
   loom_type_t* types = NULL;
   iree_host_size_t argument_count = 0;
   const iree_host_size_t maximum_argument_count =
-      task->transfer_count * (shared ? 4 : 2) + shared;
+      task->transfer_count * (shared ? 4 : 2) + shared + local_queue_argument;
   if (maximum_argument_count) {
     IREE_RETURN_IF_ERROR(
         iree_arena_allocate_array(context->pass->arena, maximum_argument_count,
@@ -159,6 +187,9 @@ static iree_status_t loom_aie2p_native_dma_submit_helper(
     }
   }
   if (shared) {
+    types[argument_count++] = code->scalar_type;
+  }
+  if (local_queue_argument) {
     types[argument_count++] = code->scalar_type;
   }
   loom_builder_t builder;
@@ -256,28 +287,20 @@ static iree_status_t loom_aie2p_native_dma_submit_helper(
           ? LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_MM2S_TASK_QUEUE_START_BD_ID
           : LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_START_BD_ID;
   loom_value_id_t local_task, shim_task;
-  uint32_t local_bits = loom_xdna_register_field_encode(
-      local_queue, task->local_descriptor->sequence.descriptor);
-  if (path->completion_tokens == 2) {
-    local_bits |= loom_xdna_register_field_encode(
-        path->local->memory_layout->directions[path->ingress ? 1 : 0].token, 1);
+  if (!local_queue_argument) {
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
+        code, &builder, (int32_t)loom_aie2p_native_dma_queue_word(task, false),
+        &local_task));
   }
-  IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
-      code, &builder, (int32_t)local_bits, &local_task));
   if (shared) {
     shim_task = arguments[argument_index++];
   } else {
-    uint32_t shim_bits = loom_xdna_register_field_encode(
-        shim_queue, task->shim_descriptor->sequence.descriptor);
-    if (path->completion_tokens) {
-      shim_bits |= loom_xdna_register_field_encode(
-          path->ingress
-              ? LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_MM2S_TASK_QUEUE_ENABLE_TOKEN_ISSUE
-              : LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_ENABLE_TOKEN_ISSUE,
-          1);
-    }
     IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
-        code, &builder, (int32_t)shim_bits, &shim_task));
+        code, &builder, (int32_t)loom_aie2p_native_dma_queue_word(task, true),
+        &shim_task));
+  }
+  if (local_queue_argument) {
+    local_task = arguments[argument_index++];
   }
   // Queue the receiver before its sender. The two streams then advance without
   // involving the host, and the explicit wait owns descriptor/slot retirement.
@@ -302,12 +325,9 @@ static iree_status_t loom_aie2p_native_dma_submit_adapter(
   loom_aie2p_worker_builder_t* code = &context->code;
   const loom_aie2p_native_dma_path_t* path = task->path;
   const bool local_dynamic = task->local_descriptor->address_dynamic;
+  const bool local_queue_argument = task->submit_group->local_queue_argument;
   const iree_host_size_t call_argument_count =
-      task->transfer_count * (3 + local_dynamic) + 1;
-  const loom_xdna_register_field_id_t shim_queue =
-      path->ingress
-          ? LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_MM2S_TASK_QUEUE_START_BD_ID
-          : LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_START_BD_ID;
+      task->transfer_count * (3 + local_dynamic) + 1 + local_queue_argument;
   loom_builder_t builder;
   loom_op_t* function;
   const iree_host_size_t source_argument_count =
@@ -357,17 +377,14 @@ static iree_status_t loom_aie2p_native_dma_submit_adapter(
       call_arguments[argument_count++] = source_arguments[source_index++];
     }
   }
-  uint32_t shim_bits = loom_xdna_register_field_encode(
-      shim_queue, task->shim_descriptor->sequence.descriptor);
-  if (path->completion_tokens) {
-    shim_bits |= loom_xdna_register_field_encode(
-        path->ingress
-            ? LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_MM2S_TASK_QUEUE_ENABLE_TOKEN_ISSUE
-            : LOOM_XDNA_REGISTER_FIELD_SHIM_NOC_DMA_CHANNEL_S2MM_TASK_QUEUE_ENABLE_TOKEN_ISSUE,
-        1);
-  }
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
-      code, &builder, (int32_t)shim_bits, &call_arguments[argument_count++]));
+      code, &builder, (int32_t)loom_aie2p_native_dma_queue_word(task, true),
+      &call_arguments[argument_count++]));
+  if (local_queue_argument) {
+    IREE_RETURN_IF_ERROR(loom_aie2p_worker_constant(
+        code, &builder, (int32_t)loom_aie2p_native_dma_queue_word(task, false),
+        &call_arguments[argument_count++]));
+  }
   loom_op_t* call;
   IREE_RETURN_IF_ERROR(loom_low_func_call_build(
       &builder, 0, 0, 0, 0, task->submit_group->function, call_arguments,
