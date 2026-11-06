@@ -407,7 +407,7 @@ static iree_status_t loom_aie2p_native_config_transfers(
     for (const loom_aie2p_native_distribution_t* distribution =
              worker->distributions;
          distribution; distribution = distribution->next) {
-      if (distribution->path == distribution) {
+      if (distribution->path->first == distribution) {
         IREE_RETURN_IF_ERROR(
             loom_aie2p_native_config_reset_distribution_endpoint(
                 config, &distribution->sender,
@@ -416,7 +416,7 @@ static iree_status_t loom_aie2p_native_config_transfers(
       IREE_RETURN_IF_ERROR(
           loom_aie2p_native_config_endpoint(config, &distribution->sender));
       for (iree_host_size_t j = 0; j < distribution->receiver_count; ++j) {
-        if (distribution->path == distribution) {
+        if (distribution->path->first == distribution) {
           IREE_RETURN_IF_ERROR(
               loom_aie2p_native_config_reset_distribution_endpoint(
                   config, &distribution->receivers[j],
@@ -896,11 +896,11 @@ static iree_status_t loom_aie2p_native_config_communicate(
         }
         IREE_RETURN_IF_ERROR(loom_aie2p_native_config_set_lock(
             config, tile, action->lock, action->value));
-        if (channel->delivery && action->lock == channel->free_lock &&
+        if (channel->grant && action->lock == channel->free_lock &&
             action->expected < 0 &&
             action != channel->configuration_returns.last) {
           IREE_RETURN_IF_ERROR(loom_aie2p_native_config_write(
-              config, channel->delivery->address, channel->delivery->task));
+              config, channel->grant->address, channel->grant->task));
         }
         break;
       }
@@ -1142,7 +1142,7 @@ iree_status_t loom_aie2p_native_emit_configuration(
     for (const loom_aie2p_native_distribution_t* distribution =
              worker->distributions;
          distribution; distribution = distribution->next) {
-      if (distribution->path != distribution) {
+      if (distribution->path->first != distribution) {
         continue;
       }
       IREE_RETURN_IF_ERROR(loom_aie2p_native_config_wait_distribution_endpoint(

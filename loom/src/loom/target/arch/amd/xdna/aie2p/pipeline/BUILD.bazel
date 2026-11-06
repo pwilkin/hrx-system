@@ -42,6 +42,20 @@ loom_cc_test(
 )
 
 loom_cc_test(
+    name = "distribution_test",
+    srcs = ["distribution_test.cc"],
+    deps = [
+        ":native",
+        "//loom/src/loom/target/arch/amd/xdna/aie2p/array:plan",
+        "//loom/src/loom/target/arch/amd/xdna/array:facts",
+        "//loom/src/loom/target/arch/amd/xdna/array:registers",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+loom_cc_test(
     name = "endpoints_test",
     srcs = ["endpoints_test.cc"],
     deps = [

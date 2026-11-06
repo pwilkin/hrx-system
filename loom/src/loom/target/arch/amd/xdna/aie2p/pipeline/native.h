@@ -97,7 +97,7 @@ typedef struct loom_aie2p_native_channel_t {
     const struct loom_aie2p_native_configuration_action_t* last;
   } configuration_returns;
   // Receiver-granted sender whose payload path actually carries control too.
-  struct loom_aie2p_native_delivery_t* delivery;
+  struct loom_aie2p_native_grant_t* grant;
 } loom_aie2p_native_channel_t;
 
 // One worker's admitted access to a channel's resident memory and credits.
@@ -161,6 +161,9 @@ typedef struct loom_aie2p_native_tile_t {
   // Reusable private ranges in each physical descriptor bank. Controller
   // engine identity carries the common execution nonoverlap proof.
   struct loom_aie2p_native_endpoint_storage_t* descriptor_storage[2];
+  // Physical distribution paths originating at this memory module, bounded
+  // by its memory-to-stream engines. Logical children retain their geometry.
+  struct loom_aie2p_native_distribution_path_t* distribution_paths;
   // Next available memory-to-stream DMA engine.
   uint8_t next_mm2s;
   // Next available stream-to-memory DMA engine.
@@ -400,17 +403,50 @@ typedef struct loom_aie2p_native_endpoint_storage_t {
 typedef struct loom_aie2p_native_distribution_packet_t {
   // First visit whose consecutive fanout branches define this class.
   const loom_pipeline_transport_copy_t* destinations;
+  // Physical receiver ordinal of each destination in that visit.
+  const uint32_t* receivers;
   // Number of distinct destination channels in the visit.
   iree_host_size_t destination_count;
 } loom_aie2p_native_distribution_packet_t;
+
+// Static queues and routing shared by retired distribution geometries.
+typedef struct loom_aie2p_native_distribution_path_t {
+  // Next physical path originating at the same memory module.
+  struct loom_aie2p_native_distribution_path_t* next;
+  // First geometry, owning initial queue reset and the physical endpoint order.
+  struct loom_aie2p_native_distribution_t* first;
+  // All selected geometries, including the first, for common framing selection.
+  struct loom_aie2p_native_distribution_t* geometries;
+  // Highest construction ordinal assigned to this path. Later selection
+  // sweeps cannot alias an earlier construction back onto its live queues.
+  const loom_pipeline_invocation_t* last;
+  // Admitted source-controller engine, or IREE_HOST_SIZE_MAX for resident
+  // paths.
+  iree_host_size_t controller_engine;
+  // Packet classes across all geometries, identified by physical receivers.
+  loom_aie2p_native_distribution_packet_t* packets;
+  // Physical routing identity shared by all packet classes on this path.
+  uint32_t source_route;
+  // Number of packet identities in the physical path's class table.
+  uint8_t packet_count;
+  // Exact route-edge interval produced for a uniform source's fanout.
+  struct {
+    // First edge in the route builder's stable append-only table.
+    iree_host_size_t first;
+    // Number of edges, excluding routes owned by other paths.
+    iree_host_size_t count;
+  } routes;
+} loom_aie2p_native_distribution_path_t;
 
 // One source DMA program multicast to independently completing destination
 // rings. Packet classes may select different subsets for each source visit.
 typedef struct loom_aie2p_native_distribution_t {
   // Next distribution owned by the same transport strand.
   struct loom_aie2p_native_distribution_t* next;
-  // First geometry owning this physical engine/route path; self when unshared.
-  const struct loom_aie2p_native_distribution_t* path;
+  // Next geometry sharing this physical path, independent of transport owner.
+  struct loom_aie2p_native_distribution_t* next_geometry;
+  // Static queues and routes, independent of logical channel identity.
+  loom_aie2p_native_distribution_path_t* path;
   // First invocation selecting this geometry; later uses retain its identity.
   const loom_pipeline_invocation_t* invocation;
   // Canonical ownership and copy schedule used to intern geometry variants.
@@ -423,24 +459,16 @@ typedef struct loom_aie2p_native_distribution_t {
   loom_aie2p_native_distribution_endpoint_t* receivers;
   // Number of independently publishing receiver rings.
   iree_host_size_t receiver_count;
-  // Channel-indexed receiver ordinals owned by the first packet geometry.
-  // UINT32_MAX marks channels outside this path's receiver set.
+  // Channel-indexed physical receiver ordinals for this packet geometry.
+  // Phases sharing logical destinations borrow one table. UINT32_MAX marks
+  // channels outside this geometry's receiver set.
   uint32_t* receiver_ordinals;
-  // Packet classes across all phases, owned by the first packet geometry.
-  loom_aie2p_native_distribution_packet_t* packets;
-  // Physical routing identity shared by all packet classes on this path.
-  uint32_t source_route;
-  // Number of packet identities in the physical path's class table.
-  uint8_t packet_count;
   // Source transmissions in a uniform circuit stream; zero for packet programs.
   uint32_t repetitions;
-  // Exact route-edge interval produced for this uniform source's fanout.
-  struct {
-    // First edge in the route builder's stable append-only table.
-    iree_host_size_t first;
-    // Number of edges, excluding routes owned by other distributions.
-    iree_host_size_t count;
-  } routes;
+  // Selected finite phase submission, rather than autonomous startup.
+  bool ordered;
+  // Exact reader retained by grant eligibility; UINT32_MAX for configuration.
+  uint32_t grant_reader;
 } loom_aie2p_native_distribution_t;
 
 // One ordered use of an immutable distribution geometry. The controller's

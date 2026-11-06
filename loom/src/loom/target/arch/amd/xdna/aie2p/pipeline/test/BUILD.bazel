@@ -35,6 +35,7 @@ loom_check_test_suite(
         "private_credit_lifetimes.loom-test",
         "private_credit_populations.loom-test",
         "semaphore_lifetimes.loom-test",
+        "serial_distribution_paths.loom-test",
         "serial_input_paths.loom-test",
         "shared_entry_calls.loom-test",
         "storage_captures.loom-test",
