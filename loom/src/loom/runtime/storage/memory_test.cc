@@ -425,12 +425,36 @@ TEST_F(MemoryTest, PackedStateCommitKeepsHostMetadataBounded) {
   RecordProperty("host_allocation_count", metrics.request_count);
   RecordProperty("host_requested_bytes",
                  std::to_string(metrics.requested_bytes));
-  // The observer includes backend-specific buffer views and queue captures in
-  // addition to logical page ownership. Native mapping descriptors and wait
-  // slots scale with contiguous physical runs, not logical pages, so this
-  // complete batch remains below 240 bytes of host allocation traffic per
-  // page even after those fixed capture costs.
-  EXPECT_LT(metrics.requested_bytes, 240 * kPageCount);
+  RecordProperty("largest_host_request_bytes",
+                 std::to_string(metrics.largest_request_bytes));
+  // The complete cold batch includes sparse directory storage in addition to
+  // the compact transaction and backend queue captures. It remains below 192
+  // bytes of requested host allocation per logical page across backends.
+  EXPECT_LT(metrics.requested_bytes, 192 * kPageCount);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first),
+            length - geometry.mapping_size, 0x87654321);
+}
+
+TEST_F(MemoryTest, PackedStateTransactionScalesWithPhysicalRuns) {
+  const auto geometry = loom_runtime_pool_state_geometry(storage_owner);
+  constexpr uint64_t kPageCount = 128;
+  const uint64_t length = kPageCount * geometry.mapping_size;
+  ASSERT_NO_FATAL_FAILURE(
+      UseBacking(false, std::max(length, geometry.backing_size), nullptr));
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
+      pool, geometry, length, 256, &statistics[0], &first));
+  ASSERT_EQ(Keep(first, 0, length), length);
+
+  native.ResetAllocationMetrics();
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_commit(first, 0, length));
+  const auto metrics = native.allocation_metrics();
+  RecordProperty("host_allocation_count", metrics.request_count);
+  RecordProperty("host_requested_bytes",
+                 std::to_string(metrics.requested_bytes));
+  RecordProperty("largest_host_request_bytes",
+                 std::to_string(metrics.largest_request_bytes));
+  EXPECT_LT(metrics.requested_bytes, 128 * kPageCount);
   RoundTrip(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
   RoundTrip(loom_runtime_virtual_buffer_handle(first),
             length - geometry.mapping_size, 0x87654321);

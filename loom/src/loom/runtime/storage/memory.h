@@ -369,14 +369,16 @@ void loom_runtime_memory_operation_set_observer(
     loom_runtime_memory_operation_t* operation, void (*wake)(void* user_data),
     void* user_data);
 
-// Borrows the prepared parent span of one commitment edit after successful
-// readiness. The operation or its published directory reservation keeps the
-// source live. The caller excludes trim until consumers retire and keeps the
-// operation alive while querying it. Only successful readiness permits this
-// query; failure is distinct from operation retirement.
+// Borrows the prepared parent span of one selected commitment slab after
+// successful readiness. Selected indices retain their first-selection order
+// independent of the compact physical runs used internally. The operation or
+// its published directory reservation keeps the source live. The caller
+// excludes trim until consumers retire and keeps the operation alive while
+// querying it. Only successful readiness permits this query; failure is
+// distinct from operation retirement.
 iree_hal_buffer_binding_t loom_runtime_memory_operation_backing(
     const loom_runtime_memory_operation_t* operation,
-    iree_host_size_t edit_index);
+    iree_host_size_t selected_index);
 
 // Publishes completed native results and accounting on the serialized owner.
 // True joins captured queue ownership and the publisher's final callback

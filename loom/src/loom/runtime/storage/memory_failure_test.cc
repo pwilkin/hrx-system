@@ -98,6 +98,41 @@ TEST_F(MemoryTest, NativeAllocationFailurePreservesWarmWorkAndAllowsRetry) {
   CheckRetained(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
 }
 
+TEST_F(MemoryTest, PhysicalRunGrowthFailureReturnsEveryClaimedSlot) {
+  const auto geometry = loom_runtime_pool_state_geometry(storage_owner);
+  const iree_host_size_t page_count =
+      2 * geometry.backing_size / geometry.mapping_size + 1;
+  const uint64_t length = page_count * geometry.mapping_size;
+  ASSERT_NO_FATAL_FAILURE(
+      UseBacking(false, 3 * geometry.backing_size, nullptr));
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
+      pool, geometry, length, geometry.granularity, &statistics[0], &first));
+  ASSERT_EQ(Keep(first, 0, length), length);
+
+  // The selected span crosses two complete state parents. Its first page in a
+  // third parent grows the compact run vector after backing has already been
+  // claimed from the first two parents.
+  native.FailNextAllocation(IREE_ALLOCATOR_COMMAND_REALLOC);
+  const loom_runtime_memory_range_t range = {first, 0, length};
+  loom_runtime_memory_admission_t admission;
+  loom_runtime_memory_operation_t* operation = nullptr;
+  IREE_ASSERT_OK(loom_runtime_memory_pool_commit_async(
+      pool, 1, &range, nullptr, 0, &admission, &operation));
+  ASSERT_EQ(admission, LOOM_RUNTIME_MEMORY_ADMISSION_AVAILABLE);
+  loom_runtime_memory_operation_await(operation);
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_RESOURCE_EXHAUSTED,
+                        loom_runtime_memory_operation_query_status(operation));
+  loom_runtime_memory_operation_free(operation);
+  EXPECT_EQ(statistics[0].pending_bytes, 0u);
+  EXPECT_EQ(statistics[0].committed_bytes, 0u);
+  EXPECT_FALSE(loom_runtime_virtual_buffer_is_backed(first, 0, length));
+
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_commit(first, 0, length));
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first),
+            length - geometry.mapping_size, 0x87654321);
+}
+
 TEST_F(MemoryTest, FailedMappingKeepsSourcesUntilCheckedDetach) {
   constexpr uint64_t kMappingBytes = 2 * kSlabSize;
   mapping_queue.Initialize(loom_runtime_device_transfer_queue(device));

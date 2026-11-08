@@ -156,4 +156,30 @@ TEST_F(MemoryTest, FailedCoalescedMappingRetainsEveryPageUntilDetach) {
   EXPECT_EQ(loom_runtime_memory_pool_statistics(pool).committed_bytes, 0u);
 }
 
+TEST_F(MemoryTest, FailedCoalescedReleaseRetainsEveryPageUntilDetach) {
+  mapping_queue.Initialize(loom_runtime_device_transfer_queue(device));
+  ASSERT_NO_FATAL_FAILURE(UseBacking(false, 3 * kSlabSize, &mapping_queue));
+  const auto geometry = loom_runtime_pool_state_geometry(storage_owner);
+  const uint64_t page = geometry.mapping_size;
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
+      pool, geometry, 4 * page, geometry.granularity, &statistics[0], &first));
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_commit(first, 0, 4 * page));
+
+  mapping_queue.fail_next_map = true;
+  loom_runtime_virtual_buffer_begin_trim(first);
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_RESOURCE_EXHAUSTED,
+                        loom_runtime_virtual_buffer_trim(first));
+  EXPECT_EQ(statistics[0].committed_bytes, 4 * page);
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(loom_runtime_virtual_buffer_backing(first, i).length, page);
+  }
+
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_free(first));
+  first = nullptr;
+  EXPECT_EQ(statistics[0].committed_bytes, 0u);
+  loom_runtime_memory_pool_trim(pool, 0);
+  IREE_EXPECT_OK(loom_runtime_memory_pool_await(pool));
+  EXPECT_EQ(loom_runtime_memory_pool_statistics(pool).committed_bytes, 0u);
+}
+
 }  // namespace

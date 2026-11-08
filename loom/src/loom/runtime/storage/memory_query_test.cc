@@ -127,4 +127,37 @@ TEST_F(MemoryTest, PendingAndFailedMappingRetainActualBacking) {
   // teardown remains responsible for returning this physical allocation.
 }
 
+TEST_F(MemoryTest, CommitmentBackingPreservesSelectedSlabOrder) {
+  const auto geometry = loom_runtime_pool_state_geometry(storage_owner);
+  const uint64_t page = geometry.mapping_size;
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
+      pool, geometry, 3 * page, geometry.granularity, &statistics[0], &first));
+  const loom_runtime_memory_range_t ranges[] = {
+      {first, 2 * page, page},
+      {first, 0, 2 * page},
+  };
+  loom_runtime_memory_operation_t* operation = nullptr;
+  loom_runtime_memory_admission_t admission;
+  IREE_ASSERT_OK(loom_runtime_memory_pool_commit_async(
+      pool, IREE_ARRAYSIZE(ranges), ranges, nullptr, 0, &admission,
+      &operation));
+  ASSERT_EQ(admission, LOOM_RUNTIME_MEMORY_ADMISSION_AVAILABLE);
+  loom_runtime_memory_operation_await(operation);
+  IREE_ASSERT_OK(loom_runtime_memory_operation_query_status(operation));
+
+  const iree_host_size_t published_indices[] = {2, 0, 1};
+  for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(published_indices); ++i) {
+    const auto selected = loom_runtime_memory_operation_backing(operation, i);
+    const auto published =
+        loom_runtime_virtual_buffer_backing(first, published_indices[i]);
+    EXPECT_EQ(selected.buffer, published.buffer);
+    EXPECT_EQ(selected.offset, published.offset);
+    EXPECT_EQ(selected.length, page);
+  }
+  loom_runtime_memory_operation_free(operation);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), page, 0x87654321);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), 2 * page, 0xAABBCCDD);
+}
+
 }  // namespace
