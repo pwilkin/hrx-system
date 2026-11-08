@@ -394,13 +394,13 @@ iree_status_t loom_aie2p_native_initialize_input(
   loom_op_t* op;
   if (input->invocation->ordinal) {
     IREE_RETURN_IF_ERROR(
-        loom_low_invoke_build(builder, 0, 0, 0, input->start, state,
+        loom_low_invoke_build(builder, 0, 0, 0, 0, input->start, state,
                               loom_aie2p_native_input_initializes_slot(input),
                               NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op));
   }
   if (!input->continuation) {
-    return loom_low_invoke_build(builder, 0, 0, 0, input->begin, NULL, 0, NULL,
-                                 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op);
+    return loom_low_invoke_build(builder, 0, 0, 0, 0, input->begin, NULL, 0,
+                                 NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op);
   }
   return iree_ok_status();
 }
@@ -467,7 +467,7 @@ iree_status_t loom_aie2p_native_emit_input(
                                          input->binding ? values[1] : zero,
                                          bulk ? position : zero};
     IREE_RETURN_IF_ERROR(loom_low_invoke_build(
-        builder, 0, 0, 0, input->begin,
+        builder, 0, 0, 0, 0, input->begin,
         input->binding ? arguments : arguments + 2, input->binding ? 3 : 1,
         NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op));
     if (bulk) {
@@ -552,9 +552,9 @@ iree_status_t loom_aie2p_native_emit_input(
         &token));
   }
   const loom_value_id_t arguments[] = {values[0], values[1], token};
-  IREE_RETURN_IF_ERROR(loom_low_invoke_build(builder, 0, 0, 0, input->complete,
-                                             arguments, 3, NULL, 0, NULL, 0,
-                                             LOOM_LOCATION_UNKNOWN, &op));
+  IREE_RETURN_IF_ERROR(
+      loom_low_invoke_build(builder, 0, 0, 0, 0, input->complete, arguments, 3,
+                            NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &op));
   loom_value_id_t slots;
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_input_constant(builder, capacity, &slots));

@@ -336,8 +336,8 @@ TEST_P(Aie2pDmaSequenceTest, BulkSequenceReservesThePrefixTask) {
     const uint32_t capacity = layout() ? 2 : 1;
     IREE_ASSERT_OK(loom_aie2p_native_build_sequence(
         &available, layout(), first_descriptor(), bank_size() - 2, direction,
-        6144, capacity, 128, 64, 1, words.data(), &sequence, &reason, &valid,
-        &arena_));
+        6144, capacity, 128, 64, 1, words.data(), &arena_, &sequence, &reason,
+        &valid));
     ASSERT_TRUE(valid);
     EXPECT_LE(sequence.task_count, available.task_queue_depth);
     ExpectExecution(sequence, direction, 6144, capacity);
@@ -358,7 +358,7 @@ TEST_P(Aie2pDmaSequenceTest, RetainedLifetimeNeedsBothBoundaryTasks) {
     IREE_ASSERT_OK(loom_aie2p_native_build_sequence(
         &available, layout(), first_descriptor(), bank_size() - 2,
         LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, 64, 1, 128, 64, 64,
-        words.data(), &sequence, &reason, &valid, &arena_));
+        words.data(), &arena_, &sequence, &reason, &valid));
     EXPECT_EQ(valid, available_tasks == 3);
     if (valid) {
       ExpectExecution(sequence, LOOM_XDNA_DMA_DIRECTION_MEMORY_TO_STREAM, 64, 1,
@@ -391,8 +391,8 @@ TEST_P(Aie2pDmaSequenceTest, SingleSlotDoesNotEncodeTheLogicalRecordStride) {
         bool valid = false;
         IREE_ASSERT_OK(loom_aie2p_native_build_sequence(
             dma(), layout(), first_descriptor(), bank_size() - 2, direction,
-            count, 1, 128, kRecordBytes, credit_interval, words.data(),
-            &sequence, &reason, &valid, &arena_));
+            count, 1, 128, kRecordBytes, credit_interval, words.data(), &arena_,
+            &sequence, &reason, &valid));
         ASSERT_TRUE(valid);
         for (uint16_t i = 0; i < sequence.descriptor_count; ++i) {
           EXPECT_EQ(sequence.words[i][layout()->iteration_word], 0u);

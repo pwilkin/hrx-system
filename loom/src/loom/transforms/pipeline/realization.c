@@ -293,7 +293,7 @@ static iree_status_t loom_pipeline_realization_prepare_workers(
       loom_builder_set_block(&rewriter->builder, loom_module_block(module));
       status = loom_callable_clone_definition(
           &rewriter->builder, functions[i], (loom_symbol_ref_t){0, symbol},
-          NULL, &functions[i], rewriter->arena);
+          NULL, rewriter->arena, &functions[i]);
     }
     if (!iree_status_is_ok(status)) {
       break;

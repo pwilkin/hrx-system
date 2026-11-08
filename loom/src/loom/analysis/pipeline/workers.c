@@ -361,8 +361,8 @@ static uint64_t loom_pipeline_transport_prefix_cycles(
   for (iree_host_size_t i = 0; i < count; ++i) {
     const loom_pipeline_transport_cohort_t* cohort = batches[i].records;
     if (batches[i].record_count != 1 || batches[i].replays != 1 ||
-        !loom_channel_acquire_isa(cohort->admission->op) || cohort->release ||
-        cohort->copy_scope != cohort->admission_scope ||
+        cohort->admission->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE ||
+        cohort->release || cohort->copy_scope != cohort->admission_scope ||
         (i + 1 < count && (cohort->admission_scope != first->admission_scope ||
                            cohort->admissions != first->admissions))) {
       return 0;

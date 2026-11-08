@@ -56,8 +56,8 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_19() asm {
   %stride = mov.short 8
   low.br ^_bb1(%begin: reg<aie2p.er>)
 ^_bb1(%pair: reg<aie2p.er>):
-  %329 = lt %pair, %end
-  low.cond_br %329, ^_bb2, ^_bb3 : reg<aie2p.er>
+  %328 = lt %pair, %end
+  low.cond_br %328, ^_bb2, ^_bb3 : reg<aie2p.er>
 ^_bb2:
   %first = mul %pair, %stride
   %second = add.nc %first, %end
@@ -123,16 +123,15 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_19() asm {
   %91 = add.rr %89, %first
   %92 = ltu %91, %89
   %93 = add.rr %90, %92
-  %95 = mov.i32 1167396
   mov.ms %step
-  mov.ms %95
+  mov.ms %76
   mov.ms %91
   mov.ms.last %93
   %96 = mov.i32 -2147483647
   %99 = mov.i32 -2147364348
   mov.ms %step
   mov.ms %99
-  mov.ms.last %96
+  mov.ms.last %112
   %101 = mov.i32 656948
   mov.ms %112
   mov.ms %101
@@ -195,12 +194,12 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_19() asm {
   %159 = ltu %158, %156
   %160 = add.rr %157, %159
   mov.ms %step
-  mov.ms %95
+  mov.ms %76
   mov.ms %158
   mov.ms.last %160
   mov.ms %step
   mov.ms %99
-  mov.ms.last %96
+  mov.ms.last %112
   mov.ms %112
   mov.ms %101
   mov.ms.last %96
@@ -215,8 +214,8 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_19() asm {
   %201 = eq %200, %begin
   low.cond_br %201, ^_bb5, ^_bb6 : reg<aie2p.er>
 ^_bb6:
-  %332 = add.nc %pair, %step
-  low.br ^_bb1(%332: reg<aie2p.er>)
+  %331 = add.nc %pair, %step
+  low.br ^_bb1(%331: reg<aie2p.er>)
 }
 
 low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_20) @__aie2p_worker_helper_21() asm {
@@ -294,46 +293,44 @@ low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_20) @__
   write.block32(%297)[%254, %253, %253, %253, %261, %298, %253, %298]
   %299 = constant 1703968 : reg<aie2p.config.scalar : i64>
   write.block32(%299)[%254, %296, %253, %253, %253, %253, %253, %270]
-  %300 = constant 118816 : reg<aie2p.config.scalar : i64>
-  write.block32(%300)[%254, %253, %253, %253, %261, %298, %253, %298]
   return
 }
 
 low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_20) @__aie2p_worker_helper_22() asm {
-  %301 = constant 0 : reg<aie2p.config.scalar : i64>
-  %302 = constant 1 : reg<aie2p.config.scalar : i64>
-  %303 = constant 32 : reg<aie2p.config.scalar : i64>
-  %304 = constant 4 : reg<aie2p.config.scalar : i64>
-  %305 = binding %301, %302, %303, %304
-  %306 = constant 2 : reg<aie2p.config.scalar : i64>
-  %307 = binding %302, %306, %303, %304
-  %308 = range %305, %301, %303
-  %309 = constant 2097152 : reg<aie2p.config.scalar : i64>
-  write.address %309, %308
-  %310 = range %307, %301, %303
-  %311 = constant 2097160 : reg<aie2p.config.scalar : i64>
-  write.address %311, %310
-  %312 = constant 1835008 : reg<aie2p.config.scalar : i64>
-  write32 %312, %302
-  %313 = constant 1835024 : reg<aie2p.config.scalar : i64>
-  write32 %313, %301
-  %314 = constant 2224128 : reg<aie2p.config.scalar : i64>
-  write32 %314, %301
+  %300 = constant 0 : reg<aie2p.config.scalar : i64>
+  %301 = constant 1 : reg<aie2p.config.scalar : i64>
+  %302 = constant 32 : reg<aie2p.config.scalar : i64>
+  %303 = constant 4 : reg<aie2p.config.scalar : i64>
+  %304 = binding %300, %301, %302, %303
+  %305 = constant 2 : reg<aie2p.config.scalar : i64>
+  %306 = binding %301, %305, %302, %303
+  %307 = range %304, %300, %302
+  %308 = constant 2097152 : reg<aie2p.config.scalar : i64>
+  write.address %308, %307
+  %309 = range %306, %300, %302
+  %310 = constant 2097160 : reg<aie2p.config.scalar : i64>
+  write.address %310, %309
+  %311 = constant 1835008 : reg<aie2p.config.scalar : i64>
+  write32 %311, %301
+  %312 = constant 1835024 : reg<aie2p.config.scalar : i64>
+  write32 %312, %300
+  %313 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  write32 %313, %300
   measure.begin
-  %315 = constant 2301952 : reg<aie2p.config.scalar : i64>
-  write.mask32 %315, %306, %301
-  write.mask32 %315, %302, %302
-  %316 = constant 63 : reg<aie2p.config.scalar : i64>
-  wait.mask32 %314, %316, %302
+  %314 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %314, %305, %300
+  write.mask32 %314, %301, %301
+  %315 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %313, %315, %301
   measure.end
-  %317 = constant 3 : reg<aie2p.config.scalar : i64>
-  write.mask32 %315, %317, %306
+  %316 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %314, %316, %305
   return
 }
 
 low.func.def public retain target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_20) abi(array_program) @entry() asm {
-  %318 = constant 1 : reg<aie2p.config.scalar : i64>
-  entry %318, @__aie2p_worker_helper_21, @__aie2p_worker_helper_22
+  %317 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %317, @__aie2p_worker_helper_21, @__aie2p_worker_helper_22
   return
 }
 
@@ -398,8 +395,8 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_21() asm {
   %stride = mov.short 8
   low.br ^_bb1(%begin: reg<aie2p.er>)
 ^_bb1(%pair: reg<aie2p.er>):
-  %304 = lt %pair, %end
-  low.cond_br %304, ^_bb2, ^_bb3 : reg<aie2p.er>
+  %303 = lt %pair, %end
+  low.cond_br %303, ^_bb2, ^_bb3 : reg<aie2p.er>
 ^_bb2:
   %first = mul %pair, %stride
   %second = add.nc %first, %end
@@ -429,25 +426,23 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_21() asm {
   acq %117, 51
   rel %step, 49
   acq %117, 49
-  %value$310 = lda %78, 0
-  %result$311 = add.nc %value$310, %step
-  st %result$311, %78, 0
+  %value$309 = lda %78, 0
+  %result$310 = add.nc %value$309, %step
+  st %result$310, %78, 0
   %98 = mov.local-address 458768
   %99 = lda %98, 0
   %100 = lda %98, 4
   %101 = add.rr %99, %first
   %102 = ltu %101, %99
   %103 = add.rr %100, %102
-  %105 = mov.i32 1167396
   mov.ms %step
-  mov.ms %105
+  mov.ms %87
   mov.ms %101
   mov.ms.last %103
-  %107 = mov.i32 -2147483647
   %109 = mov.i32 -2147364348
   mov.ms %step
   mov.ms %109
-  mov.ms.last %107
+  mov.ms.last %90
   %111 = mov.i32 122388
   mov.ms %90
   mov.ms %111
@@ -473,28 +468,28 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_21() asm {
   acq %117, 51
   rel %step, 49
   acq %117, 49
-  %value$314 = lda %78, 0
-  %result$315 = add.nc %value$314, %step
-  st %result$315, %78, 0
+  %value$313 = lda %78, 0
+  %result$314 = add.nc %value$313, %step
+  st %result$314, %78, 0
   %151 = lda %98, 0
   %152 = lda %98, 4
   %153 = add.rr %151, %second
   %154 = ltu %153, %151
   %155 = add.rr %152, %154
   mov.ms %step
-  mov.ms %105
+  mov.ms %87
   mov.ms %153
   mov.ms.last %155
   mov.ms %step
   mov.ms %109
-  mov.ms.last %107
+  mov.ms.last %90
   mov.ms %90
   mov.ms %111
   mov.ms.last %step
   %164 = mov.ss
   rel %step, 48
-  %316 = add.nc %pair, %step
-  low.br ^_bb1(%316: reg<aie2p.er>)
+  %315 = add.nc %pair, %step
+  low.br ^_bb1(%315: reg<aie2p.er>)
 ^_bb3:
   rel %step, 50
   low.br ^_bb4
@@ -572,47 +567,45 @@ low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_22) @__
   write.block32(%271)[%269, %232, %232, %232, %241, %272, %232, %272]
   %273 = constant 2215968 : reg<aie2p.config.scalar : i64>
   write.block32(%273)[%269, %232, %232, %232, %232, %272]
-  %274 = constant 118816 : reg<aie2p.config.scalar : i64>
-  write.block32(%274)[%269, %232, %232, %232, %241, %272, %232, %272]
   return
 }
 
 low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_22) @__aie2p_worker_helper_24() asm {
-  %275 = constant 0 : reg<aie2p.config.scalar : i64>
-  %276 = constant 1 : reg<aie2p.config.scalar : i64>
-  %277 = constant 32 : reg<aie2p.config.scalar : i64>
-  %278 = constant 4 : reg<aie2p.config.scalar : i64>
-  %279 = binding %275, %276, %277, %278
-  %280 = constant 2 : reg<aie2p.config.scalar : i64>
-  %281 = binding %276, %280, %277, %278
-  %282 = range %279, %275, %277
-  %283 = constant 2097160 : reg<aie2p.config.scalar : i64>
-  write.address %283, %282
-  %284 = range %281, %275, %277
-  %285 = constant 2097168 : reg<aie2p.config.scalar : i64>
-  write.address %285, %284
-  %286 = constant 2224128 : reg<aie2p.config.scalar : i64>
-  write32 %286, %276
-  %287 = constant 2224144 : reg<aie2p.config.scalar : i64>
-  write32 %287, %275
-  %288 = constant 2224160 : reg<aie2p.config.scalar : i64>
-  write32 %288, %275
-  %289 = constant 2224176 : reg<aie2p.config.scalar : i64>
-  write32 %289, %275
+  %274 = constant 0 : reg<aie2p.config.scalar : i64>
+  %275 = constant 1 : reg<aie2p.config.scalar : i64>
+  %276 = constant 32 : reg<aie2p.config.scalar : i64>
+  %277 = constant 4 : reg<aie2p.config.scalar : i64>
+  %278 = binding %274, %275, %276, %277
+  %279 = constant 2 : reg<aie2p.config.scalar : i64>
+  %280 = binding %275, %279, %276, %277
+  %281 = range %278, %274, %276
+  %282 = constant 2097160 : reg<aie2p.config.scalar : i64>
+  write.address %282, %281
+  %283 = range %280, %274, %276
+  %284 = constant 2097168 : reg<aie2p.config.scalar : i64>
+  write.address %284, %283
+  %285 = constant 2224128 : reg<aie2p.config.scalar : i64>
+  write32 %285, %275
+  %286 = constant 2224144 : reg<aie2p.config.scalar : i64>
+  write32 %286, %274
+  %287 = constant 2224160 : reg<aie2p.config.scalar : i64>
+  write32 %287, %274
+  %288 = constant 2224176 : reg<aie2p.config.scalar : i64>
+  write32 %288, %274
   measure.begin
-  %290 = constant 2301952 : reg<aie2p.config.scalar : i64>
-  write.mask32 %290, %280, %275
-  write.mask32 %290, %276, %276
-  %291 = constant 63 : reg<aie2p.config.scalar : i64>
-  wait.mask32 %288, %291, %276
+  %289 = constant 2301952 : reg<aie2p.config.scalar : i64>
+  write.mask32 %289, %279, %274
+  write.mask32 %289, %275, %275
+  %290 = constant 63 : reg<aie2p.config.scalar : i64>
+  wait.mask32 %287, %290, %275
   measure.end
-  %292 = constant 3 : reg<aie2p.config.scalar : i64>
-  write.mask32 %290, %292, %280
+  %291 = constant 3 : reg<aie2p.config.scalar : i64>
+  write.mask32 %289, %291, %279
   return
 }
 
 low.func.def public retain target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_22) abi(array_program) @entry() asm {
-  %293 = constant 1 : reg<aie2p.config.scalar : i64>
-  entry %293, @__aie2p_worker_helper_23, @__aie2p_worker_helper_24
+  %292 = constant 1 : reg<aie2p.config.scalar : i64>
+  entry %292, @__aie2p_worker_helper_23, @__aie2p_worker_helper_24
   return
 }

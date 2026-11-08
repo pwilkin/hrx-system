@@ -320,6 +320,6 @@ iree_status_t loom_aie2p_native_emit_credits(
   }
   IREE_RETURN_IF_ERROR(loom_aie2p_worker_return(&helper, NULL, 0));
   loom_op_t* call = NULL;
-  return loom_low_invoke_build(builder, 0, 0, 0, symbol, NULL, 0, NULL, 0, NULL,
-                               0, LOOM_LOCATION_UNKNOWN, &call);
+  return loom_low_invoke_build(builder, 0, 0, 0, 0, symbol, NULL, 0, NULL, 0,
+                               NULL, 0, LOOM_LOCATION_UNKNOWN, &call);
 }

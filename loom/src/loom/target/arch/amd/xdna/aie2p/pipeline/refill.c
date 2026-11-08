@@ -268,8 +268,8 @@ iree_status_t loom_aie2p_native_select_refill(
   const uint32_t window = dma->maximum_task_repeat_count / capacity * capacity;
   IREE_RETURN_IF_ERROR(loom_aie2p_native_build_sequence(
       dma, layout, first_descriptor, available_descriptors, direction, window,
-      capacity, byte_offset, byte_stride, 1, words, sequence, reason, out_valid,
-      context->pass->arena));
+      capacity, byte_offset, byte_stride, 1, words, context->pass->arena,
+      sequence, reason, out_valid));
   if (!*out_valid) {
     return iree_ok_status();
   }
@@ -417,9 +417,9 @@ static iree_status_t loom_aie2p_native_refill_prefixes(
     IREE_RETURN_IF_ERROR(
         loom_aie2p_native_refill_constant(builder, queue->prefixes[i], &task));
     loom_op_t* call;
-    IREE_RETURN_IF_ERROR(loom_low_invoke_build(builder, 0, 0, 0, queue->submit,
-                                               &task, 1, NULL, 0, NULL, 0,
-                                               LOOM_LOCATION_UNKNOWN, &call));
+    IREE_RETURN_IF_ERROR(
+        loom_low_invoke_build(builder, 0, 0, 0, 0, queue->submit, &task, 1,
+                              NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &call));
   }
   loom_op_t* yield;
   IREE_RETURN_IF_ERROR(
@@ -481,9 +481,9 @@ iree_status_t loom_aie2p_native_emit_refill(
                               full, type, LOOM_LOCATION_UNKNOWN, &selected));
     const loom_value_id_t argument = loom_scf_select_result(selected);
     loom_op_t* call;
-    IREE_RETURN_IF_ERROR(loom_low_invoke_build(builder, 0, 0, 0, queue->submit,
-                                               &argument, 1, NULL, 0, NULL, 0,
-                                               LOOM_LOCATION_UNKNOWN, &call));
+    IREE_RETURN_IF_ERROR(
+        loom_low_invoke_build(builder, 0, 0, 0, 0, queue->submit, &argument, 1,
+                              NULL, 0, NULL, 0, LOOM_LOCATION_UNKNOWN, &call));
   }
   loom_op_t *next, *yield;
   IREE_RETURN_IF_ERROR(loom_scalar_subi_build(builder, 0, remaining, one, type,

@@ -374,21 +374,21 @@ pipeline.def<kernel> public retain target(@device) @entry() run(%output_argument
 
 // ----
 low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_29() asm {
-  %394 = mov.short 0
-  %396 = mov.short 4
+  %393 = mov.short 0
+  %395 = mov.short 4
   %c1 = mov.short 1
   %count = mov.short 2
-  low.br ^_bb1(%394: reg<aie2p.er>, %394: reg<aie2p.er>, %394: reg<aie2p.er>)
-^_bb1(%visit: reg<aie2p.er>, %read$392: reg<aie2p.er>, %write$393: reg<aie2p.er>):
-  %400 = lt %visit, %count
-  low.cond_br %400, ^_bb3, ^_bb2 : reg<aie2p.er>
+  low.br ^_bb1(%393: reg<aie2p.er>, %393: reg<aie2p.er>)
+^_bb1(%visit: reg<aie2p.er>, %write$392: reg<aie2p.er>):
+  %399 = lt %visit, %count
+  low.cond_br %399, ^_bb3, ^_bb2 : reg<aie2p.er>
 ^_bb2:
   rel %c1, 52
   low.br ^_bb4
 ^_bb3:
-  %value$401 = lshl %visit, %c1
-  %value$402 = add.nc %value$401, %c1
-  %403 = mov.short 12
+  %value$400 = lshl %visit, %c1
+  %value$401 = add.nc %value$400, %c1
+  %402 = mov.short 12
   %137 = mov.local-address 458752
   %142 = mov.short -1
   %115 = mov.local-address 458764
@@ -397,33 +397,29 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_29() asm {
   st %sentinel, %137, 4
   st %sentinel, %137, 8
   acq %142, 48
-  %410 = add.nc %write$393, %396
-  %411 = eq %410, %403
-  %412 = copy %411 : reg<aie2p.er> -> reg<aie2p.mr27_select>
-  %write$413 = sel.nez %394, %410, %412
-  %414 = mov.address-index %write$393
-  st.i32.index %value$401, %137, %414
+  %409 = add.nc %write$392, %395
+  %410 = eq %409, %402
+  %411 = copy %410 : reg<aie2p.er> -> reg<aie2p.mr27_select>
+  %write$412 = sel.nez %393, %409, %411
+  %413 = mov.address-index %write$392
+  st.i32.index %value$400, %137, %413
   rel %c1, 49
   acq %142, 49
-  %415 = add.nc %read$392, %396
-  %416 = eq %415, %403
-  %417 = copy %416 : reg<aie2p.er> -> reg<aie2p.mr27_select>
-  %read$418 = sel.nez %394, %415, %417
   rel %c1, 48
-  %first$419 = lda %137, 0
-  %second$420 = lda %137, 4
-  %third$421 = lda %137, 8
+  %first$414 = lda %137, 0
+  %second$415 = lda %137, 4
+  %third$416 = lda %137, 8
   acq %142, 50
-  st %first$419, %115, 0
-  st %second$420, %115, 4
-  st %third$421, %115, 8
+  st %first$414, %115, 0
+  st %second$415, %115, 4
+  st %third$416, %115, 8
   rel %c1, 51
   acq %142, 51
-  %offset$422 = mul %value$401, %403
+  %offset$417 = mul %value$400, %402
   %119 = mov.local-address 458776
   %120 = lda %119, 0
   %121 = lda %119, 4
-  %122 = add.rr %120, %offset$422
+  %122 = add.rr %120, %offset$417
   %123 = ltu %122, %120
   %124 = add.rr %121, %123
   %126 = mov.i32 -2146316284
@@ -439,39 +435,35 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_29() asm {
   %132 = mov.i32 122388
   mov.ms %128
   mov.ms %132
-  mov.ms.last %394
+  mov.ms.last %393
   %133 = mov.ss
   rel %c1, 50
   st %sentinel, %137, 0
   st %sentinel, %137, 4
   st %sentinel, %137, 8
   acq %142, 48
-  %427 = add.nc %write$413, %396
-  %428 = eq %427, %403
-  %429 = copy %428 : reg<aie2p.er> -> reg<aie2p.mr27_select>
-  %430 = sel.nez %394, %427, %429
-  %431 = mov.address-index %write$413
-  st.i32.index %value$402, %137, %431
+  %422 = add.nc %write$412, %395
+  %423 = eq %422, %402
+  %424 = copy %423 : reg<aie2p.er> -> reg<aie2p.mr27_select>
+  %425 = sel.nez %393, %422, %424
+  %426 = mov.address-index %write$412
+  st.i32.index %value$401, %137, %426
   rel %c1, 49
   acq %142, 49
-  %432 = add.nc %read$418, %396
-  %433 = eq %432, %403
-  %434 = copy %433 : reg<aie2p.er> -> reg<aie2p.mr27_select>
-  %435 = sel.nez %394, %432, %434
   rel %c1, 48
-  %first$436 = lda %137, 0
-  %second$437 = lda %137, 4
-  %third$438 = lda %137, 8
+  %first$427 = lda %137, 0
+  %second$428 = lda %137, 4
+  %third$429 = lda %137, 8
   acq %142, 50
-  st %first$436, %115, 0
-  st %second$437, %115, 4
-  st %third$438, %115, 8
+  st %first$427, %115, 0
+  st %second$428, %115, 4
+  st %third$429, %115, 8
   rel %c1, 51
   acq %142, 51
-  %offset$439 = mul %value$402, %403
+  %offset$430 = mul %value$401, %402
   %194 = lda %119, 0
   %195 = lda %119, 4
-  %196 = add.rr %194, %offset$439
+  %196 = add.rr %194, %offset$430
   %197 = ltu %196, %194
   %198 = add.rr %195, %197
   mov.ms %c1
@@ -483,11 +475,11 @@ low.func.def target<amd.xdna.aie2p.core> @__aie2p_worker_helper_29() asm {
   mov.ms.last %128
   mov.ms %128
   mov.ms %132
-  mov.ms.last %394
+  mov.ms.last %393
   %207 = mov.ss
   rel %c1, 50
-  %440 = add.nc %visit, %c1
-  low.br ^_bb1(%440: reg<aie2p.er>, %435: reg<aie2p.er>, %430: reg<aie2p.er>)
+  %431 = add.nc %visit, %c1
+  low.br ^_bb1(%431: reg<aie2p.er>, %425: reg<aie2p.er>)
 ^_bb4:
   %324 = mov.ss
   low.br ^_bb4

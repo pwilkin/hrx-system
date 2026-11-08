@@ -171,17 +171,17 @@ iree_status_t loom_memory_channel_materialize_action(
   loom_builder_t* builder = &rewriter->builder;
   const loom_memory_channel_endpoint_t* endpoint =
       context->endpoints[action - context->plan->actions];
-  if (loom_channel_reserve_isa(operation) ||
-      loom_channel_acquire_isa(operation) ||
-      loom_channel_accept_isa(operation)) {
-    const bool write = loom_channel_reserve_isa(operation);
+  if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE ||
+      action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE ||
+      action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_ACCEPT) {
+    const bool write = action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE;
     const iree_host_size_t cursor =
         write ? endpoint->write_state : endpoint->read_state;
     const loom_value_id_t record = state[cursor];
     results[0] = record;
     IREE_RETURN_IF_ERROR(loom_memory_channel_increment(
         builder, record, location, &state[cursor]));
-    if (!loom_channel_accept_isa(operation)) {
+    if (action->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_ACCEPT) {
       IREE_RETURN_IF_ERROR(context->emit.notify(
           context->emit.user_data, rewriter, action, endpoint, record,
           write ? LOOM_MEMORY_CHANNEL_WAIT_FREE
@@ -189,21 +189,22 @@ iree_status_t loom_memory_channel_materialize_action(
       IREE_RETURN_IF_ERROR(loom_memory_channel_payload(
           builder, endpoint, record, location, &results[1]));
     }
-  } else if (loom_channel_wait_isa(operation)) {
+  } else if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_WAIT) {
     const loom_value_id_t record = loom_channel_wait_read(operation);
     IREE_RETURN_IF_ERROR(context->emit.notify(context->emit.user_data, rewriter,
                                               action, endpoint, record,
                                               LOOM_MEMORY_CHANNEL_WAIT_READY));
     IREE_RETURN_IF_ERROR(loom_memory_channel_payload(builder, endpoint, record,
                                                      location, &results[0]));
-  } else if (loom_channel_release_isa(operation) ||
-             loom_channel_publish_isa(operation)) {
+  } else if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_RELEASE ||
+             action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_PUBLISH) {
     IREE_RETURN_IF_ERROR(context->emit.notify(
         context->emit.user_data, rewriter, action, endpoint,
         loom_op_const_operands(operation)[0],
-        loom_channel_publish_isa(operation) ? LOOM_MEMORY_CHANNEL_PUBLISH
-                                            : LOOM_MEMORY_CHANNEL_RELEASE));
-  } else if (loom_channel_fanout_isa(operation)) {
+        action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_PUBLISH
+            ? LOOM_MEMORY_CHANNEL_PUBLISH
+            : LOOM_MEMORY_CHANNEL_RELEASE));
+  } else if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_FANOUT) {
     for (uint16_t i = 0; i < operation->result_count; ++i) {
       results[i] = loom_channel_fanout_read(operation);
     }

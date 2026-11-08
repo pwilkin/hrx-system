@@ -835,21 +835,6 @@ static iree_status_t loom_aie2p_native_select(
       }
     }
   }
-  // Retained batches use replay-lifetime credits rather than one per storage
-  // slot. All distribution facts are available before credit admission.
-  for (iree_host_size_t i = 0; i < realization->invocations.channel_count;
-       ++i) {
-    const loom_aie2p_native_channel_t* channel = &context->channels[i];
-    const loom_aie2p_native_tile_t* owner =
-        context->pool_tiles[channel->pool_index];
-    if (!channel->replay.record_count &&
-        channel->source->capacity >
-            (uint64_t)owner->facts->lock_value_maximum) {
-      return loom_aie2p_native_reject(
-          context, channel->source->binding,
-          IREE_SV("a hardware semaphore pair with enough slot credits"));
-    }
-  }
   IREE_RETURN_IF_ERROR(
       loom_aie2p_native_assign_channel_locks(context, realization, out_valid));
   if (!*out_valid) {
@@ -877,6 +862,9 @@ static iree_status_t loom_aie2p_native_select(
       const loom_channel_plan_action_t* action = &source->channels.actions[j];
       const loom_aie2p_native_channel_t* channel =
           loom_aie2p_native_channel(context, realization, action->channel);
+      if (channel->external) {
+        continue;
+      }
       const loom_aie2p_native_tile_t* owner =
           context->pool_tiles[channel->pool_index];
       if (!channel->replay.record_count &&

@@ -143,8 +143,8 @@ iree_status_t loom_aie2p_native_select_channel_endpoint(
           &available_dma, layout, first->descriptor, storage->descriptor_count,
           direction, batch_records ? repetitions / batch_records : repetitions,
           capacity, channel->byte_offset, byte_stride, credit_interval, words,
-          &out_endpoint->sequence, out_reason, out_valid,
-          context->pass->arena));
+          context->pass->arena, &out_endpoint->sequence, out_reason,
+          out_valid));
       if (*out_valid) {
         out_endpoint->storage = storage;
         storage->last = invocation;

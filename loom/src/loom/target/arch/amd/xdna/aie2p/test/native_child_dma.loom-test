@@ -202,15 +202,15 @@ low.func.def target<amd.xdna.aie2p.configuration>(@__aie2p_worker_helper_32) @__
   write.block32(%264)[%261, %224, %224, %224, %233, %262, %224, %262]
   %265 = constant 118848 : reg<aie2p.config.scalar : i64>
   write.block32(%265)[%261, %224, %224, %224, %233, %262, %224, %262]
-  %266 = constant 2215936 : reg<aie2p.config.scalar : i64>
-  %267 = constant 33841152 : reg<aie2p.config.scalar : i64>
-  write.block32(%266)[%261, %224, %224, %224, %224, %267]
-  %268 = constant 118784 : reg<aie2p.config.scalar : i64>
-  write.block32(%268)[%261, %224, %224, %224, %233, %262, %224, %262]
-  %269 = constant 2215968 : reg<aie2p.config.scalar : i64>
-  write.block32(%269)[%261, %224, %224, %224, %224, %262]
-  %270 = constant 118816 : reg<aie2p.config.scalar : i64>
-  write.block32(%270)[%261, %224, %224, %224, %233, %262, %224, %262]
+  %266 = constant 118816 : reg<aie2p.config.scalar : i64>
+  write.block32(%266)[%261, %224, %224, %224, %233, %262, %224, %262]
+  %267 = constant 2215936 : reg<aie2p.config.scalar : i64>
+  %268 = constant 33841152 : reg<aie2p.config.scalar : i64>
+  write.block32(%267)[%261, %224, %224, %224, %224, %268]
+  %269 = constant 118784 : reg<aie2p.config.scalar : i64>
+  write.block32(%269)[%261, %224, %224, %224, %233, %262, %224, %262]
+  %270 = constant 2215968 : reg<aie2p.config.scalar : i64>
+  write.block32(%270)[%261, %224, %224, %224, %224, %262]
   return
 }
 

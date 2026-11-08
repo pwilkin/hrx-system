@@ -70,7 +70,7 @@ static void loom_pipeline_notification_owners(
     const bool eligible = loom_pipeline_notification_single_owner(worker);
     for (iree_host_size_t k = 0; k < worker->channels.action_count; ++k) {
       const loom_channel_plan_action_t* action = &worker->channels.actions[k];
-      if (action->callable) {
+      if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_CALL) {
         // The membership summary identifies channels but does not establish
         // where an opaque boundary consumes its particular obligations.
         for (iree_host_size_t b = 0; b < worker->binding_count; ++b) {
@@ -79,11 +79,12 @@ static void loom_pipeline_notification_owners(
               false, false);
         }
       } else {
-        const bool writing = loom_channel_reserve_isa(action->op) ||
-                             loom_channel_publish_isa(action->op);
+        const bool writing =
+            action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE ||
+            action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_PUBLISH;
         loom_pipeline_notification_claim(channels, owners, action->channel,
                                          worker, writing, eligible);
-        if (action->destination_channel) {
+        if (action->kind == LOOM_CHANNEL_PLAN_ACTION_KIND_COPY) {
           loom_pipeline_notification_claim(channels, owners,
                                            action->destination_channel, worker,
                                            true, eligible);
@@ -112,9 +113,13 @@ static bool loom_pipeline_notification_producer(
     const loom_pipeline_transport_step_t* copy =
         &transport->steps[2 * count + i];
     const loom_pipeline_transport_cohort_t* cohort = &transport->cohorts[i];
-    if (!loom_channel_reserve_isa(reserve->op) ||
-        !loom_channel_accept_isa(accept->op) ||
-        !loom_channel_copy_isa(copy->op) ||
+    if (reserve->kind != LOOM_PIPELINE_TRANSPORT_STEP_CHANNEL ||
+        accept->kind != LOOM_PIPELINE_TRANSPORT_STEP_CHANNEL ||
+        copy->kind != LOOM_PIPELINE_TRANSPORT_STEP_CHANNEL ||
+        reserve->source.channel->kind !=
+            LOOM_CHANNEL_PLAN_ACTION_KIND_RESERVE ||
+        accept->source.channel->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_ACCEPT ||
+        copy->source.channel->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_COPY ||
         reserve->op->parent_block != block ||
         accept->op->parent_block != block || copy->op->parent_block != block ||
         cohort->destination_count != 1 || cohort->release ||
@@ -165,8 +170,8 @@ static bool loom_pipeline_notification_consumer_interval(
     const loom_channel_plan_action_t* acquire = &plan->actions[first + i * 2];
     const loom_channel_plan_action_t* release =
         &plan->actions[first + i * 2 + 1];
-    if (!loom_channel_acquire_isa(acquire->op) ||
-        !loom_channel_release_isa(release->op) ||
+    if (acquire->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_ACQUIRE ||
+        release->kind != LOOM_CHANNEL_PLAN_ACTION_KIND_RELEASE ||
         acquire->channel != release->channel ||
         acquire->op->parent_block != block ||
         release->op->parent_block != block ||

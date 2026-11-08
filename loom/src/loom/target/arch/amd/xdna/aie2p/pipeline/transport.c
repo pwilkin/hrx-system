@@ -116,12 +116,14 @@ static loom_aie2p_native_delivery_t* loom_aie2p_native_route_delivery(
                              sharing_row];
 }
 
-bool loom_aie2p_native_packet_route(
-    loom_aie2p_native_context_t* context, uint32_t* next_source,
-    loom_xdna_tile_coordinate_t source, loom_xdna_stream_port_t source_port,
-    loom_xdna_tile_coordinate_t destination,
-    loom_xdna_stream_port_t destination_port, uint8_t destination_channel,
-    uint8_t packet, loom_aie2p_native_delivery_t* delivery) {
+bool loom_aie2p_native_packet_route(loom_aie2p_native_context_t* context,
+                                    uint32_t* next_source,
+                                    loom_xdna_tile_coordinate_t source,
+                                    loom_xdna_stream_port_t source_port,
+                                    loom_xdna_tile_coordinate_t destination,
+                                    loom_xdna_stream_port_t destination_port,
+                                    uint8_t destination_channel, uint8_t packet,
+                                    loom_aie2p_native_delivery_t* delivery) {
   const iree_host_size_t first = context->routing.route_count;
   const uint32_t index = (*next_source)++;
   const iree_host_size_t tile =
@@ -602,8 +604,8 @@ iree_status_t loom_aie2p_native_select_sequence(
   IREE_RETURN_IF_ERROR(loom_aie2p_native_build_sequence(
       &dma, tile->memory_layout, descriptor_base + *next_descriptor,
       descriptor_count - *next_descriptor, direction, repetitions, capacity,
-      byte_offset, byte_stride, credit_interval, template_words, context->pass->arena, out_sequence,
-      out_reason, out_valid));
+      byte_offset, byte_stride, credit_interval, template_words,
+      context->pass->arena, out_sequence, out_reason, out_valid));
   if (!*out_valid && !reserved_tasks) {
     IREE_RETURN_IF_ERROR(loom_aie2p_native_select_refill(
         context, tile, engine, direction, progress_channel, repetitions,
@@ -1573,7 +1575,8 @@ iree_status_t loom_aie2p_native_select_transfers(
       transfer_count * 4 + cohort_count * 2 + destination_count +
       child_control_count + input_source_count + credit_control_count +
       context->collective_count * context->execution.engine_count;
-  for (iree_host_size_t i = 0; i < realization->invocations.channel_count; ++i) {
+  for (iree_host_size_t i = 0; i < realization->invocations.channel_count;
+       ++i) {
     // One receiver and one sender queue per equal-ordinal channel. Shared
     // ordered phases retain their own task admission and do not use refills.
     source_count += context->channels[i].progress ? 2 : 0;
