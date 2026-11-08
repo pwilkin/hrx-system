@@ -93,6 +93,61 @@ TEST(BackingDirectoryTest, ReusesRemovedSlotsWithoutGrowing) {
   loom_runtime_backing_directory_deinitialize(&directory);
 }
 
+TEST(BackingDirectoryTest, ReservedRangeInsertsWithoutAllocation) {
+  FailingAllocator allocator;
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(
+      {&allocator, FailingAllocator::Control}, &directory);
+  IREE_ASSERT_OK(
+      loom_runtime_backing_directory_reserve_range(&directory, 250, 520));
+  allocator.remaining = 0;
+  for (iree_host_size_t index = 250; index < 520; ++index) {
+    loom_runtime_backing_entry_t* entry = nullptr;
+    IREE_ASSERT_OK(
+        loom_runtime_backing_directory_insert(&directory, index, &entry));
+    entry->physical_offset = index * 16;
+  }
+  EXPECT_EQ(allocator.remaining, 0u);
+  EXPECT_EQ(directory.count, 270u);
+  for (iree_host_size_t index = 250; index < 520; ++index) {
+    const auto* entry =
+        loom_runtime_backing_directory_find_const(&directory, index);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->physical_offset, index * 16);
+  }
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+
+TEST(BackingDirectoryTest, RangeReservationFailurePreservesPayloads) {
+  FailingAllocator allocator;
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(
+      {&allocator, FailingAllocator::Control}, &directory);
+  for (iree_host_size_t index = 0; index < 4; ++index) {
+    loom_runtime_backing_entry_t* entry = nullptr;
+    IREE_ASSERT_OK(
+        loom_runtime_backing_directory_insert(&directory, index, &entry));
+    entry->physical_offset = index * 16;
+    entry->physical =
+        reinterpret_cast<loom_runtime_backing_parent_t*>(index + 100);
+  }
+  allocator.remaining = 1;
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_RESOURCE_EXHAUSTED,
+      loom_runtime_backing_directory_reserve_range(&directory, 0, 512));
+  for (iree_host_size_t index = 0; index < 4; ++index) {
+    const auto* entry =
+        loom_runtime_backing_directory_find_const(&directory, index);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->physical_offset, index * 16);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(entry->physical), index + 100);
+  }
+  allocator.remaining = IREE_HOST_SIZE_MAX;
+  IREE_ASSERT_OK(
+      loom_runtime_backing_directory_reserve_range(&directory, 0, 512));
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+
 TEST(BackingDirectoryTest, TrimSelectionPreservesLiveAndPendingOwnership) {
   loom_runtime_backing_directory_t directory;
   loom_runtime_backing_directory_initialize(iree_allocator_system(),

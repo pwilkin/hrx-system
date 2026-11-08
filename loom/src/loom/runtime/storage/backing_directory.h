@@ -77,6 +77,16 @@ loom_runtime_backing_entry_t* loom_runtime_backing_directory_find(
 const loom_runtime_backing_entry_t* loom_runtime_backing_directory_find_const(
     const loom_runtime_backing_directory_t* directory, iree_host_size_t index);
 
+// Reserves payload capacity for every missing slot in [begin, end) with at
+// most one payload growth per logical group. Does not insert entries or change
+// their ownership. An immediately following serialized insertion of the same
+// range requires no further allocation; intervening mutations may consume the
+// capacity but do not affect correctness. Failure preserves all entries and may
+// retain unused capacity acquired for an earlier group in the range.
+iree_status_t loom_runtime_backing_directory_reserve_range(
+    loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
+    iree_host_size_t end);
+
 // Finds or inserts an empty entry for index. Payload growth moves at most one
 // bounded logical group; root growth moves only group keys and pointers.
 // Failure preserves existing entries and their ownership.
