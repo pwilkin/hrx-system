@@ -1641,10 +1641,13 @@ iree_status_t loom_runtime_memory_pool_commit_with_demand_async(
        ++r) {
     loom_runtime_virtual_buffer_t* buffer = ranges[r].buffer;
     const iree_device_size_t slab_size = buffer->geometry.mapping_size;
+    const iree_host_size_t begin = ranges[r].offset / slab_size;
     const iree_host_size_t end =
         (ranges[r].offset + ranges[r].length - 1) / slab_size + 1;
-    for (iree_host_size_t i = ranges[r].offset / slab_size;
-         i < end && iree_status_is_ok(status); ++i) {
+    status = loom_runtime_backing_directory_reserve_range(&buffer->backing,
+                                                          begin, end);
+    for (iree_host_size_t i = begin; i < end && iree_status_is_ok(status);
+         ++i) {
       loom_runtime_backing_entry_t* entry = NULL;
       status =
           loom_runtime_backing_directory_insert(&buffer->backing, i, &entry);
