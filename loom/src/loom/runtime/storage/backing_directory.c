@@ -268,7 +268,9 @@ static void loom_runtime_backing_group_mark_occupied(
   }
 }
 
-iree_status_t loom_runtime_backing_directory_reserve_range(
+// Reserves every missing payload before range mutation begins. Failure may
+// retain capacity but leaves the logical entry set unchanged.
+static iree_status_t loom_runtime_backing_directory_reserve_range(
     loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
     iree_host_size_t end) {
   while (begin < end) {
