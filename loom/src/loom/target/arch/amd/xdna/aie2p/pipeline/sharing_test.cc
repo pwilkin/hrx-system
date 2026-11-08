@@ -58,4 +58,75 @@ TEST(Aie2pSharingTest, UnsharedCorePacketsKeepIndependentIdentities) {
             1);
 }
 
+TEST(Aie2pSharingTest, CollectivesPreserveSparseControlIdentities) {
+  const loom_aie2p_native_tile_t memory = {.coordinate = {7, 1}};
+  loom_aie2p_native_tile_t terminals[30] = {};
+  loom_aie2p_native_delivery_t delivery = {};
+  // Independent core streams populate the shared path's destination namespace.
+  // The next core's first control route therefore receives a sparse high ID.
+  for (uint8_t i = 0; i < 30; ++i) {
+    terminals[i].coordinate = {static_cast<uint16_t>(i / 6),
+                               static_cast<uint16_t>(i % 6)};
+    ASSERT_NE(
+        loom_aie2p_native_delivery_packet(
+            &delivery, 0, &terminals[i], LOOM_XDNA_STREAM_PORT_TILE_CONTROL, 0),
+        UINT8_MAX);
+  }
+  const uint8_t control = loom_aie2p_native_delivery_packet(
+      &delivery, 0, &memory, LOOM_XDNA_STREAM_PORT_TILE_CONTROL, 0);
+  ASSERT_EQ(control, 31);
+  uint32_t occupied = UINT32_C(1) << control;
+  EXPECT_EQ(loom_aie2p_native_collective_packet(&occupied), 30);
+  EXPECT_EQ(loom_aie2p_native_collective_packet(&occupied), 29);
+  EXPECT_EQ(occupied, UINT32_C(0xe0000000));
+}
+
+TEST(Aie2pSharingTest, CollectivesReserveEveryNonPayloadIdentityOnce) {
+  const uint32_t payload = UINT32_C(1) << LOOM_AIE2P_NATIVE_DELIVERY_PACKET_ID;
+  uint32_t occupied = payload;
+  uint32_t selected = 0;
+  for (uint8_t i = 0; i < 31; ++i) {
+    const uint8_t packet = loom_aie2p_native_collective_packet(&occupied);
+    ASSERT_LT(packet, 32);
+    EXPECT_NE(packet, LOOM_AIE2P_NATIVE_DELIVERY_PACKET_ID);
+    const uint32_t bit = UINT32_C(1) << packet;
+    EXPECT_EQ(selected & bit, 0u);
+    selected |= bit;
+    EXPECT_EQ(occupied, selected | payload);
+  }
+  EXPECT_EQ(selected, UINT32_C(0xfffeffff));
+  EXPECT_EQ(loom_aie2p_native_collective_packet(&occupied), UINT8_MAX);
+  EXPECT_EQ(occupied, selected | payload);
+}
+
+TEST(Aie2pSharingTest, UnsharedCollectivesCanUseEveryPacketIdentity) {
+  uint32_t occupied = 0;
+  for (uint8_t i = 0; i < 32; ++i) {
+    const uint32_t previous = occupied;
+    const uint8_t packet = loom_aie2p_native_collective_packet(&occupied);
+    ASSERT_LT(packet, 32);
+    EXPECT_EQ(previous & (UINT32_C(1) << packet), 0u);
+    EXPECT_EQ(occupied, previous | (UINT32_C(1) << packet));
+  }
+  EXPECT_EQ(occupied, UINT32_MAX);
+  EXPECT_EQ(loom_aie2p_native_collective_packet(&occupied), UINT8_MAX);
+  EXPECT_EQ(occupied, UINT32_MAX);
+}
+
+TEST(Aie2pSharingTest, ControlSelectionPreservesCollectiveIdentities) {
+  const loom_aie2p_native_tile_t memory = {.coordinate = {0, 1}};
+  // The shared payload and all but two other IDs are assigned on this core.
+  uint32_t occupied = UINT32_C(0x7ffffffe);
+  EXPECT_EQ(loom_aie2p_native_collective_packet(&occupied), 31);
+  const uint8_t control = loom_aie2p_native_delivery_packet(
+      nullptr, occupied, &memory, LOOM_XDNA_STREAM_PORT_TILE_CONTROL, 0);
+  ASSERT_EQ(control, 0);
+  occupied |= UINT32_C(1) << control;
+  EXPECT_EQ(loom_aie2p_native_collective_packet(&occupied), UINT8_MAX);
+  EXPECT_EQ(
+      loom_aie2p_native_delivery_packet(nullptr, occupied, &memory,
+                                        LOOM_XDNA_STREAM_PORT_TILE_CONTROL, 0),
+      UINT8_MAX);
+}
+
 }  // namespace

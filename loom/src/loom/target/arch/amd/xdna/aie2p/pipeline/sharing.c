@@ -34,6 +34,16 @@ uint8_t loom_aie2p_native_delivery_packet(
   return UINT8_MAX;
 }
 
+uint8_t loom_aie2p_native_collective_packet(uint32_t* occupied) {
+  const uint32_t available = ~*occupied;
+  if (!available) {
+    return UINT8_MAX;
+  }
+  const uint8_t packet = 31 - iree_math_count_leading_zeros_u32(available);
+  *occupied |= UINT32_C(1) << packet;
+  return packet;
+}
+
 // Sharing a wire changes its framing for every geometry. Admission is per
 // receiver: each must reserve a complete record before starting its sender.
 static bool loom_aie2p_native_select_grant_reader(

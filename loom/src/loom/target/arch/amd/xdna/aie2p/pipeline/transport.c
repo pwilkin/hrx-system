@@ -163,7 +163,7 @@ bool loom_aie2p_native_select_packet_route(
   loom_aie2p_native_delivery_t* delivery =
       loom_aie2p_native_route_delivery(context, tile->coordinate);
   const uint8_t packet = loom_aie2p_native_delivery_packet(
-      delivery, owner->control_packet_mask, tile, port, channel);
+      delivery, owner->packet_mask, tile, port, channel);
   if (packet == UINT8_MAX ||
       !loom_aie2p_native_packet_route(
           context, next_source, context->workers[worker_index].tile->coordinate,
@@ -171,7 +171,10 @@ bool loom_aie2p_native_select_packet_route(
           delivery)) {
     return false;
   }
-  owner->control_packet_mask |= UINT32_C(1) << packet;
+  owner->packet_mask |= UINT32_C(1) << packet;
+  if (delivery && delivery->sharing.used) {
+    owner->packet_mask |= UINT32_C(1) << LOOM_AIE2P_NATIVE_DELIVERY_PACKET_ID;
+  }
   ++owner->control_packet_count;
   *out_packet = packet;
   return true;

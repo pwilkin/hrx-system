@@ -629,9 +629,9 @@ typedef struct loom_aie2p_native_worker_t {
   // Tile-control reply identity by source tile, or UINT8_MAX when unassigned.
   // Existing DMA-token routes can also carry explicitly requested status reads.
   uint8_t* control_replies;
-  // Packet IDs already assigned to this physical core's outgoing stream.
-  uint32_t control_packet_mask;
-  // Number of outgoing packet classes selected for the physical core.
+  // IDs assigned on this core's outgoing stream, including shared payloads.
+  uint32_t packet_mask;
+  // Number of outgoing control packet classes selected for the physical core.
   uint8_t control_packet_count;
   // An external-write path already owns the core's completion stream.
   bool has_egress;

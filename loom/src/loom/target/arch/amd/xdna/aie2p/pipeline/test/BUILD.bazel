@@ -22,6 +22,7 @@ loom_check_test_suite(
         "child_cursor_lifetimes.loom-test",
         "child_distribution.loom-test",
         "child_join.loom-test",
+        "collective_packets.loom-test",
         "dma_submit_sharing.loom-test",
         "dma_submit_variants.loom-test",
         "external_metadata.loom-test",
