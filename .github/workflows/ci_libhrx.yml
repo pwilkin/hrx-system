@@ -113,7 +113,7 @@ jobs:
       HRX_BUILD_LOOM: "false"
       HRX_SANITIZER: ${{ matrix.sanitizer }}
       HRX_ASSERTIONS: ${{ matrix.assertions }}
-      HRX_CMAKE_OPTIONS: "-DIREE_HAL_AMDGPU_TARGETS=gfx942;gfx1151;gfx1201"
+      HRX_CMAKE_OPTIONS: "-DIREE_HAL_AMD_GPU_TARGETS=gfx942;gfx1151;gfx1201"
       HRX_CTEST_REGEX: ""
       HRX_CTEST_EXCLUDE_REGEX: ${{ matrix.ctest_exclude_regex }}
       HRX_CTEST_LABEL_REGEX: ""
@@ -222,7 +222,7 @@ jobs:
       HRX_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/build/linux-gpu/downloads
       HRX_BUILD_DIR: ${{ github.workspace }}/build/linux-gpu/build/hrx-core
       HRX_BUILD_LOOM: "false"
-      HRX_CMAKE_OPTIONS: "-DIREE_HAL_AMDGPU_TARGETS=gfx942"
+      HRX_CMAKE_OPTIONS: "-DIREE_HAL_AMD_GPU_TARGETS=gfx942"
       HRX_PACKAGE: "false"
       HRX_PACKAGE_SMOKE: "false"
       HRX_TEST_GPU: "true"
@@ -309,7 +309,7 @@ jobs:
       HRX_ROCM_ROOT: ${{ github.workspace }}/build/linux-gpu/rocm-root
       HRX_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/build/linux-gpu/downloads
       HRX_BUILD_DIR: ${{ github.workspace }}/build/linux-gpu/build/hrx-core
-      HRX_CMAKE_OPTIONS: "-DIREE_HAL_AMDGPU_TARGETS=gfx1201"
+      HRX_CMAKE_OPTIONS: "-DIREE_HAL_AMD_GPU_TARGETS=gfx1201"
       HRX_BUILD_LOOM: "false"
       HRX_PACKAGE: "false"
       HRX_PACKAGE_SMOKE: "false"
@@ -582,7 +582,6 @@ jobs:
       - name: Configure LibHRX Bazel
         run: |
           python3 dev.py bazel configure \
-            -DIREE_HAL_DRIVER_AMDGPU=OFF \
             -DIREE_HAL_DRIVER_AMD_GPU=ON \
             -DIREE_HAL_DRIVER_AMD_XDNA=OFF \
             -DAMDF_BUILD=ON \

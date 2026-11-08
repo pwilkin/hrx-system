@@ -58,7 +58,7 @@ python dev.py cmake configure \
   -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
   -DCMAKE_MODULE_LINKER_FLAGS="-fuse-ld=lld" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DIREE_HAL_AMDGPU_TARGETS='gfx942;gfx1151;gfx1201'
+  -DIREE_HAL_AMD_GPU_TARGETS='gfx942;gfx1151;gfx1201'
 
 python dev.py cmake build
 cmake --install build/cmake --prefix build/hrx-install \
@@ -82,7 +82,7 @@ cmake -S . -B build/hrx-system -GNinja \
   -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
   -DCMAKE_MODULE_LINKER_FLAGS="-fuse-ld=lld" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DIREE_HAL_AMDGPU_TARGETS='gfx942;gfx1151;gfx1201'
+  -DIREE_HAL_AMD_GPU_TARGETS='gfx942;gfx1151;gfx1201'
 
 cmake --build build/hrx-system
 cmake --install build/hrx-system --prefix build/hrx-install \
@@ -103,7 +103,7 @@ Useful options:
 | `IREE_HAL_DRIVER_AMD_XDNA` | ON | Build the native AMD XDNA HAL. |
 | `IREE_ROCM_DEPENDENCY_MODE` | empty | Overrides ROCm header dependency resolution: `pinned`, `package`, or `auto`; empty selects package mode when `IREE_ROCM_PATH` is set. |
 | `IREE_ROCM_PATH` | empty | ROCm or TheRock SDK root used for package-mode ROCm headers and device tooling. |
-| `IREE_HAL_AMDGPU_TARGETS` | checked-in AMDGPU generic set | AMDGPU target selectors supported by the runtime build. |
+| `IREE_HAL_AMD_GPU_TARGETS` | checked-in AMDGPU generic set | AMDGPU target selectors supported by the runtime build. |
 
 `BUILD_SHARED_LIBS=ON` builds runtime components as shared libraries for in-tree
 development. Public HRX installation and `find_package(hrx)` use a build

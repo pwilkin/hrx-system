@@ -571,7 +571,6 @@ class CiTest(unittest.TestCase):
         self.assertNotIn("dev.py bazel build ", text)
         self.assertIn("dev.py bazel test ", text)
         self.assertIn(" -- //runtime/...", text)
-        self.assertIn("-//runtime/src/iree/hal/driver/amdgpu/...", text)
         self.assertIn("-//runtime/src/iree/hal/driver/vulkan/...", text)
         self.assertIn(
             "--test_tag_filters=" + ",".join(ci_config.CPU_RESOURCE_TAG_EXCLUDES),
@@ -990,7 +989,7 @@ class CiTest(unittest.TestCase):
         )
         self.assertEqual(
             runtime_configure.configuration(request).drivers,
-            {"task", "amdgpu", "vulkan", "webgpu", "amd-gpu", "amd-xdna"},
+            {"task", "vulkan", "webgpu", "amd-gpu", "amd-xdna"},
         )
         self.assertIn(
             "--//loom/config/arch:enable="
@@ -1056,7 +1055,7 @@ class CiTest(unittest.TestCase):
         self.assertEqual(build.argv[2:4], ("bazel", "build"))
         self.assertIn("//...", build.argv)
         self.assertIn(
-            "--//runtime/src/iree/hal/driver/amdgpu:targets=gfx11-generic",
+            "--//runtime/src/iree/hal/driver/amd/gpu:targets=gfx11-generic",
             build.argv,
         )
 
@@ -1116,13 +1115,9 @@ class CiTest(unittest.TestCase):
             self.assertIn(f"-D{define}=ON", configure_step.argv)
         for _importer, define in ci.CMAKE_LOOM_IMPORTER_DEFINES:
             self.assertIn(f"-D{define}=ON", configure_step.argv)
-        for option in ci.AMDGPU_DEVICE_BINARY_PREBUILT_OPTIONS:
-            self.assertIn(option, configure_step.argv)
-        for option in ci.AMDGPU_DEVICE_BINARY_SOURCE_OPTIONS:
-            self.assertNotIn(option, configure_step.argv)
         self.assertFalse(
             any(
-                option.startswith("-DIREE_HAL_AMDGPU_TARGETS=")
+                option.startswith("-DIREE_HAL_AMD_GPU_TARGETS=")
                 or option.startswith("-DLOOM_ARCH_AMDGPU_TARGETS=")
                 for option in configure_step.argv
             )
@@ -1372,7 +1367,7 @@ class CiTest(unittest.TestCase):
             test_step.argv,
         )
         self.assertFalse(
-            any("-DIREE_HAL_DRIVER_AMDGPU=ON" in line for line in command_lines)
+            any("-DIREE_HAL_DRIVER_AMD_GPU=ON" in line for line in command_lines)
         )
 
     def test_tilelang_importer_command_sets_up_and_tests_bazel_and_cmake(self):
@@ -2049,12 +2044,6 @@ fi
 
         self.assertTrue(
             any(
-                "-DIREE_HAL_AMDGPU_DEVICE_BINARY_BUILD_MODE=source" in line
-                for line in command_lines
-            )
-        )
-        self.assertTrue(
-            any(
                 "-DIREE_HAL_AMDGPU_DEVICE_TOOLCHAIN=rocm" in line
                 for line in command_lines
             )
@@ -2141,10 +2130,10 @@ fi
             )
         )
         self.assertTrue(
-            any("-DIREE_HAL_DRIVER_AMDGPU=OFF" in line for line in command_lines)
+            any("-DIREE_HAL_DRIVER_AMD_GPU=OFF" in line for line in command_lines)
         )
         self.assertFalse(
-            any("-DIREE_HAL_AMDGPU_TARGETS=" in line for line in command_lines)
+            any("-DIREE_HAL_AMD_GPU_TARGETS=" in line for line in command_lines)
         )
         test_step = next(
             step
@@ -2164,7 +2153,7 @@ fi
             any("-DIREE_HAL_DRIVER_VULKAN=ON" in line for line in command_lines)
         )
         self.assertTrue(
-            any("-DIREE_HAL_DRIVER_AMDGPU=OFF" in line for line in command_lines)
+            any("-DIREE_HAL_DRIVER_AMD_GPU=OFF" in line for line in command_lines)
         )
         build_steps = [step for step in steps if step.name.startswith("Build IREE")]
         self.assertEqual(build_steps, [])

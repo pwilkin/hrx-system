@@ -77,14 +77,6 @@ REPOSITORY_BUILD_LOOM_ARTIFACT_FORMATS = loom_configure.ARTIFACT_FORMATS
 REPOSITORY_BUILD_LOOM_EXECUTION_SUBSTRATES = loom_configure.EXECUTION_SUBSTRATES
 REPOSITORY_BUILD_LOOM_IMPORTERS = loom_configure.IMPORTERS
 ROCM_PINNED_DEPENDENCY_MODE_OPTION = "-DIREE_ROCM_DEPENDENCY_MODE=pinned"
-AMDGPU_DEVICE_BINARY_SOURCE_OPTIONS = (
-    "-DIREE_HAL_AMDGPU_DEVICE_BINARY_BUILD_MODE=source",
-    "-DIREE_HAL_AMDGPU_DEVICE_TOOLCHAIN=rocm",
-)
-AMDGPU_DEVICE_BINARY_PREBUILT_OPTIONS = (
-    "-DIREE_HAL_AMDGPU_DEVICE_BINARY_BUILD_MODE=prebuilt",
-    "-DIREE_HAL_AMDGPU_DEVICE_TOOLCHAIN=none",
-)
 BAZEL_COMMANDS = {
     "iree-bazel-amd-client": ("amd-client", None),
     "iree-bazel-amd-client-asan": ("amd-client", "asan"),
@@ -311,14 +303,14 @@ def vulkan_device_test_env() -> tuple[tuple[str, str], ...]:
     )
 
 
-def cmake_amdgpu_device_binary_options() -> tuple[str, ...]:
+def cmake_amdgpu_toolchain_options() -> tuple[str, ...]:
     rocm_root = os.environ.get("HRX_ROCM_ROOT")
     rocm_path_option = (
         (f"-DIREE_HAL_AMDGPU_DEVICE_TOOLCHAIN_ROCM_PATH={rocm_root}",)
         if rocm_root
         else ()
     )
-    return AMDGPU_DEVICE_BINARY_SOURCE_OPTIONS + rocm_path_option
+    return ("-DIREE_HAL_AMDGPU_DEVICE_TOOLCHAIN=rocm",) + rocm_path_option
 
 
 def cmake_tests_enabled(sanitizer: str | None) -> bool:
@@ -390,7 +382,7 @@ def bazel_configure_step(
         "configure",
         runtime_configure.NATIVE_DRIVER_FLAG + "=" + ",".join(drivers),
     ]
-    if "amdgpu" in enabled_driver_set:
+    if "amd-gpu" in enabled_driver_set:
         command.append(ROCM_PINNED_DEPENDENCY_MODE_OPTION)
         rocm_root = os.environ.get("HRX_ROCM_ROOT")
         if rocm_root:
@@ -538,7 +530,6 @@ def cmake_configure_step(
     enabled_loom_execution_substrates: tuple[str, ...] | None = None,
     enabled_loom_importers: tuple[str, ...] | None = None,
     amdgpu_target_selector: str | None = ci_config.DEFAULT_AMDGPU_TARGET_SELECTOR,
-    amdgpu_device_binary_mode: str = "source",
     sanitizer: str | None = None,
     build_tests: bool | None = None,
     extra_options: tuple[str, ...] = (),
@@ -601,18 +592,10 @@ def cmake_configure_step(
             command.append(
                 f"-D{define}={'ON' if importer in enabled_loom_importer_set else 'OFF'}"
             )
-    if "amdgpu" in enabled_driver_set:
+    if "amd-gpu" in enabled_driver_set:
         command.append(ROCM_PINNED_DEPENDENCY_MODE_OPTION)
         if amdgpu_target_selector is not None:
-            command.append(f"-DIREE_HAL_AMDGPU_TARGETS={amdgpu_target_selector}")
-        if amdgpu_device_binary_mode == "source":
-            command.extend(cmake_amdgpu_device_binary_options())
-        elif amdgpu_device_binary_mode == "prebuilt":
-            command.extend(AMDGPU_DEVICE_BINARY_PREBUILT_OPTIONS)
-        else:
-            raise ValueError(
-                f"unsupported AMDGPU device binary mode: {amdgpu_device_binary_mode}"
-            )
+            command.append(f"-DIREE_HAL_AMD_GPU_TARGETS={amdgpu_target_selector}")
     if sanitizer is not None:
         command.append("-DIREE_ENABLE_ASSERTIONS=ON")
         command.extend(CMAKE_SANITIZER_OPTIONS[sanitizer])
@@ -1243,7 +1226,6 @@ def cmake_repository_build_steps(command_name: str) -> list[CiStep]:
             enabled_loom_execution_substrates=REPOSITORY_BUILD_LOOM_EXECUTION_SUBSTRATES,
             enabled_loom_importers=REPOSITORY_BUILD_LOOM_IMPORTERS,
             amdgpu_target_selector=None,
-            amdgpu_device_binary_mode="prebuilt",
             extra_options=(
                 "-DIREE_ENABLE_VULKAN=ON",
                 "-DIREE_ENABLE_D3D12=ON",
@@ -1335,6 +1317,7 @@ def cmake_amdgpu_steps(
         cmake_configure_step(
             command_name,
             enabled_drivers=("amd-gpu",),
+            amdgpu_target_selector=target_selector,
             enabled_loom_architectures=("amdgpu", "vm"),
             enabled_loom_artifact_formats=("elf", "vm"),
             enabled_loom_execution_substrates=("iree_hal", "iree_vm"),
@@ -1345,10 +1328,9 @@ def cmake_amdgpu_steps(
                 "-DAMDF_FAMILY_CDNA=ON",
                 "-DAMDF_FAMILY_XDNA=OFF",
                 "-DLOOM_BUILD=ON",
-                "-DIREE_HAL_AMD_GPU_TARGETS=" + target_selector,
                 "-DLOOM_ARCH_AMDGPU_TARGETS=" + target_selector,
             )
-            + cmake_amdgpu_device_binary_options(),
+            + cmake_amdgpu_toolchain_options(),
         ),
         *cmake_explicit_build_steps(
             command_name,

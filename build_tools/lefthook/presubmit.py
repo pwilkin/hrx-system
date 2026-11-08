@@ -1549,8 +1549,6 @@ def run_amdgpu_target_map(paths: list[str], fix: bool, verbose: bool) -> bool:
     relevant_prefixes = (
         "build_tools/amdgpu/elf_machine_map.inl",
         "build_tools/amdgpu/target_map.",
-        "runtime/src/iree/hal/driver/amdgpu/util/device_library_target_map.inl",
-        "runtime/src/iree/hal/driver/amdgpu/target/identity_catalog.inl",
         "runtime/src/iree/hal/driver/amd/gpu/target/identity_catalog.inl",
     )
     if not any(path.startswith(relevant_prefixes) for path in paths):
@@ -1566,8 +1564,6 @@ def run_amdgpu_target_map(paths: list[str], fix: bool, verbose: bool) -> bool:
                 "build_tools/amdgpu/target_map.bzl",
                 "build_tools/amdgpu/target_map.cmake",
                 "build_tools/amdgpu/target_map.h",
-                "runtime/src/iree/hal/driver/amdgpu/util/device_library_target_map.inl",
-                "runtime/src/iree/hal/driver/amdgpu/target/identity_catalog.inl",
                 "runtime/src/iree/hal/driver/amd/gpu/target/identity_catalog.inl",
             ],
             verbose,
