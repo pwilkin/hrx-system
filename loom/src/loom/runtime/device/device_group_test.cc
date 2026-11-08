@@ -90,6 +90,38 @@ TEST_F(DeviceGroupTest, LaterDeviceFailureReleasesEarlierHandle) {
   EXPECT_EQ(group_, nullptr);
 }
 
+TEST_F(DeviceGroupTest, PrefersTransferOnlyFamilyWhenAvailable) {
+  const loom_runtime_device_options_t options = {
+      .driver = driver_,
+      .uri = loom_runtime_test_device()->device_uri,
+  };
+  IREE_ASSERT_OK(loom_runtime_device_group_allocate(
+      host_, 1, &options, iree_allocator_system(), &group_));
+  auto* owner = loom_runtime_device_group_at(group_, 0);
+  const auto* selected =
+      iree_hal_queue_family(loom_runtime_device_transfer_queue(owner));
+  EXPECT_TRUE(
+      iree_all_bits_set(iree_hal_queue_family_spec(selected)->role_flags,
+                        IREE_HAL_QUEUE_FAMILY_ROLE_FLAG_TRANSFER));
+  auto* device = loom_runtime_device_handle(owner);
+  const auto* queues =
+      iree_hal_device_spec_queues(iree_hal_device_spec(device));
+  for (iree_host_size_t i = 0; i < queues->family_count; ++i) {
+    const auto& family = queues->families[i];
+    if ((family.provisioned_queue_count ||
+         iree_any_bit_set(
+             family.flags,
+             IREE_HAL_QUEUE_FAMILY_SPEC_FLAG_DYNAMIC_ACQUISITION)) &&
+        iree_all_bits_set(family.role_flags,
+                          IREE_HAL_QUEUE_FAMILY_ROLE_FLAG_TRANSFER) &&
+        !iree_any_bit_set(family.role_flags,
+                          IREE_HAL_QUEUE_FAMILY_ROLE_FLAG_DISPATCH)) {
+      EXPECT_EQ(selected, iree_hal_device_queue_family(device, i));
+      break;
+    }
+  }
+}
+
 TEST_F(DeviceGroupTest, RejectedPoolPreservesEarlierPoolAndGroup) {
   const loom_runtime_device_options_t device_options = {
       .driver = driver_,

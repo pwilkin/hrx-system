@@ -9,11 +9,12 @@
 #include <thread>
 #include <vector>
 
+#include "iree/async/frontier_tracker.h"
 #include "iree/base/tooling/flags.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
-#include "loom/runtime/device/device.h"
 #include "loom/runtime/execution/execution.h"
+#include "loom/runtime/host/host.h"
 #include "loom/runtime/testing/device.h"
 
 IREE_FLAG(string, execution_device_uri, "",
@@ -32,23 +33,36 @@ class ExecutionQueuesTest : public ::testing::TestWithParam<bool> {
     IREE_ASSERT_OK(
         loom_runtime_host_create(2, nullptr, iree_allocator_system(), &host_));
     IREE_ASSERT_OK(loom_runtime_test_driver_acquire(host_, &driver_));
-    const loom_runtime_device_options_t options = {
-        .driver = driver_,
-        .uri = FLAG_execution_device_uri[0]
-                   ? iree_make_cstring_view(FLAG_execution_device_uri)
-                   : loom_runtime_test_device()->device_uri,
-    };
-    IREE_ASSERT_OK(loom_runtime_device_group_allocate(
-        host_, 1, &options, iree_allocator_system(), &group_));
-    auto* owner = loom_runtime_device_group_at(group_, 0);
-    device_ = loom_runtime_device_handle(owner);
-    dispatch_family_ =
-        iree_hal_queue_family(loom_runtime_device_dispatch_queue(owner));
+    auto params = iree_hal_device_create_params_default();
+    params.proactor_pool = loom_runtime_host_proactor_pool(host_);
+    const auto uri = FLAG_execution_device_uri[0]
+                         ? iree_make_cstring_view(FLAG_execution_device_uri)
+                         : loom_runtime_test_device()->device_uri;
+    IREE_ASSERT_OK(iree_hal_driver_create_device_by_uri(
+        driver_, uri, &params, iree_allocator_system(), &device_));
+    IREE_ASSERT_OK(iree_async_frontier_tracker_create(
+        iree_async_frontier_tracker_options_default(), iree_allocator_system(),
+        &frontier_tracker_));
+    IREE_ASSERT_OK(iree_hal_device_group_create_from_device(
+        device_, frontier_tracker_, iree_allocator_system(), &group_));
+    const auto* spec =
+        iree_hal_device_spec_queues(iree_hal_device_spec(device_));
+    for (iree_host_size_t i = 0; i < spec->family_count; ++i) {
+      const auto& family = spec->families[i];
+      if ((family.provisioned_queue_count ||
+           iree_any_bit_set(
+               family.flags,
+               IREE_HAL_QUEUE_FAMILY_SPEC_FLAG_DYNAMIC_ACQUISITION)) &&
+          iree_all_bits_set(family.role_flags,
+                            IREE_HAL_QUEUE_FAMILY_ROLE_FLAG_DISPATCH)) {
+        dispatch_family_ = iree_hal_device_queue_family(device_, i);
+        break;
+      }
+    }
+    ASSERT_NE(dispatch_family_, nullptr);
     transfer_family_ = dispatch_family_;
     if (GetParam()) {
       transfer_family_ = nullptr;
-      const auto* spec =
-          iree_hal_device_spec_queues(iree_hal_device_spec(device_));
       for (iree_host_size_t i = 0; i < spec->family_count; ++i) {
         const auto* family = iree_hal_device_queue_family(device_, i);
         if (family != dispatch_family_ &&
@@ -64,14 +78,6 @@ class ExecutionQueuesTest : public ::testing::TestWithParam<bool> {
       }
       if (!transfer_family_) {
         GTEST_SKIP() << "Device has no separate available transfer family";
-      }
-      if (!(iree_hal_queue_family_spec(transfer_family_)->role_flags &
-            IREE_HAL_QUEUE_FAMILY_ROLE_FLAG_DISPATCH)) {
-        EXPECT_FALSE(iree_hal_queue_family_spec(
-                         iree_hal_queue_family(
-                             loom_runtime_device_transfer_queue(owner)))
-                         ->role_flags &
-                     IREE_HAL_QUEUE_FAMILY_ROLE_FLAG_DISPATCH);
       }
     }
     dispatch_count_ = std::max(
@@ -110,12 +116,11 @@ class ExecutionQueuesTest : public ::testing::TestWithParam<bool> {
     };
     const iree_hal_slab_pool_options_t pool_options = {};
     IREE_ASSERT_OK(iree_hal_slab_pool_create(
-        loom_runtime_device_group(owner), scope, &pool_options,
-        iree_allocator_system(), &storage_pool_));
+        group_, scope, &pool_options, iree_allocator_system(), &storage_pool_));
     const iree_hal_asan_pool_options_t asan_options = {};
-    IREE_ASSERT_OK(loom_runtime_workspace_create(
-        loom_runtime_device_group(owner), storage_pool_, &asan_options,
-        {this, WorkspaceAllocate}, &workspace_));
+    IREE_ASSERT_OK(
+        loom_runtime_workspace_create(group_, storage_pool_, &asan_options,
+                                      {this, WorkspaceAllocate}, &workspace_));
     IREE_ASSERT_OK(iree_hal_semaphore_create(
         device_, IREE_HAL_QUEUE_FAMILY_AFFINITY_ANY, 0,
         IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &completion_));
@@ -130,7 +135,9 @@ class ExecutionQueuesTest : public ::testing::TestWithParam<bool> {
     loom_runtime_workspace_release(workspace_);
     iree_hal_pool_release(storage_pool_);
     iree_hal_semaphore_release(completion_);
-    IREE_EXPECT_OK(loom_runtime_device_group_free(group_));
+    iree_hal_device_group_release(group_);
+    iree_hal_device_release(device_);
+    iree_async_frontier_tracker_release(frontier_tracker_);
     iree_hal_driver_release(driver_);
     loom_runtime_host_release(host_);
   }
@@ -192,9 +199,11 @@ class ExecutionQueuesTest : public ::testing::TestWithParam<bool> {
   loom_runtime_host_t* host_ = nullptr;
   // Physical driver selected by the linked target test leaf.
   iree_hal_driver_t* driver_ = nullptr;
-  // Sealed device group enclosing all submissions and workspace captures.
-  loom_runtime_device_group_t* group_ = nullptr;
-  // Borrowed physical device shared by both selected families.
+  // Completion registry outliving the sealed HAL group and its device.
+  iree_async_frontier_tracker_t* frontier_tracker_ = nullptr;
+  // Sealed HAL topology; queue inventories are owned only by the test cases.
+  iree_hal_device_group_t* group_ = nullptr;
+  // Owned physical device shared by both selected families.
   iree_hal_device_t* device_ = nullptr;
   // Borrowed dispatch family.
   const iree_hal_queue_family_t* dispatch_family_ = nullptr;
