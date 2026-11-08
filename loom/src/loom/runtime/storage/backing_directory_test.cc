@@ -148,6 +148,140 @@ TEST(BackingDirectoryTest, RangeReservationFailurePreservesPayloads) {
   loom_runtime_backing_directory_deinitialize(&directory);
 }
 
+TEST(BackingDirectoryTest,
+     RangeInsertionPreservesSparsePayloadsAndReturnsCompactSlices) {
+  FailingAllocator allocator;
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(
+      {&allocator, FailingAllocator::Control}, &directory);
+  for (const iree_host_size_t index :
+       {249u, 250u, 255u, 256u, 300u, 519u, 520u}) {
+    loom_runtime_backing_entry_t* entry = nullptr;
+    IREE_ASSERT_OK(
+        loom_runtime_backing_directory_insert(&directory, index, &entry));
+    entry->physical_offset = index * 16;
+    entry->physical =
+        reinterpret_cast<loom_runtime_backing_parent_t*>(index + 100);
+    entry->mapped = (index % 2) != 0;
+    entry->keep = (index % 3) != 0;
+  }
+
+  loom_runtime_backing_range_cursor_t cursor = {.index = 250, .end = 520};
+  std::vector<iree_host_size_t> sparse_indexes;
+  iree_host_size_t count = 0;
+  while (const auto* entries = loom_runtime_backing_directory_range_next_const(
+             &directory, &cursor, &count)) {
+    for (iree_host_size_t i = 0; i < count; ++i) {
+      sparse_indexes.push_back(entries[i].index);
+    }
+  }
+  EXPECT_EQ(sparse_indexes,
+            (std::vector<iree_host_size_t>{250, 255, 256, 300, 519}));
+
+  IREE_ASSERT_OK(
+      loom_runtime_backing_directory_insert_range(&directory, 250, 520));
+  EXPECT_EQ(directory.count, 272u);
+  const std::vector<iree_host_size_t> expected_counts = {6, 256, 8};
+  cursor = {.index = 250, .end = 520};
+  iree_host_size_t visited_count = 0;
+  for (iree_host_size_t expected_count : expected_counts) {
+    iree_host_size_t count = 0;
+    auto* entries =
+        loom_runtime_backing_directory_range_next(&directory, &cursor, &count);
+    ASSERT_NE(entries, nullptr);
+    EXPECT_EQ(count, expected_count);
+    for (iree_host_size_t i = 0; i < count; ++i) {
+      EXPECT_EQ(entries[i].index, 250 + visited_count);
+      ++visited_count;
+    }
+  }
+  count = 1;
+  EXPECT_EQ(
+      loom_runtime_backing_directory_range_next(&directory, &cursor, &count),
+      nullptr);
+  EXPECT_EQ(count, 0u);
+  EXPECT_EQ(visited_count, 270u);
+
+  for (const iree_host_size_t index :
+       {249u, 250u, 255u, 256u, 300u, 519u, 520u}) {
+    const auto* entry =
+        loom_runtime_backing_directory_find_const(&directory, index);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->physical_offset, index * 16);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(entry->physical), index + 100);
+    EXPECT_EQ(entry->mapped, (index % 2) != 0);
+    EXPECT_EQ(entry->keep, (index % 3) != 0);
+    EXPECT_FALSE(entry->pending_commit);
+    EXPECT_FALSE(entry->counted);
+    EXPECT_FALSE(entry->in_flight);
+  }
+
+  // The completed groups retain enough capacity to restore removed entries
+  // without allocation or per-slot growth.
+  for (const iree_host_size_t index : {251u, 301u, 518u}) {
+    loom_runtime_backing_directory_remove(
+        &directory, loom_runtime_backing_directory_find(&directory, index));
+  }
+  allocator.remaining = 0;
+  IREE_ASSERT_OK(
+      loom_runtime_backing_directory_insert_range(&directory, 250, 520));
+  EXPECT_EQ(allocator.remaining, 0u);
+  EXPECT_EQ(directory.count, 272u);
+
+  const loom_runtime_backing_directory_t* const_directory = &directory;
+  cursor = {.index = 249, .end = 521};
+  visited_count = 0;
+  while (const auto* entries = loom_runtime_backing_directory_range_next_const(
+             const_directory, &cursor, &count)) {
+    visited_count += count;
+    for (iree_host_size_t i = 0; i < count; ++i) {
+      EXPECT_EQ(entries[i].index, 249 + visited_count - count + i);
+    }
+  }
+  EXPECT_EQ(visited_count, 272u);
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+
+TEST(BackingDirectoryTest,
+     RangeInsertionFailurePreservesPayloadsWithoutMarkers) {
+  FailingAllocator allocator;
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(
+      {&allocator, FailingAllocator::Control}, &directory);
+  for (iree_host_size_t index = 0; index < 4; ++index) {
+    loom_runtime_backing_entry_t* entry = nullptr;
+    IREE_ASSERT_OK(
+        loom_runtime_backing_directory_insert(&directory, index, &entry));
+    entry->physical_offset = index * 16;
+    entry->physical =
+        reinterpret_cast<loom_runtime_backing_parent_t*>(index + 100);
+    entry->mapped = true;
+  }
+
+  // Capacity growth of the existing first group succeeds before allocation of
+  // the second group fails. No entries are inserted before the complete range
+  // has capacity, and the old payloads remain valid.
+  allocator.remaining = 1;
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_RESOURCE_EXHAUSTED,
+      loom_runtime_backing_directory_insert_range(&directory, 0, 512));
+  EXPECT_EQ(directory.count, 4u);
+  for (iree_host_size_t index = 0; index < 4; ++index) {
+    const auto* entry =
+        loom_runtime_backing_directory_find_const(&directory, index);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->physical_offset, index * 16);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(entry->physical), index + 100);
+    EXPECT_TRUE(entry->mapped);
+  }
+  EXPECT_EQ(loom_runtime_backing_directory_find(&directory, 4), nullptr);
+
+  IREE_ASSERT_OK(
+      loom_runtime_backing_directory_insert_range(&directory, 0, 512));
+  EXPECT_EQ(directory.count, 512u);
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+
 TEST(BackingDirectoryTest, TrimSelectionPreservesLiveAndPendingOwnership) {
   loom_runtime_backing_directory_t directory;
   loom_runtime_backing_directory_initialize(iree_allocator_system(),

@@ -62,6 +62,14 @@ typedef struct loom_runtime_backing_cursor_t {
   uint16_t offset;
 } loom_runtime_backing_cursor_t;
 
+// Logical range traversal state. Mutations invalidate an active traversal.
+typedef struct loom_runtime_backing_range_cursor_t {
+  // Next logical slot to inspect.
+  iree_host_size_t index;
+  // Exclusive logical range endpoint.
+  iree_host_size_t end;
+} loom_runtime_backing_range_cursor_t;
+
 // Initializes an empty directory without allocating storage.
 void loom_runtime_backing_directory_initialize(
     iree_allocator_t host_allocator,
@@ -84,6 +92,14 @@ const loom_runtime_backing_entry_t* loom_runtime_backing_directory_find_const(
 // capacity but do not affect correctness. Failure preserves all entries and may
 // retain unused capacity acquired for an earlier group in the range.
 iree_status_t loom_runtime_backing_directory_reserve_range(
+    loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
+    iree_host_size_t end);
+
+// Finds or inserts empty entries for every slot in [begin, end), mutating each
+// logical group as one compact sorted range. Existing entries and ownership are
+// preserved. Allocation failure inserts no entries and may retain unused group
+// capacity acquired for an earlier part of the range.
+iree_status_t loom_runtime_backing_directory_insert_range(
     loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
     iree_host_size_t end);
 
@@ -115,6 +131,19 @@ loom_runtime_backing_entry_t* loom_runtime_backing_directory_next(
 const loom_runtime_backing_entry_t* loom_runtime_backing_directory_next_const(
     const loom_runtime_backing_directory_t* directory,
     loom_runtime_backing_cursor_t* cursor);
+
+// Visits compact slices of occupied entries in a logical range with at most
+// one root lookup per group. Initialize cursor with the desired [index, end)
+// range. Each call advances past one logical group and returns NULL at the end.
+// out_count is the number of entries in the returned slice. Mutation
+// invalidates both the returned slice and an active cursor.
+loom_runtime_backing_entry_t* loom_runtime_backing_directory_range_next(
+    loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_count);
+const loom_runtime_backing_entry_t*
+loom_runtime_backing_directory_range_next_const(
+    const loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_count);
 
 // Removes marker-only entries with neither physical nor in-flight ownership.
 void loom_runtime_backing_directory_discard_empty(

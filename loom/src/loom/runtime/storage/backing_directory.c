@@ -256,6 +256,18 @@ static uint16_t loom_runtime_backing_group_occupied_count(
   return count;
 }
 
+static void loom_runtime_backing_group_mark_occupied(
+    loom_runtime_backing_group_t* group, uint16_t begin, uint16_t end) {
+  for (uint16_t word = begin / 64; word <= (end - 1) / 64; ++word) {
+    const uint16_t word_begin = iree_max(begin, word * 64) - word * 64;
+    const uint16_t word_end = iree_min(end, (word + 1) * 64) - word * 64;
+    const uint64_t begin_mask = UINT64_MAX << word_begin;
+    const uint64_t end_mask =
+        word_end == 64 ? UINT64_MAX : (UINT64_C(1) << word_end) - 1;
+    group->occupied[word] |= begin_mask & end_mask;
+  }
+}
+
 iree_status_t loom_runtime_backing_directory_reserve_range(
     loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
     iree_host_size_t end) {
@@ -277,8 +289,64 @@ iree_status_t loom_runtime_backing_directory_reserve_range(
               : 0;
     const uint16_t required_capacity =
         (group ? group->count : 0) + range_count - occupied_count;
-    IREE_RETURN_IF_ERROR(loom_runtime_backing_acquire_group(
-        directory, key, required_capacity, &bucket));
+    if (!group || required_capacity > group->capacity) {
+      IREE_RETURN_IF_ERROR(loom_runtime_backing_acquire_group(
+          directory, key, required_capacity, &bucket));
+    }
+    begin = group_end;
+  }
+  return iree_ok_status();
+}
+
+iree_status_t loom_runtime_backing_directory_insert_range(
+    loom_runtime_backing_directory_t* directory, iree_host_size_t begin,
+    iree_host_size_t end) {
+  IREE_RETURN_IF_ERROR(
+      loom_runtime_backing_directory_reserve_range(directory, begin, end));
+  while (begin < end) {
+    const iree_host_size_t key = begin >> LOOM_RUNTIME_BACKING_GROUP_SHIFT;
+    const uint16_t offset = begin & (LOOM_RUNTIME_BACKING_GROUP_CAPACITY - 1);
+    const iree_host_size_t group_end =
+        begin + iree_min(end - begin,
+                         (iree_host_size_t)LOOM_RUNTIME_BACKING_GROUP_CAPACITY -
+                             offset);
+    loom_runtime_backing_bucket_t* bucket =
+        loom_runtime_backing_find_bucket(directory, key);
+    loom_runtime_backing_group_t* group = bucket->group;
+    const uint16_t range_count = (uint16_t)(group_end - begin);
+    const uint16_t occupied_count = loom_runtime_backing_group_occupied_count(
+        group, offset, offset + range_count);
+    const uint16_t missing_count = range_count - occupied_count;
+    if (!missing_count) {
+      begin = group_end;
+      continue;
+    }
+    const uint16_t position = loom_runtime_backing_group_rank(group, offset);
+    memmove(
+        &group->entries[position + range_count],
+        &group->entries[position + occupied_count],
+        (group->count - position - occupied_count) * sizeof(*group->entries));
+
+    // Expand the compact occupied prefix backward so each existing payload is
+    // read before a later logical destination can overwrite its source.
+    uint16_t source = position + occupied_count;
+    for (iree_host_size_t index = group_end; index > begin;) {
+      --index;
+      const uint16_t logical_offset =
+          index & (LOOM_RUNTIME_BACKING_GROUP_CAPACITY - 1);
+      loom_runtime_backing_entry_t* entry =
+          &group->entries[position + (index - begin)];
+      if (group->occupied[logical_offset / 64] &
+          (UINT64_C(1) << (logical_offset % 64))) {
+        *entry = group->entries[--source];
+      } else {
+        *entry = (loom_runtime_backing_entry_t){.index = index};
+      }
+    }
+    loom_runtime_backing_group_mark_occupied(group, offset,
+                                             offset + range_count);
+    group->count += missing_count;
+    directory->count += missing_count;
     begin = group_end;
   }
   return iree_ok_status();
@@ -403,6 +471,48 @@ loom_runtime_backing_entry_t* loom_runtime_backing_directory_next(
     loom_runtime_backing_cursor_t* cursor) {
   return (loom_runtime_backing_entry_t*)
       loom_runtime_backing_directory_next_const(directory, cursor);
+}
+
+const loom_runtime_backing_entry_t*
+loom_runtime_backing_directory_range_next_const(
+    const loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_count) {
+  *out_count = 0;
+  if (!directory->count) {
+    cursor->index = cursor->end;
+    return NULL;
+  }
+  while (cursor->index < cursor->end) {
+    const iree_host_size_t begin = cursor->index;
+    const iree_host_size_t key = begin >> LOOM_RUNTIME_BACKING_GROUP_SHIFT;
+    const uint16_t offset = begin & (LOOM_RUNTIME_BACKING_GROUP_CAPACITY - 1);
+    const iree_host_size_t group_end =
+        begin + iree_min(cursor->end - begin,
+                         (iree_host_size_t)LOOM_RUNTIME_BACKING_GROUP_CAPACITY -
+                             offset);
+    cursor->index = group_end;
+    const loom_runtime_backing_bucket_t* bucket =
+        loom_runtime_backing_find_bucket(directory, key);
+    if (!bucket->group) {
+      continue;
+    }
+    const loom_runtime_backing_group_t* group = bucket->group;
+    const uint16_t count = loom_runtime_backing_group_occupied_count(
+        group, offset, offset + (uint16_t)(group_end - begin));
+    if (count) {
+      *out_count = count;
+      return &group->entries[loom_runtime_backing_group_rank(group, offset)];
+    }
+  }
+  return NULL;
+}
+
+loom_runtime_backing_entry_t* loom_runtime_backing_directory_range_next(
+    loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_count) {
+  return (loom_runtime_backing_entry_t*)
+      loom_runtime_backing_directory_range_next_const(directory, cursor,
+                                                      out_count);
 }
 
 static void loom_runtime_backing_directory_compact(
