@@ -40,6 +40,50 @@ def command(text):
         print(f"LOOM_STATE_ERROR {error}")
 
 
+def capture_pm4():
+    command("set $loom_pm4 = (iree_hal_amd_gpu_pm4_queue_t *)$loom_transfer")
+    for field in (
+        "options",
+        "publisher",
+        "growth",
+        "closed",
+        "native_failure",
+        "pending",
+        "producer.ring",
+        "producer.count",
+        "producer.frontier",
+        "capacity",
+        "completed",
+        "retirement",
+    ):
+        command(f"print $loom_pm4->{field}")
+    if int(gdb.parse_and_eval("$loom_pm4->storage.mapping")):
+        command("print $loom_pm4->storage.mapping->info")
+        command("print *$loom_pm4->producer.write_index")
+        command("x/gx $loom_pm4->storage.mapping->info.read_index_address")
+        command("x/256wx $loom_pm4->producer.ring.words")
+    published = int(gdb.parse_and_eval("$loom_pm4->producer.count"))
+    completed = int(gdb.parse_and_eval("$loom_pm4->completed.count"))
+    mask = int(gdb.parse_and_eval("$loom_pm4->retirement.capacity_mask"))
+    for position in range(completed, min(published, completed + 16)):
+        slot = position & mask
+        command(f"print $loom_pm4->retirement.records[{slot}]")
+        command(f"print $loom_pm4->issued[{slot}].action")
+        tagged = int(
+            gdb.parse_and_eval(f"$loom_pm4->issued[{slot}].action.tagged_submission")
+        )
+        command(
+            f"set $loom_submission = (iree_hal_amd_gpu_pm4_submission_t *){tagged & ~1}"
+        )
+        command("print *$loom_submission")
+        count = int(gdb.parse_and_eval("$loom_submission->wait_count"))
+        for index in range(min(count, 16)):
+            command(f"print $loom_submission->waits[{index}]")
+            if int(gdb.parse_and_eval(f"$loom_submission->waits[{index}].signal")):
+                command(f"print *$loom_submission->waits[{index}].signal")
+                command(f"print *$loom_submission->waits[{index}].signal->host_value")
+
+
 def capture_state():
     print(f"LOOM_STATE_OWNERS {owners}")
     if "native_event" in owners:
@@ -73,6 +117,9 @@ def capture_state():
     command("set $loom_transfer = $loom_staging->runtime->transfer_queue")
     command("print *$loom_transfer")
     vtable = str(gdb.parse_and_eval("$loom_transfer->resource.vtable"))
+    if "iree_hal_amd_gpu_pm4_queue_vtable" in vtable:
+        capture_pm4()
+        return
     if "iree_hal_amd_gpu_sdma_queue_vtable" not in vtable:
         print(f"LOOM_STATE_TRANSFER_VTABLE {vtable}")
         return
@@ -100,7 +147,10 @@ def capture_state():
         command("x/gx $loom_native->user.storage.mapping->info.read_index_address")
     command("x/256wx $loom_native->commands")
     slots = gdb.parse_and_eval("$loom_sdma->spans").type.range()[1] + 1
-    for index in range(slots):
+    published = int(gdb.parse_and_eval("$loom_native->published"))
+    retired = int(gdb.parse_and_eval("$loom_native->retired"))
+    for position in range(retired, min(published, retired + slots)):
+        index = position % slots
         operation = gdb.parse_and_eval(f"$loom_sdma->spans[{index}].operation")
         if int(operation):
             command(f"print $loom_sdma->spans[{index}]")
