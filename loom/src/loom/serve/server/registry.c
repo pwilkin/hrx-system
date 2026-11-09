@@ -52,7 +52,8 @@ static void loom_serve_registry_publish_service(loom_serve_registry_t* registry,
   registry->services[index] = (loom_runtime_service_t){
       .self = model,
       .vtable = &loom_serve_registry_service_vtable,
-      .capacity_domain = model->service.runtime.capacity_domain,
+      .capacity_domain_count = model->service.runtime.capacity_domain_count,
+      .capacity_domains = model->service.runtime.capacity_domains,
   };
 }
 
@@ -681,7 +682,9 @@ static void loom_serve_registry_release_service(
   model->latency = *model->service.telemetry.latency;
   model->service = (loom_serve_service_t){
       .name = model->service.name,
-      .runtime = {.capacity_domain = model->service.runtime.capacity_domain},
+      .runtime = {.capacity_domain_count =
+                      model->service.runtime.capacity_domain_count,
+                  .capacity_domains = model->service.runtime.capacity_domains},
       .kind = model->service.kind,
       .endpoint = model->service.endpoint,
       .telemetry = {.stream = model->stream,
@@ -823,8 +826,10 @@ iree_status_t loom_serve_registry_advance(loom_serve_registry_t* registry,
           }
         }
         model->service = service;
-        registry->services[index].capacity_domain =
-            service.runtime.capacity_domain;
+        registry->services[index].capacity_domain_count =
+            service.runtime.capacity_domain_count;
+        registry->services[index].capacity_domains =
+            service.runtime.capacity_domains;
         service.runtime.vtable->set_observer(service.runtime.self, observer);
         loom_serve_registry_set_phase(model, LOOM_SERVE_REGISTRATION_READY);
       } else {
@@ -927,6 +932,10 @@ iree_status_t loom_serve_registry_advance(loom_serve_registry_t* registry,
                                     LOOM_SERVE_REGISTRATION_RELEASE_FAILED);
       progress = true;
     } else if (complete) {
+      model->service.runtime.capacity_domain_count = 0;
+      registry->services[index].capacity_domain_count = 0;
+      model->service.runtime.capacity_domains = NULL;
+      registry->services[index].capacity_domains = NULL;
       model->registration.destroy(model->registration.self);
       model->registration = (loom_serve_registration_t){0};
       loom_serve_registry_set_phase(model, LOOM_SERVE_REGISTRATION_FAILED);

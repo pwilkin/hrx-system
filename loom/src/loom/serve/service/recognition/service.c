@@ -730,7 +730,9 @@ loom_serve_service_t loom_serve_recognition_service_interface(
       .name = service->options.name,
       .runtime = {.self = service,
                   .vtable = &vtable,
-                  .capacity_domain = service->generator.capacity_domain},
+                  .capacity_domain_count =
+                      service->generator.capacity_domain_count,
+                  .capacity_domains = service->generator.capacity_domains},
       .accept = service->options.kind == LOOM_SERVICE_KIND_RECOGNITION
                     ? loom_serve_transcription_accept
                     : NULL,

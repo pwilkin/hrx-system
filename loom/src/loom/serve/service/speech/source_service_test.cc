@@ -121,6 +121,10 @@ class SourceSpeechServiceTest : public ::testing::TestWithParam<bool> {
           loom_runtime_device_group_pool_at(group_, 0), &options, allocator_,
           &model_));
       generator_ = loom_serve_speech_model_generator(model_);
+      ASSERT_EQ(generator_.capacity_domain_count, 1u);
+      EXPECT_EQ(generator_.capacity_domains[0],
+                loom_runtime_pool_residency_cache(
+                    loom_runtime_device_group_pool_at(group_, 0)));
       EXPECT_EQ(generator_.tokenizer != nullptr, weighted);
       EXPECT_EQ(generator_.format.sample_rate, 24000u);
       EXPECT_EQ(generator_.format.channels, 1u);

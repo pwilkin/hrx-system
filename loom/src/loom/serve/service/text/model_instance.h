@@ -37,6 +37,8 @@ struct loom_serve_text_model_t {
   loom_runtime_compilation_report_t compilation;
   // Borrowed shared owner outliving every model resource and host I/O payload.
   loom_runtime_device_t* device_owner;
+  // Stable shared-capacity membership, borrowed through final retirement.
+  const void* capacity_domains[1];
   // Borrowed storage and residency owner, independent of execution placement.
   loom_runtime_pool_t* pool;
   // Native execution device borrowed from device_owner.

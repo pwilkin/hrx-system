@@ -82,6 +82,9 @@ class SourceRecognitionModelTest : public ::testing::Test {
     EXPECT_EQ(prepared_memory.retained.reserved_bytes,
               default_memory_.retained.reserved_bytes);
     generator_ = loom_serve_recognition_model_generator(model_);
+    ASSERT_EQ(generator_.capacity_domain_count, 1u);
+    EXPECT_EQ(generator_.capacity_domains[0],
+              loom_runtime_pool_residency_cache(storage_owner_));
     EXPECT_EQ(generator_.format.sample_rate, 16000u);
     EXPECT_EQ(generator_.format.channels, 1u);
     EXPECT_EQ(generator_.input_capacity, 7u);

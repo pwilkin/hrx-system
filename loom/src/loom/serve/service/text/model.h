@@ -491,6 +491,11 @@ iree_status_t loom_serve_text_model_activate(loom_serve_text_model_t* model);
 iree_status_t loom_serve_text_model_deactivate(loom_serve_text_model_t* model,
                                                bool* out_complete);
 
+// Immutable non-NULL shared-capacity identities, borrowed until final model
+// destruction, including retirement after service callbacks are removed.
+const void* const* loom_serve_text_model_capacity_domains(
+    const loom_serve_text_model_t* model, iree_host_size_t* out_count);
+
 // Borrowed admission/retention handle. A caller can try_acquire before choosing
 // work, retaining the returned pin across invocations until release. Ordinary
 // capacity backpressure leaves all model state unchanged.

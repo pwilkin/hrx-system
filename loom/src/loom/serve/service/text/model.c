@@ -452,6 +452,7 @@ iree_status_t loom_serve_text_load_allocate(
     model->host_allocator = host_allocator;
     model->device_owner = device;
     model->pool = pool;
+    model->capacity_domains[0] = loom_runtime_pool_residency_cache(pool);
     model->device = loom_runtime_device_handle(device);
     model->group = loom_runtime_device_group(device);
     model->dispatch = loom_runtime_device_dispatch_queue(device);
@@ -883,6 +884,12 @@ loom_runtime_storage_usage_t loom_serve_text_model_weight_statistics(
 loom_runtime_parameter_activity_t loom_serve_text_model_parameter_activity(
     const loom_serve_text_model_t* model) {
   return loom_runtime_residency_group_activity(model->parameter_group);
+}
+
+const void* const* loom_serve_text_model_capacity_domains(
+    const loom_serve_text_model_t* model, iree_host_size_t* out_count) {
+  *out_count = IREE_ARRAYSIZE(model->capacity_domains);
+  return model->capacity_domains;
 }
 
 loom_runtime_residency_t* loom_serve_text_model_residency(

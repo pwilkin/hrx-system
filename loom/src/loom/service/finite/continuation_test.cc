@@ -46,6 +46,7 @@ class ContinuingSource {
     IREE_RETURN_IF_ERROR(loom_runtime_residency_allocate(
         loom_runtime_pool_residency_cache(pool), execution, 0, nullptr,
         iree_allocator_system(), &residency_));
+    capacity_domains_[0] = loom_runtime_pool_residency_cache(pool);
     directory_ = std::filesystem::path(source_path).parent_path().string();
     const auto filename =
         std::filesystem::path(source_path).filename().string();
@@ -250,7 +251,12 @@ class ContinuingSource {
               source->ReleaseBatch();
             },
     };
-    return {this, &vtable};
+    return {
+        .self = this,
+        .vtable = &vtable,
+        .capacity_domain_count = capacity_domains_.size(),
+        .capacity_domains = capacity_domains_.data(),
+    };
   }
 
   iree_status_t PrepareRequest(iree_vm_buffer_t* input,
@@ -497,6 +503,8 @@ class ContinuingSource {
   }
   // Admission identity for this producer and its accepted output.
   loom_runtime_residency_t* residency_ = nullptr;
+  // Stable shared-capacity membership, borrowed through source retirement.
+  std::array<const void*, 1> capacity_domains_ = {};
   // Diagnostics retained through compilation and source retirement.
   loom_runtime_compilation_report_t report_ = {};
   // Device compilation context owning the retained executable.

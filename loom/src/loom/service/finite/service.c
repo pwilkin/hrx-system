@@ -908,9 +908,9 @@ loom_service_finite_service_interface_t loom_service_finite_service_interface(
       .name = service->name,
       .runtime = {.self = service,
                   .vtable = &vtable,
-                  .capacity_domain = loom_runtime_residency_cache(
-                      service->generator.vtable->residency(
-                          service->generator.self))},
+                  .capacity_domain_count =
+                      service->generator.capacity_domain_count,
+                  .capacity_domains = service->generator.capacity_domains},
       .kind = service->protocol->kind,
       .tokenizer =
           service->generator.vtable->tokenizer(service->generator.self),

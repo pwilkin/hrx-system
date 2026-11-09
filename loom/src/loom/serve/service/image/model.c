@@ -40,6 +40,8 @@ struct loom_serve_image_model_t {
   loom_runtime_tokenizer_t* tokenizer;
   // Borrowed execution device, outliving the model.
   loom_runtime_device_t* owner;
+  // Stable shared-capacity membership, borrowed through final retirement.
+  const void* capacity_domains[1];
   // Borrowed storage and residency owner, independent of execution placement.
   loom_runtime_pool_t* pool;
   // Owned model work and feedback timelines, independent of other models.
@@ -728,6 +730,7 @@ iree_status_t loom_serve_image_load_allocate(
     load->model->host_allocator = host_allocator;
     load->model->owner = device;
     load->model->pool = pool;
+    load->model->capacity_domains[0] = loom_runtime_pool_residency_cache(pool);
     load->model->command_quantum = options->command_quantum;
     load->model->specialization_cache = options->specialization_cache;
     load->host = loom_runtime_device_host(device);
@@ -1478,5 +1481,6 @@ loom_serve_image_generator_t loom_serve_image_model_generator(
       .is_pending = loom_serve_image_generator_is_pending,
       .execution_update = loom_service_executables_update(model->executables),
       .tokenizer = loom_runtime_tokenizer_value(model->tokenizer),
-      .capacity_domain = loom_runtime_residency_cache(model->residency)};
+      .capacity_domain_count = IREE_ARRAYSIZE(model->capacity_domains),
+      .capacity_domains = model->capacity_domains};
 }

@@ -35,7 +35,11 @@ struct Service {
   // Optional publication cleared by the service during its terminal turn.
   loom_runtime_service_t* retirement_slot = nullptr;
 
-  loom_runtime_service_t Interface(const void* capacity_domain) {
+  // Borrowed capacity identity retained for the published singleton set.
+  const void* capacity_domain = nullptr;
+
+  loom_runtime_service_t Interface(const void* domain) {
+    capacity_domain = domain;
     static const loom_runtime_service_vtable_t vtable = {
         .set_observer =
             [](void* self, loom_runtime_wake_callback_t observer) {
@@ -67,7 +71,7 @@ struct Service {
                      : iree_ok_status();
         },
     };
-    return {this, &vtable, capacity_domain};
+    return {this, &vtable, domain ? 1u : 0u, &capacity_domain};
   }
 };
 
@@ -130,8 +134,27 @@ TEST_F(DriverTest, PendingLoansAndQueuedRequestsDoNotPromiseSharedCapacity) {
             LOOM_RUNTIME_SERVICE_FLAG_SHARED_ACTIVITY);
   EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 1), 0u);
   EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 2), 0u);
-  slots_[0].capacity_domain = nullptr;
-  slots_[1].capacity_domain = nullptr;
+  slots_[0].capacity_domain_count = 0;
+  slots_[1].capacity_domain_count = 0;
+  EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 0), 0u);
+}
+
+TEST_F(DriverTest, SharedActivityMatchesAnyPhysicalOwner) {
+  const void* selected_domains[] = {&first_domain_, &second_domain_};
+  const void* peer_domains[] = {&services_[1], &second_domain_};
+  slots_[0].capacity_domain_count = IREE_ARRAYSIZE(selected_domains);
+  slots_[0].capacity_domains = selected_domains;
+  slots_[1].capacity_domain_count = IREE_ARRAYSIZE(peer_domains);
+  slots_[1].capacity_domains = peer_domains;
+  services_[1].active = true;
+  EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 0),
+            LOOM_RUNTIME_SERVICE_FLAG_SHARED_ACTIVITY);
+  services_[1].active = false;
+  EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 0), 0u);
+  services_[1].active = true;
+  slots_[1].capacity_domain_count = 1;
+  EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 0), 0u);
+  slots_[0].capacity_domain_count = 0;
   EXPECT_EQ(loom_runtime_driver_shared_activity(&driver_, 0), 0u);
 }
 

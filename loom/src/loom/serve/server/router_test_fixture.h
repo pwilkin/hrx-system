@@ -464,7 +464,8 @@ struct loom_serve_test_model_service_t {
   }
 
   loom_serve_service_t Interface(const iree_tokenizer_t* tokenizer,
-                                 const void* capacity_domain) {
+                                 iree_host_size_t capacity_domain_count,
+                                 const void* const* capacity_domains) {
     static const loom_runtime_service_vtable_t vtable = {
         .set_observer = SetObserver,
         .has_requests = HasRequests,
@@ -475,7 +476,8 @@ struct loom_serve_test_model_service_t {
     return {.name = iree_make_cstring_view(name),
             .runtime = {.self = this,
                         .vtable = &vtable,
-                        .capacity_domain = capacity_domain},
+                        .capacity_domain_count = capacity_domain_count,
+                        .capacity_domains = capacity_domains},
             .accept = Accept,
             .tokenizer = tokenizer,
             .kind = LOOM_SERVICE_KIND_EMBEDDING,
@@ -533,11 +535,17 @@ class HttpRouterTest : public ::testing::TestWithParam<int> {
     iree_tokenizer_builder_deinitialize(&builder);
     IREE_ASSERT_OK(tokenizer_status);
     owner_ = std::thread([this] {
+      const void* shared[] = {&a_};
+      const void* peer_domains[] = {&b_, &a_};
+      const void* held_domains[] = {&a_, &held_};
       const loom_serve_service_t services[] = {
-          a_.Interface(tokenizer_a_, &a_), b_.Interface(tokenizer_b_, &a_),
-          held_.Interface(tokenizer_a_, &a_),
-          other_.Interface(nullptr, nullptr),
-          escaped_.Interface(nullptr, nullptr)};
+          a_.Interface(tokenizer_a_, IREE_ARRAYSIZE(shared), shared),
+          b_.Interface(tokenizer_b_, IREE_ARRAYSIZE(peer_domains),
+                       peer_domains),
+          held_.Interface(tokenizer_a_, IREE_ARRAYSIZE(held_domains),
+                          held_domains),
+          other_.Interface(nullptr, 0, nullptr),
+          escaped_.Interface(nullptr, 0, nullptr)};
       loom_serve_registry_t* registry = nullptr;
       IREE_ASSERT_OK(loom_serve_registry_allocate(
           IREE_ARRAYSIZE(services), services, managed_capacity_, factory_,

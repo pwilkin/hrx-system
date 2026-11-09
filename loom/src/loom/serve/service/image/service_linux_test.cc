@@ -54,6 +54,8 @@ struct loom_serve_test_image_gate_t {
   bool* occupied = nullptr;
   // Borrowed model execution domain held by an explicit queue dependency.
   loom_runtime_execution_t* execution = nullptr;
+  // Stable physical capacity identity, retained through service retirement.
+  const void* capacity_domain = nullptr;
   // Borrowed valid CHW F32 result, outliving the joined service.
   float pixel[3] = {};
   // Successful completions consumed by the scheduler, read after service join.
@@ -240,6 +242,8 @@ class ImageServiceFixture : public ::testing::Test {
   void AddImage(size_t index, iree_string_view_t name,
                 iree_duration_t heartbeat_interval) {
     gates_[index].http = &http_;
+    gates_[index].capacity_domain = loom_runtime_pool_residency_cache(
+        loom_runtime_device_group_pool_at(group_, executions_[1] ? index : 0));
     const loom_serve_image_generator_t generator = {
         .self = &gates_[index],
         .batch_limit = 1,
@@ -255,9 +259,8 @@ class ImageServiceFixture : public ::testing::Test {
         .try_admit = loom_serve_test_image_gate_t::Admit,
         .submit = loom_serve_test_image_gate_t::Submit,
         .complete = loom_serve_test_image_gate_t::Complete,
-        .capacity_domain =
-            loom_runtime_pool_residency_cache(loom_runtime_device_group_pool_at(
-                group_, executions_[1] ? index : 0)),
+        .capacity_domain_count = 1,
+        .capacity_domains = &gates_[index].capacity_domain,
     };
     const loom_serve_image_service_options_t options = {
         .name = name,

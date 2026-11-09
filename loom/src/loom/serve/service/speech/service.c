@@ -1457,7 +1457,9 @@ loom_serve_service_t loom_serve_speech_service_interface(
       .name = service->options.name,
       .runtime = {.self = service,
                   .vtable = &vtable,
-                  .capacity_domain = service->generator.capacity_domain},
+                  .capacity_domain_count =
+                      service->generator.capacity_domain_count,
+                  .capacity_domains = service->generator.capacity_domains},
       .accept = loom_serve_speech_accept,
       .try_open_speech = loom_serve_speech_open,
       .try_upload_voice = service->generator.voice_capacity

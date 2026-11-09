@@ -24,16 +24,28 @@ void loom_runtime_driver_set_observer(loom_runtime_driver_t* driver,
   }
 }
 
+static bool loom_runtime_driver_shares_capacity(
+    const loom_runtime_service_t* lhs, const loom_runtime_service_t* rhs) {
+  for (iree_host_size_t i = 0; i < lhs->capacity_domain_count; ++i) {
+    for (iree_host_size_t j = 0; j < rhs->capacity_domain_count; ++j) {
+      if (lhs->capacity_domains[i] == rhs->capacity_domains[j]) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 loom_runtime_service_flags_t loom_runtime_driver_shared_activity(
     const loom_runtime_driver_t* driver, iree_host_size_t selected) {
-  const void* capacity_domain = driver->services[selected].capacity_domain;
-  if (!capacity_domain) {
+  const loom_runtime_service_t* selected_service = &driver->services[selected];
+  if (!selected_service->capacity_domain_count) {
     return 0;
   }
   for (iree_host_size_t i = 0; i < driver->capacity; ++i) {
     const loom_runtime_service_t* service = &driver->services[i];
     if (i != selected && service->vtable &&
-        service->capacity_domain == capacity_domain &&
+        loom_runtime_driver_shares_capacity(service, selected_service) &&
         service->vtable->is_active(service->self)) {
       return LOOM_RUNTIME_SERVICE_FLAG_SHARED_ACTIVITY;
     }

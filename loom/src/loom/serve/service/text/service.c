@@ -1455,6 +1455,9 @@ loom_serve_service_t loom_serve_text_service_interface(
   static const iree_string_view_t token_modalities[] = {IREE_SVL("tokens")};
   static const iree_string_view_t activation_modalities[] = {
       IREE_SVL("activations")};
+  iree_host_size_t capacity_domain_count = 0;
+  const void* const* capacity_domains = loom_serve_text_model_capacity_domains(
+      service->model, &capacity_domain_count);
   const bool encodes =
       service->scheduling.model_mode == LOOM_SERVE_TEXT_MODE_ENCODE;
   const loom_serve_media_image_codec_t* const* codecs = NULL;
@@ -1466,8 +1469,8 @@ loom_serve_service_t loom_serve_text_service_interface(
       .name = service->name,
       .runtime = {.self = service,
                   .vtable = &vtable,
-                  .capacity_domain = loom_runtime_residency_cache(
-                      loom_serve_text_model_residency(service->model))},
+                  .capacity_domain_count = capacity_domain_count,
+                  .capacity_domains = capacity_domains},
       .accept = loom_serve_text_accept,
       .try_open_text = encodes ? NULL : loom_serve_text_open,
       .try_open_text_checkpoint = loom_serve_text_open_checkpoint,

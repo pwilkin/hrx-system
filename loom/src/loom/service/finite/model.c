@@ -71,6 +71,8 @@ struct loom_service_finite_model_t {
   loom_runtime_tokenizer_t* tokenizer;
   // Borrowed execution device and compiler host, outliving the model.
   loom_runtime_device_t* owner;
+  // Stable shared-capacity membership, borrowed through final retirement.
+  const void* capacity_domains[1];
   // Borrowed storage, command workspace, and admission owner.
   loom_runtime_pool_t* pool;
   // Owned model work and feedback timelines, independent of other models.
@@ -915,6 +917,7 @@ iree_status_t loom_service_finite_load_allocate(
     load->model->pool = pool;
     load->host = loom_runtime_device_host(device);
     loom_runtime_host_preparation_begin(load->host);
+    load->model->capacity_domains[0] = loom_runtime_pool_residency_cache(pool);
     *out_load = load;
   } else {
     iree_slim_mutex_deinitialize(&load->event.mutex);
@@ -1617,5 +1620,10 @@ loom_service_finite_generator_t loom_service_finite_model_generator(
       .complete = loom_service_finite_generator_complete,
       .release_batch = loom_service_finite_generator_release_batch,
   };
-  return (loom_service_finite_generator_t){model, &vtable};
+  return (loom_service_finite_generator_t){
+      .self = model,
+      .vtable = &vtable,
+      .capacity_domain_count = IREE_ARRAYSIZE(model->capacity_domains),
+      .capacity_domains = model->capacity_domains,
+  };
 }

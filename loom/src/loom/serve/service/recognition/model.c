@@ -98,6 +98,8 @@ struct loom_serve_recognition_model_t {
   loom_runtime_tokenizer_t* tokenizer;
   // Borrowed shared device, outliving this model.
   loom_runtime_device_t* owner;
+  // Stable shared-capacity membership, borrowed through final retirement.
+  const void* capacity_domains[1];
   // Borrowed storage and residency owner, independent of execution placement.
   loom_runtime_pool_t* pool;
   // Independent model work and feedback timelines on shared queues.
@@ -984,6 +986,7 @@ iree_status_t loom_serve_recognition_load_allocate(
     load->model->pool = pool;
     load->host = loom_runtime_device_host(device);
     loom_runtime_host_preparation_begin(load->host);
+    load->model->capacity_domains[0] = loom_runtime_pool_residency_cache(pool);
     *out_load = load;
   } else {
     iree_slim_mutex_deinitialize(&load->event.mutex);
@@ -1701,7 +1704,8 @@ loom_serve_recognition_generator_t loom_serve_recognition_model_generator(
       .release_batch = loom_serve_recognition_generator_release_batch,
       .release = loom_serve_recognition_generator_release,
       .tokenizer = loom_runtime_tokenizer_value(model->tokenizer),
-      .capacity_domain = loom_runtime_residency_cache(model->residency),
+      .capacity_domain_count = IREE_ARRAYSIZE(model->capacity_domains),
+      .capacity_domains = model->capacity_domains,
       .parameter_activity =
           loom_serve_recognition_generator_parameter_activity};
 }

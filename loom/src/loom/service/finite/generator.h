@@ -83,6 +83,11 @@ typedef struct loom_service_finite_generator_t {
   void* self;
   // Immutable source operations, outliving self.
   const loom_service_finite_generator_vtable_t* vtable;
+  // Number of immutable shared-capacity identities; zero declares no sharing.
+  iree_host_size_t capacity_domain_count;
+  // Borrowed non-NULL identities whose overlap permits shared admission
+  // progress. The array and owners remain live through final model retirement.
+  const void* const* capacity_domains;
 } loom_service_finite_generator_t;
 
 #ifdef __cplusplus

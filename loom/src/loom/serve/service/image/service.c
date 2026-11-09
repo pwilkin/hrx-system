@@ -1209,7 +1209,9 @@ loom_serve_service_t loom_serve_image_service_interface(
       .name = service->options.name,
       .runtime = {.self = service,
                   .vtable = &vtable,
-                  .capacity_domain = service->generator.capacity_domain},
+                  .capacity_domain_count =
+                      service->generator.capacity_domain_count,
+                  .capacity_domains = service->generator.capacity_domains},
       .accept = loom_serve_image_accept,
       .tokenizer = service->generator.tokenizer,
       .kind = LOOM_SERVICE_KIND_IMAGE,

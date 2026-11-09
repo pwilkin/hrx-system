@@ -14,7 +14,7 @@ extern "C" {
 #endif
 
 enum loom_runtime_service_flag_bits_e {
-  // Another service in the same capacity domain has accepted work or
+  // Another service sharing a capacity domain has accepted work or
   // maintenance that may release capacity. Admission can queue instead of
   // rejecting an idle-capacity stall.
   LOOM_RUNTIME_SERVICE_FLAG_SHARED_ACTIVITY = 1u << 0,
@@ -65,10 +65,13 @@ typedef struct loom_runtime_service_t {
   void* self;
   // Immutable implementation methods, shared by instances of the same service.
   const loom_runtime_service_vtable_t* vtable;
-  // Opaque shared-capacity identity, never dereferenced by the scheduler. Only
-  // equal non-NULL identities can provide SHARED_ACTIVITY to each other; NULL
-  // means this service has no shared-capacity relationship.
-  const void* capacity_domain;
+  // Number of immutable shared-capacity identities; zero declares no sharing.
+  iree_host_size_t capacity_domain_count;
+  // Borrowed non-NULL identities, never dereferenced by the scheduler. Any
+  // equal member permits SHARED_ACTIVITY. The array and its owners outlive
+  // service callbacks and every accepted obligation through final model
+  // retirement.
+  const void* const* capacity_domains;
 } loom_runtime_service_t;
 
 #ifdef __cplusplus

@@ -36,8 +36,11 @@ struct Service {
   // Terminal dependency failure published on its next turn.
   bool fail = false;
 
-  loom_serve_service_t Interface(iree_string_view_t name,
-                                 const void* capacity_domain) {
+  // Borrowed capacity identity retained for the published singleton set.
+  const void* capacity_domain = nullptr;
+
+  loom_serve_service_t Interface(iree_string_view_t name, const void* domain) {
+    capacity_domain = domain;
     static const loom_runtime_service_vtable_t vtable = {
         .set_observer =
             [](void* self, loom_runtime_wake_callback_t value) {
@@ -73,7 +76,8 @@ struct Service {
             {
                 .self = this,
                 .vtable = &vtable,
-                .capacity_domain = capacity_domain,
+                .capacity_domain_count = domain ? 1u : 0u,
+                .capacity_domains = &capacity_domain,
             },
     };
   }
@@ -154,12 +158,12 @@ TEST_F(DriverTest, CapacityWaitingRequiresActivityInTheSameNonnullDomain) {
   EXPECT_EQ(loom_serve_driver_shared_activity(&driver_, 2), 0u);
   auto* first = loom_serve_registry_at(driver_.registry, 0);
   auto* second = loom_serve_registry_at(driver_.registry, 1);
-  first->service.runtime.capacity_domain = nullptr;
-  second->service.runtime.capacity_domain = nullptr;
+  first->service.runtime.capacity_domain_count = 0;
+  second->service.runtime.capacity_domain_count = 0;
   // These controlled dependencies change their publication together; actual
   // model publication updates the capability at its owning transition.
-  driver_.runtime.services[0].capacity_domain = nullptr;
-  driver_.runtime.services[1].capacity_domain = nullptr;
+  driver_.runtime.services[0].capacity_domain_count = 0;
+  driver_.runtime.services[1].capacity_domain_count = 0;
   EXPECT_EQ(loom_serve_driver_shared_activity(&driver_, 0), 0u);
   services_[1].pending = false;
 }
