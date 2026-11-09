@@ -4,7 +4,9 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""Read-only state capture, loaded by GDB on the diagnostic branch."""
+"""State capture and an initial-release probe on the diagnostic branch."""
+
+import struct
 
 import gdb
 
@@ -30,6 +32,62 @@ CaptureOwner("loom_run_hal_testbench_staging_initialize", "staging", "out_stagin
 CaptureOwner("iree_hal_amd_gpu_completion_main", "completion", "user_data")
 CaptureOwner("iree_hal_amd_gpu_semaphore_wait", "wait_value", "value")
 CaptureOwner("amdf_gpu_umd_event_wait", "native_event", "event")
+
+
+class ProbeInitialRelease(gdb.Breakpoint):
+    def __init__(self):
+        super().__init__("iree_hal_amd_gpu_pm4_publish_accepted", internal=True)
+
+    def stop(self):
+        try:
+            if int(gdb.parse_and_eval("position")) != 0:
+                return False
+            if not bool(
+                gdb.parse_and_eval(
+                    "submission->entry.kind == IREE_HAL_AMD_GPU_PM4_ENTRY_ALLOCATION"
+                )
+            ):
+                return False
+            address = int(gdb.parse_and_eval("queue->producer.ring.words"))
+            signal = int(gdb.parse_and_eval("submission->signal->device_address"))
+            expected = (
+                0xC0064900,
+                0x528,
+                0x23010000,
+                signal & 0xFFFFFFFF,
+                signal >> 32,
+                1,
+                0,
+                0,
+            )
+            inferior = gdb.selected_inferior()
+            actual = struct.unpack("<8I", inferior.read_memory(address, 32))
+            if actual != expected:
+                print(f"LOOM_PROBE_ERROR unexpected initial packet {actual}")
+                return True
+            # The initial allocation has no earlier queue work. Change only
+            # its signal write, before publication, to distinguish EOP release
+            # nonprogress from a queue that never starts fetching commands.
+            replacement = (
+                0xC0033700,
+                0x00100200,
+                expected[3],
+                expected[4],
+                1,
+                0xC0011000,
+                0,
+                0,
+            )
+            inferior.write_memory(address, struct.pack("<8I", *replacement))
+            print(f"LOOM_PROBE_INITIAL_RELEASE_REPLACED address={address:#x}")
+            self.enabled = False
+        except gdb.error as error:
+            print(f"LOOM_PROBE_ERROR {error}")
+            return True
+        return False
+
+
+ProbeInitialRelease()
 
 
 def command(text):
@@ -58,6 +116,12 @@ def capture_pm4():
     ):
         command(f"print $loom_pm4->{field}")
     if int(gdb.parse_and_eval("$loom_pm4->storage.mapping")):
+        command(
+            "set $loom_umd_queue = "
+            "((amdf_gpu_user_queue_t *)$loom_pm4->storage.queue)->umd"
+        )
+        command("print *$loom_umd_queue")
+        command("print $loom_umd_queue->plan")
         command("print $loom_pm4->storage.mapping->info")
         command("print *$loom_pm4->producer.write_index")
         command("x/gx $loom_pm4->storage.mapping->info.read_index_address")
