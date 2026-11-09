@@ -4,7 +4,7 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""State capture and an initial-release probe on the diagnostic branch."""
+"""State capture and a raw native-write probe on the diagnostic branch."""
 
 import struct
 
@@ -34,7 +34,7 @@ CaptureOwner("iree_hal_amd_gpu_semaphore_wait", "wait_value", "value")
 CaptureOwner("amdf_gpu_umd_event_wait", "native_event", "event")
 
 
-class ProbeInitialRelease(gdb.Breakpoint):
+class ProbeNativeWrite(gdb.Breakpoint):
     def __init__(self):
         super().__init__("iree_hal_amd_gpu_pm4_publish_accepted", internal=True)
 
@@ -65,21 +65,51 @@ class ProbeInitialRelease(gdb.Breakpoint):
             if actual != expected:
                 print(f"LOOM_PROBE_ERROR unexpected initial packet {actual}")
                 return True
-            # The initial allocation has no earlier queue work. Change only
-            # its signal write, before publication, to distinguish EOP release
-            # nonprogress from a queue that never starts fetching commands.
-            replacement = (
+            if int(gdb.parse_and_eval("queue->producer.ring.reserved_words")) != 32:
+                print("LOOM_PROBE_ERROR unexpected initial publication extent")
+                return True
+            native = gdb.parse_and_eval(
+                "((amdf_gpu_user_queue_t *)queue->storage.queue)->umd"
+            ).dereference()
+            control = native["plan"]["control"]
+            offset = (
+                int(control["error_payload_byte_offset"])
+                + int(control["error_payload_byte_length"])
+                + 63
+            ) & ~63
+            if (
+                offset + 4 > int(control["storage"]["byte_length"])
+                or not int(control["storage"]["native_flags"]) & 0x02000000
+            ):
+                print("LOOM_PROBE_ERROR no unused uncached control word")
+                return True
+            target = int(native["control"]["device_address"]) + offset
+            owners["native_write_word"] = (
+                int(native["control"]["host_pointer"]) + offset
+            )
+            initial = struct.unpack(
+                "<I", inferior.read_memory(owners["native_write_word"], 4)
+            )[0]
+            if initial != 0:
+                print(f"LOOM_PROBE_ERROR control padding is not zero: {initial:#x}")
+                return True
+            # Submit one confirmed write into unused uncached control storage.
+            # No release, wait, shader, or event remains in this publication.
+            # Host staging intentionally remains blocked; the marker and native
+            # read index are the experiment's observations.
+            replacement = [
                 0xC0033700,
                 0x00100200,
-                expected[3],
-                expected[4],
-                1,
-                0xC0011000,
-                0,
-                0,
+                target & 0xFFFFFFFF,
+                target >> 32,
+                0x6C6F6F6D,
+                0xC0191000,
+            ] + [0] * 26
+            inferior.write_memory(address, struct.pack("<32I", *replacement))
+            print(
+                f"LOOM_PROBE_NATIVE_WRITE ring={address:#x} target={target:#x} "
+                "expected=0x6c6f6f6d"
             )
-            inferior.write_memory(address, struct.pack("<8I", *replacement))
-            print(f"LOOM_PROBE_INITIAL_RELEASE_REPLACED address={address:#x}")
             self.enabled = False
         except gdb.error as error:
             print(f"LOOM_PROBE_ERROR {error}")
@@ -87,7 +117,7 @@ class ProbeInitialRelease(gdb.Breakpoint):
         return False
 
 
-ProbeInitialRelease()
+ProbeNativeWrite()
 
 
 def command(text):
@@ -150,6 +180,8 @@ def capture_pm4():
 
 def capture_state():
     print(f"LOOM_STATE_OWNERS {owners}")
+    if "native_write_word" in owners:
+        command(f"x/wx {owners['native_write_word']}")
     if "native_event" in owners:
         command(f"print *(amdf_gpu_umd_event_t *){owners['native_event']}")
     if "completion" in owners:
