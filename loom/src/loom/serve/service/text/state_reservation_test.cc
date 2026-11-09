@@ -128,7 +128,7 @@ TEST_F(TextStateReservationTest,
     std::vector<loom_runtime_memory_range_t> planned;
   } context = {state_.memory.pool, {}};
   const auto deny = [](void* user_data, iree_host_size_t count,
-                       const loom_runtime_memory_range_t* ranges,
+                       loom_runtime_memory_range_t* ranges,
                        iree_hal_semaphore_t* readiness, uint64_t value,
                        loom_runtime_memory_admission_t* out_admission,
                        loom_runtime_memory_operation_t** out_operation) {
@@ -159,7 +159,7 @@ TEST_F(TextStateReservationTest,
   ASSERT_NO_FATAL_FAILURE(Reserve(1, 16));
   loom_serve_text_state_row_reset(state_.rows[1]);
   const auto commit = [](void* user_data, iree_host_size_t count,
-                         const loom_runtime_memory_range_t* ranges,
+                         loom_runtime_memory_range_t* ranges,
                          iree_hal_semaphore_t* readiness, uint64_t value,
                          loom_runtime_memory_admission_t* out_admission,
                          loom_runtime_memory_operation_t** out_operation) {

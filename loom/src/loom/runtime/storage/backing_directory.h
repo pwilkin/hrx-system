@@ -29,7 +29,7 @@ typedef struct loom_runtime_backing_entry_t {
   bool keep;
   // Missing slab selected by the current serialized commitment transaction.
   bool pending_commit;
-  // Temporary union mark scoped to one serialized footprint query.
+  // Temporary union mark scoped to one serialized backing selection.
   bool counted;
   // Accepted asynchronous operation excludes another editor of this slot.
   bool in_flight;

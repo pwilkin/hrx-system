@@ -10,6 +10,7 @@
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "loom/runtime/storage/memory_geometry.h"
+#include "loom/runtime/storage/memory_ranges.h"
 #include "loom/runtime/storage/statistics.h"
 #include "loom/runtime/wake.h"
 
@@ -24,7 +25,6 @@ extern "C" {
 // Backing supports storage, transfers, and indirect dispatch parameters.
 typedef struct loom_runtime_memory_pool_t loom_runtime_memory_pool_t;
 typedef struct loom_runtime_memory_arena_t loom_runtime_memory_arena_t;
-typedef struct loom_runtime_virtual_buffer_t loom_runtime_virtual_buffer_t;
 typedef struct loom_runtime_memory_operation_t loom_runtime_memory_operation_t;
 
 // Additional physical ownership within one pool, not a reservation of credit.
@@ -270,37 +270,17 @@ iree_status_t loom_runtime_virtual_buffer_commit(
     loom_runtime_virtual_buffer_t* buffer, iree_device_size_t offset,
     iree_device_size_t length);
 
-// One caller-validated nonempty extent in a virtual reservation. Every range
-// in a commitment transaction belongs to the same physical pool.
-typedef struct loom_runtime_memory_range_t {
-  // Borrowed reservation whose physical backing is required.
-  loom_runtime_virtual_buffer_t* buffer;
-  // Byte offset within the reservation.
-  iree_device_size_t offset;
-  // Number of accessible bytes required from offset.
-  iree_device_size_t length;
-} loom_runtime_memory_range_t;
-
-typedef struct loom_runtime_memory_footprint_t {
-  // Full physical extent of the range union, including unbacked slabs.
-  uint64_t total_bytes;
-  // Additional commitment, excluding live or already accepted backing.
-  uint64_t missing_bytes;
-} loom_runtime_memory_footprint_t;
-
-// Physical footprint of the caller-validated range union. Overlapping views
-// count each slot once. Runs on the pool's serialized owner without querying
-// native availability, committing storage, or retaining transient union marks.
-// Sparse query metadata may allocate. Sums saturate at uint64_t.
-iree_status_t loom_runtime_memory_ranges_footprint(
-    iree_host_size_t range_count, const loom_runtime_memory_range_t* ranges,
-    loom_runtime_memory_footprint_t* out_footprint);
+// Reads the footprint of one caller-validated nonempty range. Mapping units
+// intersecting the range count in full. No allocation, metadata mutation, or
+// native progress query occurs; accepted backing counts until retirement.
+loom_runtime_memory_footprint_t loom_runtime_virtual_buffer_footprint(
+    const loom_runtime_virtual_buffer_t* buffer, iree_device_size_t offset,
+    iree_device_size_t length);
 
 // Selects actual accepted backing intersecting a validated range, without
 // allocating, collecting completion, or counting unbacked declarations.
-// Repeated ranges share the footprint query's temporary union mark. The
-// serialized owner visits every participating buffer before another footprint
-// query or mutation.
+// Repeated ranges share one temporary selection mark. The serialized owner
+// visits every participating buffer before another selection or mutation.
 void loom_runtime_virtual_buffer_select_backing(
     loom_runtime_virtual_buffer_t* buffer, iree_device_size_t offset,
     iree_device_size_t length);

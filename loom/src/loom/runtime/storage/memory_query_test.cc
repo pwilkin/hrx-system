@@ -67,9 +67,8 @@ TEST_F(MemoryTest, BackingSelectionCountsActualUnionAndClearsFailedVisitors) {
     IREE_ASSERT_OK(
         loom_runtime_virtual_buffer_visit_backing(first, visit, &selected));
     EXPECT_EQ(selected.ranges.size(), count);
-    const loom_runtime_memory_range_t range = {first, high, 1};
-    loom_runtime_memory_footprint_t footprint;
-    IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(1, &range, &footprint));
+    loom_runtime_memory_range_t range = {first, high, 1};
+    const auto footprint = loom_runtime_memory_ranges_footprint(1, &range);
     EXPECT_EQ(footprint.total_bytes, geometry.mapping_size);
     EXPECT_EQ(footprint.missing_bytes, 0u);
   }

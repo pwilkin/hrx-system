@@ -306,7 +306,7 @@ iree_status_t loom_runtime_residency_try_admit(
 // wait occurs.
 iree_status_t loom_runtime_residency_try_admit_state(
     loom_runtime_residency_t* residency, iree_host_size_t range_count,
-    const loom_runtime_memory_range_t* ranges,
+    loom_runtime_memory_range_t* ranges,
     const loom_runtime_residency_forecast_t* forecast,
     iree_hal_semaphore_t* readiness, uint64_t value,
     loom_runtime_residency_admission_t* out_admission,

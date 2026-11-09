@@ -410,20 +410,16 @@ TEST_F(MemoryTest, LogicalExtentDoesNotAllocateDenseHostMetadata) {
   EXPECT_EQ(sparse.largest_request_bytes, compact.largest_request_bytes);
 }
 
-TEST_F(MemoryTest, SparseDirectoryAllocationFailureLeavesNoTransactionMarks) {
+TEST_F(MemoryTest, SparseFootprintDoesNotAllocateOrMarkDirectory) {
   const auto geometry = loom_runtime_pool_state_geometry(storage_owner);
   IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
       pool, geometry, 2 * geometry.mapping_size, 256, &statistics[0], &first));
-  const loom_runtime_memory_range_t range = {first, geometry.mapping_size, 256};
-
-  native.FailNextAllocation(IREE_ALLOCATOR_COMMAND_CALLOC);
-  loom_runtime_memory_footprint_t footprint;
-  IREE_EXPECT_STATUS_IS(
-      IREE_STATUS_RESOURCE_EXHAUSTED,
-      loom_runtime_memory_ranges_footprint(1, &range, &footprint));
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(1, &range, &footprint));
+  loom_runtime_memory_range_t range = {first, geometry.mapping_size, 256};
+  native.ResetAllocationMetrics();
+  const auto footprint = loom_runtime_memory_ranges_footprint(1, &range);
   EXPECT_EQ(footprint.total_bytes, geometry.mapping_size);
   EXPECT_EQ(footprint.missing_bytes, geometry.mapping_size);
+  EXPECT_EQ(native.allocation_metrics().request_count, 0u);
 
   // Use a fresh reservation so the commitment itself must allocate a directory.
   IREE_ASSERT_OK(loom_runtime_virtual_buffer_allocate(
@@ -920,14 +916,13 @@ TEST_F(MemoryTest, WeightTailAndStateMappingsShareOnePhysicalParent) {
   EXPECT_EQ(loom_runtime_virtual_buffer_slab_count(first), 2u);
 
   // Duplicate and overlapping logical ranges charge each physical extent once.
-  const loom_runtime_memory_range_t ranges[] = {
+  loom_runtime_memory_range_t ranges[] = {
       {first, bulk.mapping_size - 4, 8},
       {second, 0, 4},
       {first, bulk.mapping_size, tail_bytes - 1},
   };
-  loom_runtime_memory_footprint_t footprint;
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges),
-                                                      ranges, &footprint));
+  auto footprint =
+      loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges), ranges);
   EXPECT_EQ(footprint.total_bytes, initial_logical_bytes);
   EXPECT_EQ(footprint.missing_bytes, initial_logical_bytes);
   deferred_backing->defer = true;
@@ -942,8 +937,8 @@ TEST_F(MemoryTest, WeightTailAndStateMappingsShareOnePhysicalParent) {
   EXPECT_EQ(statistics[1].pending_bytes, state.mapping_size);
   EXPECT_EQ(loom_runtime_memory_pool_statistics(pool).pending_bytes,
             initial_logical_bytes);
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges),
-                                                      ranges, &footprint));
+  footprint =
+      loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges), ranges);
   EXPECT_EQ(footprint.total_bytes, initial_logical_bytes);
   EXPECT_EQ(footprint.missing_bytes, 0u);
   deferred_backing->ResumeAcquisitions();
@@ -1290,23 +1285,24 @@ TEST_F(MemoryTest, CohortAdmissionCountsUniqueSlabsAndLeavesDenialUntouched) {
       256, &statistics[1], &second));
   IREE_ASSERT_OK(loom_runtime_virtual_buffer_commit(first, 0, 256));
   RoundTrip(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
-  const loom_runtime_memory_range_t ranges[] = {
+  loom_runtime_memory_range_t ranges[] = {
       {first, 0, 256},
       {first, kSlabSize, 256},
       {first, kSlabSize + 128, 256},
       {second, kSlabSize - 128, 256},
   };
-  // Forecast all touched slots, not just missing backing. Repeated queries
-  // neither accumulate marks nor affect the commitment/trim transaction.
-  loom_runtime_memory_footprint_t footprint;
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges),
-                                                      ranges, &footprint));
+  loom_runtime_memory_range_t first_ranges[] = {ranges[0], ranges[1],
+                                                ranges[2]};
+  // Forecast all touched slots, not just missing backing. Queries may reorder
+  // their inputs, but never change backing or the commitment/trim transaction.
+  auto footprint =
+      loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges), ranges);
   EXPECT_EQ(footprint.total_bytes, 4 * kSlabSize);
   EXPECT_EQ(footprint.missing_bytes, 3 * kSlabSize);
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(3, ranges, &footprint));
+  footprint = loom_runtime_memory_ranges_footprint(3, first_ranges);
   EXPECT_EQ(footprint.total_bytes, 2 * kSlabSize);
   EXPECT_EQ(footprint.missing_bytes, kSlabSize);
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(0, nullptr, &footprint));
+  footprint = loom_runtime_memory_ranges_footprint(0, nullptr);
   EXPECT_EQ(footprint.total_bytes, 0u);
   EXPECT_EQ(footprint.missing_bytes, 0u);
   bool admitted = true;
@@ -1316,22 +1312,22 @@ TEST_F(MemoryTest, CohortAdmissionCountsUniqueSlabsAndLeavesDenialUntouched) {
   EXPECT_EQ(loom_runtime_memory_pool_statistics(pool).committed_bytes,
             kSlabSize);
   EXPECT_EQ(statistics[1].committed_bytes, 0u);
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges),
-                                                      ranges, &footprint));
+  footprint =
+      loom_runtime_memory_ranges_footprint(IREE_ARRAYSIZE(ranges), ranges);
   EXPECT_EQ(footprint.total_bytes, 4 * kSlabSize);
   EXPECT_EQ(footprint.missing_bytes, 3 * kSlabSize);
   CheckRetained(loom_runtime_virtual_buffer_handle(first), 0, 0x12345678);
   IREE_ASSERT_OK(
-      loom_runtime_memory_pool_try_commit(pool, 3, ranges, &admitted));
+      loom_runtime_memory_pool_try_commit(pool, 3, first_ranges, &admitted));
   EXPECT_TRUE(admitted);
   EXPECT_EQ(loom_runtime_memory_pool_statistics(pool).committed_bytes,
             2 * kSlabSize);
-  IREE_ASSERT_OK(loom_runtime_memory_ranges_footprint(3, ranges, &footprint));
+  footprint = loom_runtime_memory_ranges_footprint(3, first_ranges);
   EXPECT_EQ(footprint.total_bytes, 2 * kSlabSize);
   EXPECT_EQ(footprint.missing_bytes, 0u);
   RoundTrip(loom_runtime_virtual_buffer_handle(first), kSlabSize, 0x87654321);
   IREE_ASSERT_OK(
-      loom_runtime_memory_pool_try_commit(pool, 3, ranges, &admitted));
+      loom_runtime_memory_pool_try_commit(pool, 3, first_ranges, &admitted));
   EXPECT_TRUE(admitted);
   EXPECT_EQ(loom_runtime_memory_pool_statistics(pool).committed_bytes,
             2 * kSlabSize);

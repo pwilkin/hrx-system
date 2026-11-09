@@ -31,7 +31,7 @@ static iree_status_t loom_serve_text_forecast_state(
 
 static iree_status_t loom_serve_text_admit_state(
     void* user_data, iree_host_size_t range_count,
-    const loom_runtime_memory_range_t* ranges, iree_hal_semaphore_t* readiness,
+    loom_runtime_memory_range_t* ranges, iree_hal_semaphore_t* readiness,
     uint64_t value, loom_runtime_memory_admission_t* out_admission,
     loom_runtime_memory_operation_t** out_operation) {
   loom_serve_text_reserve_context_t* context = user_data;

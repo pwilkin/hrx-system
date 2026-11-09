@@ -1236,8 +1236,8 @@ void loom_runtime_residency_set_private_peak(
 // Borrowed for one serialized admission, before either state or parameters
 // submit work. The state owner retains the resulting native operation.
 typedef struct loom_runtime_residency_state_t {
-  // Exact mutable-state ranges produced by the caller's logical planner.
-  const loom_runtime_memory_range_t* ranges;
+  // Caller-owned ranges; admission orders them in place by buffer and offset.
+  loom_runtime_memory_range_t* ranges;
   // Number of ranges, including zero for fixed backing.
   iree_host_size_t range_count;
   // Optional producer projection including legal re-placement after denial.
@@ -1305,11 +1305,10 @@ static iree_status_t loom_runtime_residency_acquire_parameters(
   *out_admission = LOOM_RUNTIME_RESIDENCY_ADMISSION_CAPACITY;
   IREE_RETURN_IF_ERROR(
       loom_runtime_residency_cache_query_status(residency->cache));
-  loom_runtime_memory_footprint_t footprint = {0};
-  if (state) {
-    IREE_RETURN_IF_ERROR(loom_runtime_memory_ranges_footprint(
-        state->range_count, state->ranges, &footprint));
-  }
+  const loom_runtime_memory_footprint_t footprint =
+      state ? loom_runtime_memory_ranges_footprint(state->range_count,
+                                                   state->ranges)
+            : (loom_runtime_memory_footprint_t){0};
   const uint64_t additional_state = footprint.missing_bytes;
   if (!loom_runtime_residency_fits(residency, additional_state,
                                    residency->private_bytes)) {
@@ -1498,7 +1497,7 @@ iree_status_t loom_runtime_residency_try_admit(
 
 iree_status_t loom_runtime_residency_try_admit_state(
     loom_runtime_residency_t* residency, iree_host_size_t range_count,
-    const loom_runtime_memory_range_t* ranges,
+    loom_runtime_memory_range_t* ranges,
     const loom_runtime_residency_forecast_t* forecast,
     iree_hal_semaphore_t* readiness, uint64_t value,
     loom_runtime_residency_admission_t* out_admission,

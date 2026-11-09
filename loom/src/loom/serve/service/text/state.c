@@ -48,6 +48,22 @@ iree_hal_buffer_t** loom_serve_text_state_allocation(
   return allocations[index];
 }
 
+// Physical commitment ranges originate from these roots. Footprint queries may
+// reorder them, so derive the service-local root projection from buffer
+// identity after the query instead of preserving a parallel pre-sort identity.
+static iree_host_size_t loom_serve_text_state_find_memory_allocation(
+    const loom_serve_text_state_t* state,
+    const loom_runtime_virtual_buffer_t* buffer) {
+  for (iree_host_size_t index = 0;
+       index < LOOM_SERVE_TEXT_STORAGE_ALLOCATION_COUNT; ++index) {
+    if (state->memory.buffers[index] == buffer) {
+      return index;
+    }
+  }
+  IREE_ASSERT_UNREACHABLE("commitment buffer must belong to text state");
+  return 0;
+}
+
 iree_status_t loom_serve_text_state_allocate(
     loom_serve_text_state_t* state, loom_runtime_device_t* device,
     loom_runtime_pool_t* pool, loom_runtime_execution_t* execution) {
@@ -1779,7 +1795,6 @@ iree_status_t loom_serve_text_state_row_prepare_reserve(
       loom_runtime_virtual_buffer_t* buffer =
           state->memory.buffers[range->buffer_index];
       if (buffer) {
-        commitment_allocations[commitment_count] = range->buffer_index;
         commitments[commitment_count++] =
             (loom_runtime_memory_range_t){buffer, range->offset, range->length};
       }
@@ -1790,14 +1805,12 @@ iree_status_t loom_serve_text_state_row_prepare_reserve(
     for (iree_host_size_t i = 0; i < LOOM_SERVE_TEXT_STORAGE_ALLOCATION_COUNT;
          ++i) {
       if (state->memory.buffers[i] && state->memory.private_lengths[i]) {
-        commitment_allocations[commitment_count] = i;
         commitments[commitment_count++] = (loom_runtime_memory_range_t){
             state->memory.buffers[i], 0, state->memory.private_lengths[i]};
       }
     }
     if (reader != UINT32_MAX) {
       iree_hal_buffer_t* view = state->recurrent.buffers[reader];
-      commitment_allocations[commitment_count] = 1;
       commitments[commitment_count++] = (loom_runtime_memory_range_t){
           state->memory.buffers[1], iree_hal_buffer_byte_offset(view),
           iree_hal_buffer_byte_length(view)};
@@ -1808,7 +1821,6 @@ iree_status_t loom_serve_text_state_row_prepare_reserve(
             &state->storage.regions[i];
         for (iree_host_size_t plane = 0; plane < region->blocks.count;
              ++plane) {
-          commitment_allocations[commitment_count] = region->allocation;
           commitments[commitment_count++] = (loom_runtime_memory_range_t){
               state->memory.buffers[region->allocation],
               region->blocks.origin + plane * region->blocks.stride +
@@ -1825,8 +1837,12 @@ iree_status_t loom_serve_text_state_row_prepare_reserve(
   reservation->commitment_count = commitment_count;
   loom_runtime_memory_footprint_t footprint = {0};
   if (iree_status_is_ok(status)) {
-    status = loom_runtime_memory_ranges_footprint(commitment_count, commitments,
-                                                  &footprint);
+    footprint =
+        loom_runtime_memory_ranges_footprint(commitment_count, commitments);
+    for (iree_host_size_t i = 0; i < commitment_count; ++i) {
+      commitment_allocations[i] = loom_serve_text_state_find_memory_allocation(
+          state, commitments[i].buffer);
+    }
   }
   reservation->footprint_bytes = footprint.total_bytes;
   iree_allocator_free(state->host_allocator, ranges);

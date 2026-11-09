@@ -178,7 +178,7 @@ TEST_P(ResidencyPressureTest,
   };
   const std::unique_ptr<loom_runtime_virtual_buffer_t, decltype(free_buffer)>
       incoming_owner(incoming, free_buffer);
-  const loom_runtime_memory_range_t range = {incoming, 0, 2 * kSlabBytes};
+  loom_runtime_memory_range_t range = {incoming, 0, 2 * kSlabBytes};
   loom_runtime_memory_operation_t* operation = nullptr;
   loom_runtime_residency_admission_t logical;
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(
@@ -352,7 +352,7 @@ TEST_P(ResidencyPressureTest, LogicalAdmissionCollectsFailureBeforeEviction) {
                         decltype(free_operation)>
       failed_owner(failed_operation, free_operation);
   deferred_backing_->WaitForAcquisition();
-  const loom_runtime_memory_range_t incoming_range = {incoming, 0, kSlabBytes};
+  loom_runtime_memory_range_t incoming_range = {incoming, 0, kSlabBytes};
   loom_runtime_residency_admission_t admission;
   loom_runtime_memory_operation_t* incoming_operation = nullptr;
   IREE_ASSERT_OK(loom_runtime_residency_try_admit_state(

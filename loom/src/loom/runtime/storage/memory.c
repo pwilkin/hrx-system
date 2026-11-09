@@ -700,55 +700,40 @@ iree_status_t loom_runtime_virtual_buffer_visit_backing(
   return status;
 }
 
-iree_status_t loom_runtime_memory_ranges_footprint(
-    iree_host_size_t range_count, const loom_runtime_memory_range_t* ranges,
-    loom_runtime_memory_footprint_t* out_footprint) {
-  *out_footprint = (loom_runtime_memory_footprint_t){0};
-  iree_status_t status = iree_ok_status();
-  for (iree_host_size_t r = 0; r < range_count && iree_status_is_ok(status);
-       ++r) {
-    loom_runtime_virtual_buffer_t* buffer = ranges[r].buffer;
-    const iree_device_size_t slab_size = buffer->geometry.mapping_size;
-    const iree_host_size_t end =
-        (ranges[r].offset + ranges[r].length - 1) / slab_size + 1;
-    for (iree_host_size_t i = ranges[r].offset / slab_size;
-         i < end && iree_status_is_ok(status); ++i) {
-      loom_runtime_backing_entry_t* entry = NULL;
-      status =
-          loom_runtime_backing_directory_insert(&buffer->backing, i, &entry);
-      if (iree_status_is_ok(status) && !entry->counted) {
-        entry->counted = true;
-        const uint64_t length = loom_runtime_memory_slab_length(buffer, i);
-        out_footprint->total_bytes +=
-            iree_min(length, UINT64_MAX - out_footprint->total_bytes);
-        if (!entry->physical && !entry->in_flight) {
-          out_footprint->missing_bytes +=
-              iree_min(length, UINT64_MAX - out_footprint->missing_bytes);
-        }
+loom_runtime_memory_footprint_t loom_runtime_virtual_buffer_footprint(
+    const loom_runtime_virtual_buffer_t* buffer, iree_device_size_t offset,
+    iree_device_size_t length) {
+  const iree_device_size_t slab_size = buffer->geometry.mapping_size;
+  const iree_host_size_t begin = offset / slab_size;
+  const iree_host_size_t end = (offset + length - 1) / slab_size + 1;
+  const uint64_t total = (end - begin - 1) * slab_size +
+                         loom_runtime_memory_slab_length(buffer, end - 1);
+  loom_runtime_memory_footprint_t footprint = {
+      .total_bytes = total,
+      .missing_bytes = total,
+  };
+  if (end - begin < buffer->backing.capacity) {
+    for (iree_host_size_t index = begin; index < end; ++index) {
+      const loom_runtime_backing_entry_t* entry =
+          loom_runtime_backing_directory_find_const(&buffer->backing, index);
+      if (entry && (entry->physical || entry->in_flight)) {
+        footprint.missing_bytes -=
+            loom_runtime_memory_slab_length(buffer, index);
+      }
+    }
+  } else {
+    for (iree_host_size_t index = 0; index < buffer->backing.capacity;
+         ++index) {
+      const loom_runtime_backing_entry_t* entry =
+          &buffer->backing.entries[index];
+      if (entry->occupied && entry->index >= begin && entry->index < end &&
+          (entry->physical || entry->in_flight)) {
+        footprint.missing_bytes -=
+            loom_runtime_memory_slab_length(buffer, entry->index);
       }
     }
   }
-  for (iree_host_size_t r = 0; r < range_count; ++r) {
-    loom_runtime_virtual_buffer_t* buffer = ranges[r].buffer;
-    const iree_device_size_t slab_size = buffer->geometry.mapping_size;
-    const iree_host_size_t end =
-        (ranges[r].offset + ranges[r].length - 1) / slab_size + 1;
-    for (iree_host_size_t i = ranges[r].offset / slab_size; i < end; ++i) {
-      loom_runtime_backing_entry_t* entry =
-          loom_runtime_backing_directory_find(&buffer->backing, i);
-      if (entry && entry->counted) {
-        entry->counted = false;
-        if (!entry->physical && !entry->in_flight && !entry->keep) {
-          loom_runtime_backing_directory_remove(&buffer->backing, entry);
-        }
-      }
-    }
-  }
-  for (iree_host_size_t r = 0; r < range_count && iree_status_is_ok(status);
-       ++r) {
-    status = loom_runtime_backing_directory_shrink(&ranges[r].buffer->backing);
-  }
-  return status;
+  return footprint;
 }
 
 static uint64_t* loom_runtime_memory_slab_demand(

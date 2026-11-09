@@ -70,8 +70,14 @@ loom_cc_library(
 
 loom_cc_library(
     name = "memory",
-    srcs = ["memory.c"],
-    hdrs = ["memory.h"],
+    srcs = [
+        "memory.c",
+        "memory_ranges.c",
+    ],
+    hdrs = [
+        "memory.h",
+        "memory_ranges.h",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":backing_directory",
@@ -79,6 +85,7 @@ loom_cc_library(
         ":memory_geometry",
         "//loom/src/loom/runtime:wake",
         "//loom/src/loom/runtime/storage:statistics",
+        "//loom/src/loom/util:adaptive_sort",
         "//runtime/src/iree/async",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:atomic_slist",
@@ -202,6 +209,7 @@ loom_cc_library(
     srcs = [
         "memory_failure_test.cc",
         "memory_query_test.cc",
+        "memory_ranges_test.cc",
         "memory_test.cc",
         "memory_test_fixture.cc",
         "virtual_pool_test.cc",
