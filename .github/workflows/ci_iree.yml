@@ -27,7 +27,7 @@ jobs:
           - name: Clang / Fastbuild / AMD gfx1150
             kind: amdgpu
             command: iree-bazel-amdgpu
-            runner: labblr-linux-u2404-gfx1150-gpu-rocm-runner-01
+            runner: labxsj-linux-u2604-gfx1150-gpu-rocm
             target_selector: gfx1150
             container_options: >-
               --ipc host --group-add video --device /dev/kfd --device /dev/dri --cap-add SYSLOG
