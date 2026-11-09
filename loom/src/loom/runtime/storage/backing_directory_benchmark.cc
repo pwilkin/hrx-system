@@ -118,4 +118,40 @@ static void BM_CommitDenseScalar(benchmark::State& state) {
 }
 BENCHMARK(BM_CommitDenseScalar)->Arg(16)->Arg(256)->Arg(4096);
 
+// Models the same successful commitment through grouped range insertion and
+// traversal. Lifecycle cleanup remains outside the timed region.
+static void BM_CommitDenseRange(benchmark::State& state) {
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(iree_allocator_system(),
+                                            &directory);
+  const iree_host_size_t count = state.range(0);
+  for (auto _ : state) {
+    IREE_CHECK_OK(
+        loom_runtime_backing_directory_insert_range(&directory, 0, count));
+    loom_runtime_backing_range_cursor_t cursor = {.index = 0, .end = count};
+    iree_host_size_t chunk_count = 0;
+    loom_runtime_backing_entry_t* entries = nullptr;
+    while ((entries = loom_runtime_backing_directory_range_next(
+                &directory, &cursor, &chunk_count))) {
+      for (iree_host_size_t index = 0; index < chunk_count; ++index) {
+        entries[index].pending_commit = true;
+      }
+    }
+    cursor = {.index = 0, .end = count};
+    while ((entries = loom_runtime_backing_directory_range_next(
+                &directory, &cursor, &chunk_count))) {
+      for (iree_host_size_t index = 0; index < chunk_count; ++index) {
+        entries[index].pending_commit = false;
+        benchmark::DoNotOptimize(&entries[index]);
+      }
+    }
+    state.PauseTiming();
+    RemoveDenseRange(&directory, count);
+    state.ResumeTiming();
+  }
+  state.SetItemsProcessed(state.iterations() * count);
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+BENCHMARK(BM_CommitDenseRange)->Arg(16)->Arg(256)->Arg(4096);
+
 }  // namespace
