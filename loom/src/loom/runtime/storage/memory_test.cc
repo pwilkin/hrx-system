@@ -615,6 +615,25 @@ TEST_F(MemoryTest, PackedPageWordBoundariesReuseWithoutNewNativeBacking) {
     RoundTrip(loom_runtime_virtual_buffer_handle(first),
               (count - 1) * state.mapping_size, 0x12340000 + count - 1);
   }
+
+  // Preserve one interior slot so the next complete commitment must claim
+  // contiguous physical runs on both sides of an occupied bitmap hole.
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), 8 * state.mapping_size,
+            0x12340008);
+  loom_runtime_virtual_buffer_begin_trim(first);
+  Keep(first, 8 * state.mapping_size, state.mapping_size);
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_trim(first));
+  CheckRetained(loom_runtime_virtual_buffer_handle(first),
+                8 * state.mapping_size, 0x12340008);
+  IREE_ASSERT_OK(loom_runtime_virtual_buffer_commit(
+      first, 0, kPages * state.mapping_size));
+  iree_hal_pool_stats_t fragmented_source;
+  iree_hal_pool_query_stats(deferred_backing, &fragmented_source);
+  EXPECT_EQ(fragmented_source.reserve_count, initial_source.reserve_count);
+  CheckRetained(loom_runtime_virtual_buffer_handle(first),
+                8 * state.mapping_size, 0x12340008);
+  RoundTrip(loom_runtime_virtual_buffer_handle(first), 64 * state.mapping_size,
+            0x12340040);
   deferred_backing->ResumeAcquisitions();
 }
 

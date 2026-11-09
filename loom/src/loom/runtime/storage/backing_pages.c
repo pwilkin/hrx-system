@@ -387,12 +387,77 @@ static iree_status_t loom_runtime_backing_parent_allocate(
   return iree_ok_status();
 }
 
+static iree_host_size_t loom_runtime_backing_parent_find_free(
+    loom_runtime_backing_parent_t* parent) {
+  iree_host_size_t index = 0;
+  for (iree_host_size_t level = parent->level_count; level-- > 0;) {
+    index = index * 64 + iree_math_count_trailing_zeros_u64(
+                             loom_runtime_backing_words(parent, level)[index]);
+  }
+  return index;
+}
+
+static iree_host_size_t loom_runtime_backing_parent_free_run(
+    loom_runtime_backing_parent_t* parent, iree_host_size_t index,
+    iree_host_size_t maximum_count) {
+  const uint64_t* words = loom_runtime_backing_words(parent, 0);
+  iree_host_size_t count = 0;
+  while (count < maximum_count && index + count < parent->slot_count) {
+    const iree_host_size_t position = index + count;
+    const iree_host_size_t bit = position % 64;
+    const iree_host_size_t width =
+        iree_min(iree_min((iree_host_size_t)64 - bit, maximum_count - count),
+                 parent->slot_count - position);
+    const uint64_t shifted = words[position / 64] >> bit;
+    const iree_host_size_t free_count =
+        iree_math_count_trailing_zeros_u64_width(~shifted, (int32_t)width);
+    count += free_count;
+    if (free_count != width) {
+      break;
+    }
+  }
+  IREE_ASSERT(count);
+  return count;
+}
+
+static void loom_runtime_backing_parent_claim_range(
+    loom_runtime_backing_parent_t* parent, iree_host_size_t index,
+    iree_host_size_t count) {
+  uint64_t* words = loom_runtime_backing_words(parent, 0);
+  iree_host_size_t remaining = count;
+  while (remaining) {
+    const iree_host_size_t word_index = index / 64;
+    const iree_host_size_t bit = index % 64;
+    const iree_host_size_t width =
+        iree_min((iree_host_size_t)64 - bit, remaining);
+    const uint64_t mask =
+        iree_math_mask_low_bits_u64(UINT64_MAX, (int32_t)width) << bit;
+    words[word_index] &= ~mask;
+    if (!words[word_index]) {
+      iree_host_size_t position = word_index;
+      for (iree_host_size_t level = 1; level < parent->level_count; ++level) {
+        uint64_t* word =
+            &loom_runtime_backing_words(parent, level)[position / 64];
+        *word &= ~(UINT64_C(1) << (position % 64));
+        if (*word) {
+          break;
+        }
+        position /= 64;
+      }
+    }
+    index += width;
+    remaining -= width;
+  }
+}
+
 iree_status_t loom_runtime_backing_pages_claim(
     loom_runtime_backing_pages_t* pages, loom_runtime_backing_kind_t kind,
     iree_hal_pool_reservation_request_t request, uint64_t dedicated_cost,
-    loom_runtime_backing_growth_t* growth,
-    loom_runtime_backing_slot_t* out_slot) {
+    iree_host_size_t maximum_count, loom_runtime_backing_growth_t* growth,
+    loom_runtime_backing_slot_t* out_slot, iree_host_size_t* out_count) {
+  IREE_ASSERT(maximum_count);
   *out_slot = (loom_runtime_backing_slot_t){0};
+  *out_count = 0;
   loom_runtime_backing_class_t* category =
       kind == LOOM_RUNTIME_BACKING_DEDICATED
           ? NULL
@@ -417,6 +482,7 @@ iree_status_t loom_runtime_backing_pages_claim(
                                 offsetof(loom_runtime_backing_parent_t, idle));
   }
   iree_host_size_t index = 0;
+  iree_host_size_t count = 1;
   if (kind != LOOM_RUNTIME_BACKING_PACKED) {
     parent->whole = true;
     parent->occupied = parent->slot_count;
@@ -427,24 +493,14 @@ iree_status_t loom_runtime_backing_pages_claim(
       }
     }
   } else {
-    for (iree_host_size_t level = parent->level_count; level-- > 0;) {
-      index =
-          index * 64 + iree_math_count_trailing_zeros_u64(
-                           loom_runtime_backing_words(parent, level)[index]);
+    index = loom_runtime_backing_parent_find_free(parent);
+    count = loom_runtime_backing_parent_free_run(parent, index, maximum_count);
+    loom_runtime_backing_parent_claim_range(parent, index, count);
+    parent->occupied += count;
+    category->free_count -= count;
+    if (parent->state == LOOM_RUNTIME_BACKING_READY) {
+      category->ready_free_count -= count;
     }
-    iree_host_size_t position = index;
-    for (iree_host_size_t level = 0; level < parent->level_count; ++level) {
-      uint64_t* word =
-          &loom_runtime_backing_words(parent, level)[position / 64];
-      *word &= ~(UINT64_C(1) << (position % 64));
-      if (*word) {
-        break;
-      }
-      position /= 64;
-    }
-    ++parent->occupied;
-    --category->free_count;
-    category->ready_free_count -= parent->state == LOOM_RUNTIME_BACKING_READY;
   }
   if (parent->occupied == parent->slot_count) {
     loom_runtime_backing_unlink(
@@ -452,6 +508,7 @@ iree_status_t loom_runtime_backing_pages_claim(
   }
   *out_slot = (loom_runtime_backing_slot_t){
       parent, category ? index * category->slot_size : 0};
+  *out_count = count;
   return iree_ok_status();
 }
 

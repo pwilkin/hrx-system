@@ -60,13 +60,15 @@ uint64_t loom_runtime_backing_pages_growth_cost(
     const loom_runtime_backing_pages_t* pages, uint64_t packed_count,
     uint64_t weight_count, uint64_t dedicated_cost);
 
-// Claims existing capacity or prepares a parent from the supplied admission.
-// Submitting growth is separate so metadata failure cannot start partial IO.
+// Claims one contiguous physical range of at most |maximum_count| logical
+// slots, or prepares a parent from the supplied admission. Packed claims may
+// span several slots; whole and dedicated claims always return one. Submitting
+// growth is separate so metadata failure cannot start partial IO.
 iree_status_t loom_runtime_backing_pages_claim(
     loom_runtime_backing_pages_t* pages, loom_runtime_backing_kind_t kind,
     iree_hal_pool_reservation_request_t request, uint64_t dedicated_cost,
-    loom_runtime_backing_growth_t* growth,
-    loom_runtime_backing_slot_t* out_slot);
+    iree_host_size_t maximum_count, loom_runtime_backing_growth_t* growth,
+    loom_runtime_backing_slot_t* out_slot, iree_host_size_t* out_count);
 void loom_runtime_backing_pages_submit(loom_runtime_backing_growth_t* growth);
 void loom_runtime_backing_pages_abort(loom_runtime_backing_growth_t* growth);
 void loom_runtime_backing_pages_return(loom_runtime_backing_slot_t slot);
