@@ -39,6 +39,7 @@ def run_under(arguments: list[str]) -> int:
         "set print max-depth 3",
         "set max-value-size 4096",
         "handle SIGINT stop print nopass",
+        f"source {Path(__file__).with_name('diagnose_loom_gfx1150_gdb.py').resolve()}",
         "python",
         "captured_exit_code = 1",
         "def capture_exit(event):",
@@ -61,6 +62,9 @@ def run_under(arguments: list[str]) -> int:
     commands.extend(
         [
             "run",
+            "if $_inferior_thread_count > 0",
+            "loom-capture-state",
+            "end",
             'printf "LOOM_DIAGNOSTIC_THREAD_STACKS\\n"',
             "thread apply all backtrace full 20",
             "python",
@@ -126,7 +130,7 @@ def run_ci() -> int:
             "--test_output=all",
             "--strip=never",
             "--copt=-g",
-            "--host_copt=-g",
+            "--host_per_file_copt=.*@-g",
             f"--run_under=python3 {Path(__file__).resolve()} --under /bin/bash",
         )
         + test.argv[4:],
