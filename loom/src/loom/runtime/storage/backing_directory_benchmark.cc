@@ -80,4 +80,42 @@ static void BM_DeniedSparseGrowth(benchmark::State& state) {
 }
 BENCHMARK(BM_DeniedSparseGrowth)->Args({16, 16})->Args({256, 256});
 
+static void RemoveDenseRange(loom_runtime_backing_directory_t* directory,
+                             iree_host_size_t count) {
+  for (iree_host_size_t index = 0; index < count; ++index) {
+    auto* entry = loom_runtime_backing_directory_find(directory, index);
+    loom_runtime_backing_directory_remove(directory, entry);
+  }
+  IREE_CHECK_OK(loom_runtime_backing_directory_shrink(directory));
+}
+
+// Models the two scalar page traversals of a successful dense commitment.
+// Lifecycle cleanup is outside the timed region so the row isolates selection
+// and publication work rather than allocator release behavior.
+static void BM_CommitDenseScalar(benchmark::State& state) {
+  loom_runtime_backing_directory_t directory;
+  loom_runtime_backing_directory_initialize(iree_allocator_system(),
+                                            &directory);
+  const iree_host_size_t count = state.range(0);
+  for (auto _ : state) {
+    for (iree_host_size_t index = 0; index < count; ++index) {
+      loom_runtime_backing_entry_t* entry = nullptr;
+      IREE_CHECK_OK(
+          loom_runtime_backing_directory_insert(&directory, index, &entry));
+      entry->pending_commit = true;
+    }
+    for (iree_host_size_t index = 0; index < count; ++index) {
+      auto* entry = loom_runtime_backing_directory_find(&directory, index);
+      entry->pending_commit = false;
+      benchmark::DoNotOptimize(entry);
+    }
+    state.PauseTiming();
+    RemoveDenseRange(&directory, count);
+    state.ResumeTiming();
+  }
+  state.SetItemsProcessed(state.iterations() * count);
+  loom_runtime_backing_directory_deinitialize(&directory);
+}
+BENCHMARK(BM_CommitDenseScalar)->Arg(16)->Arg(256)->Arg(4096);
+
 }  // namespace
