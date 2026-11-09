@@ -146,6 +146,9 @@ struct iree_hal_amd_gpu_pm4_queue_t {
   iree_atomic_int64_t native_failure;
   // Timestamp-session native owner, independent of launch argument capacity.
   iree_hal_amd_gpu_sample_storage_t* samples;
+  // Lazy shader-readable packets, one per retirement slot; native shutdown
+  // precedes release. Slot credit supplies all reuse ordering.
+  iree_hal_amd_gpu_byte_storage_t* packets;
   // Tracker associations shared by cold waits on this queue.
   iree_alignas(iree_hardware_destructive_interference_size)
       iree_async_semaphore_wait_context_t wait_context;
