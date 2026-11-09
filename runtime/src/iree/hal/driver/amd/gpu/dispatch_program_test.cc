@@ -7,6 +7,7 @@
 #include <cstring>
 #include <vector>
 
+#include "amdf/gpu_target.h"
 #include "iree/base/byte_sequence.h"
 #include "iree/hal/driver/amd/gpu/dispatch.h"
 #include "iree/hal/driver/amd/gpu/image/hsaco.h"
@@ -40,7 +41,10 @@ TEST_P(GridSyncProgramTest, EmbeddedInstructionsAndAbiMatchConfiguredSource) {
       sequence, iree_allocator_system(), &image_);
   iree_byte_sequence_release(sequence);
   IREE_ASSERT_OK(status);
-  if (image_.target.version.major != 9 && image_.target.version.major != 10) {
+  const auto target = amdf_gpu_target_query_capabilities(
+      image_.target.version.major, image_.target.version.minor,
+      image_.target.version.stepping);
+  if (!target.shader.global_wave_sync) {
     EXPECT_EQ(image_.metadata.kernel_count, 0u);
     return;
   }
@@ -49,14 +53,14 @@ TEST_P(GridSyncProgramTest, EmbeddedInstructionsAndAbiMatchConfiguredSource) {
   ASSERT_EQ(image_.import_count, 0u);
   const auto& metadata = image_.metadata.kernels[0];
   EXPECT_EQ(metadata.kernarg_segment_size,
-            sizeof(iree_hal_amd_gpu_grid_sync_t));
+            sizeof(iree_hal_amd_gpu_grid_sync_arguments_t));
   EXPECT_EQ(metadata.kernarg_segment_alignment, 8u);
   EXPECT_EQ(metadata.private_segment_fixed_size, 0u);
   EXPECT_EQ(metadata.group_segment_fixed_size, 0u);
   ASSERT_EQ(metadata.argument_count, 1u);
   EXPECT_EQ(metadata.arguments[0].offset, 0u);
-  EXPECT_EQ(metadata.arguments[0].size, sizeof(iree_hal_amd_gpu_grid_sync_t));
-  EXPECT_EQ(offsetof(iree_hal_amd_gpu_grid_sync_t, workgroup_count), 40u);
+  EXPECT_EQ(metadata.arguments[0].size,
+            sizeof(iree_hal_amd_gpu_grid_sync_arguments_t));
 
   iree_const_byte_span_t code;
   iree_hal_amd_gpu_image_kernel_t expected;

@@ -456,6 +456,8 @@ TEST_P(AqlPublicationTest, ScalarCommandsUseRetirementSlotsWithFullArguments) {
 }
 
 TEST_P(AqlPublicationTest, CooperativeCommandsAndKernargsHaveDistinctOwners) {
+  iree_hal_amd_gpu_aql_program_pool_t programs = {};
+  queue_.options.programs = &programs;
   context_.target_info.topology.xcc_count = std::get<1>(GetParam()) ? 8 : 1;
   std::array<uint8_t, 16> argument_bytes = {};
   arguments_.memory.contents =
@@ -507,6 +509,73 @@ TEST_P(AqlPublicationTest, CooperativeCommandsAndKernargsHaveDistinctOwners) {
   }
   EXPECT_EQ(words[2 * IREE_HAL_AMD_GPU_AQL_INDIRECT_COMMAND_BYTE_STRIDE / 4],
             0xCDCDCDCDu);
+}
+
+TEST_P(AqlPublicationTest, CooperativeZeroArgumentKernelNeedsNoKernargStorage) {
+  iree_hal_amd_gpu_aql_program_pool_t programs = {};
+  queue_.options.programs = &programs;
+  context_.target_info.topology.xcc_count = 1;
+  queue_.grid.memory = reinterpret_cast<amdf_memory_t*>(&queue_.grid);
+  queue_.grid.address = 0x123400005000;
+  request_.flags |= IREE_HAL_DISPATCH_FLAG_COOPERATIVE;
+  request_.geometry.workgroup_count[0] = 2;
+  std::array<uint32_t, 256> words = {};
+  iree_hal_amd_gpu_byte_storage_t commands = {};
+  commands.memory.contents = iree_make_byte_span(words.data(), sizeof(words));
+  commands.address = 0xABCD00008000;
+  commands.capacity = sizeof(words);
+  queue_.commands = &commands;
+  std::vector<iree_hal_amd_gpu_aql_wait_t> waits;
+  Publish(Semaphore(), waits);
+  EXPECT_EQ(arguments_.memory.contents.data, nullptr);
+  EXPECT_EQ(arguments_.end, 0u);
+  EXPECT_EQ(PacketAddress(1, 10), 0u);
+  iree_hal_amd_gpu_grid_sync_t grid;
+  std::memcpy(&grid, words.data() + 4, sizeof(grid));
+  EXPECT_EQ(grid.workgroup_count, 2u);
+  EXPECT_EQ(grid.total_workitem_count, 128u);
+}
+
+TEST_P(AqlPublicationTest, GwsInitializerReferencesIndependentDeviceState) {
+  iree_hal_amd_gpu_aql_program_pool_t programs = {.grid_sync = 0x1234};
+  queue_.options.programs = &programs;
+  queue_.grid.memory = reinterpret_cast<amdf_memory_t*>(&queue_.grid);
+  queue_.grid.address = 0x123400005000;
+  std::array<uint8_t, 80> argument_bytes;
+  argument_bytes.fill(0xCD);
+  arguments_.memory.contents =
+      iree_make_byte_span(argument_bytes.data(), argument_bytes.size());
+  arguments_.address = 0x7000;
+  arguments_.capacity = 64;
+  layout_.byte_length = 8;
+  layout_.alignment = 8;
+  layout_.requirements = IREE_HAL_AMD_GPU_KERNARG_REQUIREMENT_GRID_SYNC;
+  request_.flags |= IREE_HAL_DISPATCH_FLAG_COOPERATIVE;
+  std::vector<iree_hal_amd_gpu_aql_wait_t> waits;
+  for (size_t i = 0; i < 2; ++i) {
+    request_.geometry.workgroup_count[0] = i + 2;
+    Publish(Semaphore(), waits);
+    EXPECT_EQ(PacketAddress(i * 2, 8), programs.grid_sync);
+    EXPECT_EQ(PacketAddress(i * 2, 10), arguments_.address + i * 32 + 8);
+    EXPECT_EQ(PacketAddress(i * 2 + 1, 10), arguments_.address + i * 32);
+    EXPECT_EQ(packets_[i * 2].words[0], 0x11502u);
+    uint64_t hidden_pointer = 0;
+    std::memcpy(&hidden_pointer, argument_bytes.data() + i * 32,
+                sizeof(hidden_pointer));
+    EXPECT_EQ(hidden_pointer, queue_.grid.address);
+    iree_hal_amd_gpu_grid_sync_arguments_t initialize;
+    std::memcpy(&initialize, argument_bytes.data() + i * 32 + 8,
+                sizeof(initialize));
+    EXPECT_EQ(initialize.grid_address, queue_.grid.address);
+    EXPECT_EQ(initialize.workitem_count, (i + 2) * 64);
+    EXPECT_EQ(initialize.workgroup_count, i + 2);
+    EXPECT_EQ(initialize.reserved, 0u);
+    EXPECT_EQ(arguments_.end, (i + 1) * 32);
+  }
+  EXPECT_EQ(queue_.commands, nullptr);
+  for (size_t i = 64; i < argument_bytes.size(); ++i) {
+    EXPECT_EQ(argument_bytes[i], 0xCDu);
+  }
 }
 
 TEST_P(AqlPublicationTest, FullSamplesLeaveLaunchArgumentsAvailable) {

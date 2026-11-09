@@ -26,6 +26,8 @@ struct ProfileCase {
   uint32_t release;
   // System acquire in ACQUIRE_MEM layout.
   uint32_t acquire;
+  // Whether command-processor crossings require system cache maintenance.
+  bool command_processor_bypasses_l2;
 };
 
 class BarrierTest : public ::testing::TestWithParam<ProfileCase> {
@@ -60,7 +62,7 @@ TEST_P(BarrierTest, TargetLayoutAndCompactCapture) {
   EXPECT_EQ(profile_.release, GetParam().release);
   EXPECT_EQ(profile_.acquire, GetParam().acquire);
   EXPECT_EQ(profile_.command_processor_bypasses_l2,
-            GetParam().gfxip.major == 12);
+            GetParam().command_processor_bypasses_l2);
 }
 
 TEST_P(BarrierTest, DefaultsAndExplicitEmptyAreDistinct) {
@@ -214,7 +216,7 @@ TEST_P(BarrierTest, CommandProcessorCrossingsIncludeReadReadDirtyHistory) {
                         IREE_HAL_ACCESS_SCOPE_DISPATCH_WRITE}) {
       const auto to_shader = Access(cp, shader);
       const auto to_cp = Access(shader, cp);
-      if (GetParam().gfxip.major == 12) {
+      if (GetParam().command_processor_bypasses_l2) {
         EXPECT_EQ(to_shader.cache_control, GetParam().acquire);
         EXPECT_EQ(to_cp.cache_control, GetParam().shader | GetParam().release);
       } else {
@@ -232,7 +234,7 @@ TEST_P(BarrierTest, TransferCoversShaderAndCommandProcessorImplementations) {
   for (auto source : {IREE_HAL_ACCESS_SCOPE_TRANSFER_READ,
                       IREE_HAL_ACCESS_SCOPE_TRANSFER_WRITE}) {
     const auto barrier = Access(source, IREE_HAL_ACCESS_SCOPE_TRANSFER_READ);
-    EXPECT_EQ(barrier.cache_control, GetParam().gfxip.major == 12
+    EXPECT_EQ(barrier.cache_control, GetParam().command_processor_bypasses_l2
                                          ? GetParam().acquire
                                          : GetParam().shader);
     EXPECT_EQ(barrier.execution, 3u);
@@ -406,11 +408,12 @@ TEST_P(BarrierTest, InstructionPublicationSurvivesEmptyPayload) {
 
 INSTANTIATE_TEST_SUITE_P(
     PhysicalTargets, BarrierTest,
-    ::testing::Values(ProfileCase{{11, 0, 0}, 0x103e0, 0x18040, 0x1c3e0},
-                      ProfileCase{{11, 5, 1}, 0x103e0, 0x18040, 0x1c3e0},
-                      ProfileCase{{11, 7, 2}, 0x103e0, 0x18040, 0x1c3e0},
-                      ProfileCase{{12, 0, 1}, 0x101c0, 0x18040, 0x1c1c0},
-                      ProfileCase{{12, 5, 0}, 0x101c0, 0x18060, 0x1c1e0}));
+    ::testing::Values(ProfileCase{{11, 0, 0}, 0x103e0, 0x18040, 0x1c3e0, false},
+                      ProfileCase{{11, 5, 1}, 0x103e0, 0x18040, 0x1c3e0, false},
+                      ProfileCase{{11, 7, 2}, 0x103e0, 0x18040, 0x1c3e0, false},
+                      ProfileCase{{12, 0, 1}, 0x101c0, 0x18040, 0x1c1c0, true},
+                      ProfileCase{
+                          {12, 5, 0}, 0x101c0, 0x18060, 0x1c1e0, true}));
 
 TEST(BarrierProfileTest, UnqualifiedIsaFailsDuringFamilyConstruction) {
   for (auto gfxip : {iree_hal_amd_gpu_gfxip_version_t{9, 4, 2},

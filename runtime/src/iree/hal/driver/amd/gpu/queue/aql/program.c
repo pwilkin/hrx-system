@@ -6,6 +6,7 @@
 
 #include "iree/hal/driver/amd/gpu/queue/aql/program.h"
 
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/status.h"
 
 iree_hal_amd_gpu_aql_packet_t iree_hal_amd_gpu_aql_control_program_packet(
@@ -67,7 +68,7 @@ iree_status_t iree_hal_amd_gpu_aql_program_pool_initialize(
        .kernel_object = &out_pool->control[2]},
       {.argument_length = sizeof(iree_hal_amd_gpu_control_program_arguments_t),
        .kernel_object = &out_pool->control[3]},
-      {.argument_length = sizeof(iree_hal_amd_gpu_grid_sync_t),
+      {.argument_length = sizeof(iree_hal_amd_gpu_grid_sync_arguments_t),
        .kernel_object = &out_pool->grid_sync},
   };
   uint32_t builtin_count = IREE_ARRAYSIZE(builtins) - 1;
@@ -89,8 +90,9 @@ iree_status_t iree_hal_amd_gpu_aql_program_pool_initialize(
         gfxip, i, &builtins[5 + i].code, &builtins[5 + i].kernel);
   }
   IREE_RETURN_IF_ERROR(status);
-  if (iree_hal_amd_gpu_grid_sync_select_strategy(gfxip) ==
-      IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS) {
+  if (amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping)
+          .grid_barrier == AMDF_GPU_GRID_BARRIER_GWS) {
     IREE_RETURN_IF_ERROR(iree_hal_amd_gpu_grid_sync_program_query(
         gfxip, &builtins[builtin_count].code, &builtins[builtin_count].kernel));
     ++builtin_count;

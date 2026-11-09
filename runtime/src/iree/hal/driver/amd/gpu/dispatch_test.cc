@@ -9,6 +9,7 @@
 #include <array>
 #include <cstring>
 
+#include "amdf/gpu_target.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 
@@ -81,25 +82,27 @@ TEST(GridSyncStrategyTest, CompilerBarrierFamiliesRemainDistinctFromAdmission) {
     // Physical compiler ISA identity.
     iree_hal_amd_gpu_gfxip_version_t gfxip;
     // Device-library grid-barrier implementation.
-    iree_hal_amd_gpu_grid_sync_strategy_t strategy;
+    amdf_gpu_grid_barrier_t strategy;
   } cases[] = {
-      {{8, 0, 3}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_NONE},
-      {{9, 0, 10}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS},
-      {{9, 4, 1}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS},
-      {{9, 4, 2}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{9, 4, 3}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS},
-      {{9, 5, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{10, 1, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS},
-      {{10, 3, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS},
-      {{11, 0, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{11, 5, 1}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{11, 7, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{12, 0, 1}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{12, 5, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY},
-      {{13, 0, 0}, IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_NONE},
+      {{8, 0, 3}, AMDF_GPU_GRID_BARRIER_NONE},
+      {{9, 0, 10}, AMDF_GPU_GRID_BARRIER_GWS},
+      {{9, 4, 1}, AMDF_GPU_GRID_BARRIER_GWS},
+      {{9, 4, 2}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{9, 4, 3}, AMDF_GPU_GRID_BARRIER_GWS},
+      {{9, 5, 0}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{10, 1, 0}, AMDF_GPU_GRID_BARRIER_GWS},
+      {{10, 3, 0}, AMDF_GPU_GRID_BARRIER_GWS},
+      {{11, 0, 0}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{11, 5, 1}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{11, 7, 0}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{12, 0, 1}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{12, 5, 0}, AMDF_GPU_GRID_BARRIER_MEMORY},
+      {{13, 0, 0}, AMDF_GPU_GRID_BARRIER_NONE},
   };
   for (const auto& test : cases) {
-    EXPECT_EQ(iree_hal_amd_gpu_grid_sync_select_strategy(test.gfxip),
+    EXPECT_EQ(amdf_gpu_target_query_capabilities(
+                  test.gfxip.major, test.gfxip.minor, test.gfxip.stepping)
+                  .grid_barrier,
               test.strategy);
   }
 }

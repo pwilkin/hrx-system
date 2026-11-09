@@ -539,6 +539,7 @@ iree_runtime_cc_library(
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/driver/amd/gpu/image",
         "//runtime/src/iree/hal/driver/amd/gpu/image:metadata",
+        "//runtime/src/iree/hal/driver/amd/gpu/image:program",
     ],
 )
 
@@ -549,6 +550,7 @@ iree_runtime_cc_test(
     deps = [
         ":dispatch",
         ":kernarg",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/driver/amd/gpu/image:metadata",
@@ -563,6 +565,7 @@ iree_runtime_cc_test(
     target_compatible_with = _NATIVE_DEVICE_COMPATIBLE_WITH,
     deps = [
         ":dispatch",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amd/gpu/image:hsaco",
         "//runtime/src/iree/hal/driver/amd/gpu/queue:grid_sync_programs",

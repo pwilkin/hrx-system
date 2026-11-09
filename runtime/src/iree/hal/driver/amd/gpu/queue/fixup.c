@@ -6,6 +6,9 @@
 
 #include "iree/hal/driver/amd/gpu/queue/fixup.h"
 
+#include "amdf/gpu_target.h"
+#include "iree/hal/driver/amd/gpu/image/program.h"
+
 void iree_hal_amd_gpu_fixup_apply(const iree_hal_amd_gpu_fixup_t* entries,
                                   uint32_t entry_count, const uint64_t* values,
                                   void* target) {
@@ -104,55 +107,59 @@ static const uint32_t iree_hal_amd_gpu_fixup_gfx125[] = {
 iree_status_t iree_hal_amd_gpu_fixup_program_query(
     iree_hal_amd_gpu_gfxip_version_t gfxip, iree_const_byte_span_t* out_code,
     iree_hal_amd_gpu_image_kernel_t* out_kernel) {
-  *out_code = iree_const_byte_span_empty();
-  *out_kernel = (iree_hal_amd_gpu_image_kernel_t){0};
-  if (gfxip.major == 9 && gfxip.minor == 0 && gfxip.stepping == 10) {
-    *out_code = iree_make_const_byte_span(
-        iree_hal_amd_gpu_fixup_gfx90a, sizeof(iree_hal_amd_gpu_fixup_gfx90a));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc3 = 0x1u,
-        .compute_pgm_rsrc1 = 0xaf0080u,
-        .compute_pgm_rsrc2 = 0x88u,
-        .code_properties = 0x8u,
-    };
-  } else if (gfxip.major == 9 && (gfxip.minor == 4 || gfxip.minor == 5)) {
-    *out_code = iree_make_const_byte_span(iree_hal_amd_gpu_fixup_gfx94,
-                                          sizeof(iree_hal_amd_gpu_fixup_gfx94));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc3 = 0x1u,
-        .compute_pgm_rsrc1 = 0xaf0080u,
-        .compute_pgm_rsrc2 = 0x84u,
-        .code_properties = 0x8u,
-    };
-  } else if (gfxip.major == 11 &&
-             (gfxip.minor == 0 || gfxip.minor == 5 || gfxip.minor == 7)) {
-    *out_code = iree_make_const_byte_span(iree_hal_amd_gpu_fixup_gfx11,
-                                          sizeof(iree_hal_amd_gpu_fixup_gfx11));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc1 = 0xe0af0000u,
-        .compute_pgm_rsrc2 = 0x84u,
-        .code_properties = 0x408u,
-    };
-  } else if (gfxip.major == 12 && gfxip.minor == 0) {
-    *out_code = iree_make_const_byte_span(iree_hal_amd_gpu_fixup_gfx12,
-                                          sizeof(iree_hal_amd_gpu_fixup_gfx12));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc1 = 0xe00f0000u,
-        .compute_pgm_rsrc2 = 0x84u,
-        .code_properties = 0x408u,
-    };
-  } else if (gfxip.major == 12 && gfxip.minor == 5) {
-    *out_code = iree_make_const_byte_span(
-        iree_hal_amd_gpu_fixup_gfx125, sizeof(iree_hal_amd_gpu_fixup_gfx125));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc1 = 0xc00f0000u,
-        .compute_pgm_rsrc2 = 0x84u,
-        .code_properties = 0x408u,
-    };
-  } else {
-    return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                            "fixup builtin is unavailable for gfx%u.%u.%u",
-                            gfxip.major, gfxip.minor, gfxip.stepping);
-  }
-  return iree_ok_status();
+  static const iree_hal_amd_gpu_program_variant_t variants[] = {
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX90A,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_fixup_gfx90a,
+                sizeof(iree_hal_amd_gpu_fixup_gfx90a)},
+       .kernel =
+           {
+               .compute_pgm_rsrc3 = 0x1u,
+               .compute_pgm_rsrc1 = 0xaf0080u,
+               .compute_pgm_rsrc2 = 0x88u,
+               .code_properties = 0x8u,
+           }},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX94,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_fixup_gfx94,
+                sizeof(iree_hal_amd_gpu_fixup_gfx94)},
+       .kernel =
+           {
+               .compute_pgm_rsrc3 = 0x1u,
+               .compute_pgm_rsrc1 = 0xaf0080u,
+               .compute_pgm_rsrc2 = 0x84u,
+               .code_properties = 0x8u,
+           }},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX11,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_fixup_gfx11,
+                sizeof(iree_hal_amd_gpu_fixup_gfx11)},
+       .kernel =
+           {
+               .compute_pgm_rsrc1 = 0xe0af0000u,
+               .compute_pgm_rsrc2 = 0x84u,
+               .code_properties = 0x408u,
+           }},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX12,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_fixup_gfx12,
+                sizeof(iree_hal_amd_gpu_fixup_gfx12)},
+       .kernel =
+           {
+               .compute_pgm_rsrc1 = 0xe00f0000u,
+               .compute_pgm_rsrc2 = 0x84u,
+               .code_properties = 0x408u,
+           }},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX125,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_fixup_gfx125,
+                sizeof(iree_hal_amd_gpu_fixup_gfx125)},
+       .kernel =
+           {
+               .compute_pgm_rsrc1 = 0xc00f0000u,
+               .compute_pgm_rsrc2 = 0x84u,
+               .code_properties = 0x408u,
+           }},
+  };
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  return iree_hal_amd_gpu_program_select(target.instruction_sets,
+                                         IREE_ARRAYSIZE(variants), variants,
+                                         out_code, out_kernel);
 }

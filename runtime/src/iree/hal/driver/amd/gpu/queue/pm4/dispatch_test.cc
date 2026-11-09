@@ -205,11 +205,20 @@ TEST_F(DispatchTest, PreparationArgumentsExcludeShaderPackets) {
 }
 
 TEST_F(DispatchTest, PreparationProgramEmitsCompleteOrderedLaunch) {
-  for (auto gfxip : {iree_hal_amd_gpu_gfxip_version_t{11, 0, 0},
-                     {11, 5, 1},
-                     {11, 7, 0},
-                     {12, 0, 1},
-                     {12, 5, 0}}) {
+  const struct {
+    // Target identity passed through the native capability boundary.
+    iree_hal_amd_gpu_gfxip_version_t gfxip;
+    // Expected descriptor register value from the compiler artifact.
+    uint32_t resource1;
+    // Expected PM4 register offset in the emitted command stream.
+    uint32_t resource3_register;
+  } cases[] = {
+      {{11, 0, 0}, 0xE0AF0000, 0x228}, {{11, 5, 1}, 0xE0AF0000, 0x228},
+      {{11, 7, 0}, 0xE0AF0000, 0x228}, {{12, 0, 1}, 0xE00F0000, 0x228},
+      {{12, 5, 0}, 0xC00F0000, 0x223},
+  };
+  for (const auto& test : cases) {
+    const auto gfxip = test.gfxip;
     iree_hal_amd_gpu_pm4_dispatch_program_t program;
     IREE_ASSERT_OK(
         iree_hal_amd_gpu_pm4_dispatch_program_query(gfxip, &program));
@@ -226,11 +235,8 @@ TEST_F(DispatchTest, PreparationProgramEmitsCompleteOrderedLaunch) {
     words.fill(0xCAFEBABE);
     auto* end = iree_hal_amd_gpu_pm4_dispatch_emit_prepare(
         words.data() + 1, &launch, UINT64_C(0x56789ABCDEF0), 0x103E0);
-    const uint32_t resource1 = gfxip.major == 11  ? 0xE0AF0000
-                               : gfxip.minor == 0 ? 0xE00F0000
-                                                  : 0xC00F0000;
-    const uint32_t resource3_register =
-        gfxip.major == 12 && gfxip.minor == 5 ? 0x223 : 0x228;
+    const uint32_t resource1 = test.resource1;
+    const uint32_t resource3_register = test.resource3_register;
     const std::vector<uint32_t> expected = {
         0xC0027602, 0x20C,      0x34567800, 0x12,       0xC0027602,
         0x212,      resource1,  4,          0xC0017602, resource3_register,

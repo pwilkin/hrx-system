@@ -6,6 +6,8 @@
 
 #include "iree/hal/driver/amd/gpu/queue/control_program.h"
 
+#include "amdf/gpu_target.h"
+
 // Relocation-free instructions and descriptors from control_program.loom.
 // Source-compilation tests compare every byte for all supported ISA profiles.
 static const uint32_t iree_hal_amd_gpu_control_program_gfx90a_0[] = {
@@ -733,26 +735,35 @@ iree_status_t iree_hal_amd_gpu_control_program_query(
     iree_hal_amd_gpu_image_kernel_t* out_kernel) {
   *out_code = iree_const_byte_span_empty();
   *out_kernel = (iree_hal_amd_gpu_image_kernel_t){0};
-  const iree_hal_amd_gpu_control_program_entry_t* entries = NULL;
-  if (gfxip.major == 9 && gfxip.minor == 0 && gfxip.stepping == 10) {
-    entries = iree_hal_amd_gpu_control_program_gfx90a;
-  } else if (gfxip.major == 9 && (gfxip.minor == 4 || gfxip.minor == 5)) {
-    entries = iree_hal_amd_gpu_control_program_gfx9_4_generic;
-  } else if (gfxip.major == 11 && gfxip.minor == 0) {
-    entries = iree_hal_amd_gpu_control_program_gfx11_generic;
-  } else if (gfxip.major == 11 && gfxip.minor == 5) {
-    entries = iree_hal_amd_gpu_control_program_gfx11_generic;
-  } else if (gfxip.major == 11 && gfxip.minor == 7) {
-    entries = iree_hal_amd_gpu_control_program_gfx11_generic;
-  } else if (gfxip.major == 12 && gfxip.minor == 0) {
-    entries = iree_hal_amd_gpu_control_program_gfx12_generic;
-  } else if (gfxip.major == 12 && gfxip.minor == 5) {
-    entries = iree_hal_amd_gpu_control_program_gfx12_5_generic;
-  } else {
+  static const struct {
+    // Instruction requirements of every operation in this compiler artifact.
+    amdf_gpu_instruction_set_t instructions;
+    // Complete scalar-operation family emitted for those instructions.
+    const iree_hal_amd_gpu_control_program_entry_t* entries;
+  } variants[] = {
+      {AMDF_GPU_INSTRUCTION_SET_GFX90A,
+       iree_hal_amd_gpu_control_program_gfx90a},
+      {AMDF_GPU_INSTRUCTION_SET_GFX94,
+       iree_hal_amd_gpu_control_program_gfx9_4_generic},
+      {AMDF_GPU_INSTRUCTION_SET_GFX11,
+       iree_hal_amd_gpu_control_program_gfx11_generic},
+      {AMDF_GPU_INSTRUCTION_SET_GFX12,
+       iree_hal_amd_gpu_control_program_gfx12_generic},
+      {AMDF_GPU_INSTRUCTION_SET_GFX125,
+       iree_hal_amd_gpu_control_program_gfx12_5_generic},
+  };
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  const uint32_t selected = amdf_gpu_target_select_instructions(
+      target.instruction_sets, IREE_ARRAYSIZE(variants), variants,
+      sizeof(variants[0]));
+  if (selected == UINT32_MAX) {
     return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                            "control builtin is unavailable for gfx%u.%u.%u",
-                            gfxip.major, gfxip.minor, gfxip.stepping);
+                            "no compatible native control instructions");
   }
+  const iree_hal_amd_gpu_control_program_entry_t* entries =
+      variants[selected].entries;
   *out_code = iree_make_const_byte_span(entries[index].words,
                                         entries[index].word_count * 4);
   *out_kernel = entries[index].kernel;

@@ -222,15 +222,18 @@ iree_hal_amd_gpu_aql_publish_result_t iree_hal_amd_gpu_aql_publish(
       dispatch && operation && operation->completion.sample_stride;
   const bool cooperative =
       dispatch && (request->flags & IREE_HAL_DISPATCH_FLAG_COOPERATIVE);
-  if (cooperative && queue->grid.memory && !queue->commands) {
+  const bool initialize_grid =
+      cooperative && queue->options.programs->grid_sync;
+  if (cooperative && !initialize_grid && !queue->commands) {
     return IREE_HAL_AMD_GPU_AQL_PUBLISH_COMMANDS;
   }
   const uint64_t argument_length =
-      dispatch ? iree_hal_amd_gpu_aql_argument_length(
-                     request, cooperative && queue->grid.memory
-                                  ? 0
-                                  : sizeof(iree_hal_amd_gpu_grid_sync_t))
-               : 0;
+      dispatch
+          ? iree_hal_amd_gpu_aql_argument_length(
+                request, initialize_grid
+                             ? sizeof(iree_hal_amd_gpu_grid_sync_arguments_t)
+                             : 0)
+          : 0;
   const uint64_t argument_alignment =
       dispatch
           ? iree_max(layout->alignment,
@@ -331,14 +334,16 @@ iree_hal_amd_gpu_aql_publish_result_t iree_hal_amd_gpu_aql_publish(
   }
   iree_hal_amd_gpu_aql_packet_t grid_packet;
   if (cooperative) {
-    if (queue->grid.memory) {
+    iree_hal_amd_gpu_grid_sync_t grid;
+    iree_hal_amd_gpu_dispatch_emplace_grid_sync(
+        layout, &request->geometry, queue->grid.address,
+        kernarg_length ? arguments->memory.contents.data + argument_offset
+                       : NULL,
+        &grid);
+    if (!initialize_grid) {
       const uint64_t command_offset =
           (position & (queue->options.retirement_capacity - 1)) *
           IREE_HAL_AMD_GPU_AQL_INDIRECT_COMMAND_BYTE_STRIDE;
-      iree_hal_amd_gpu_grid_sync_t grid;
-      iree_hal_amd_gpu_dispatch_emplace_grid_sync(
-          layout, &request->geometry, queue->grid.address,
-          arguments->memory.contents.data + argument_offset, &grid);
       grid_packet = iree_hal_amd_gpu_aql_grid_sync_write_packet(
           queue->context->target_info.topology.xcc_count, queue->grid.address,
           &grid, queue->commands->address + command_offset,
@@ -349,15 +354,16 @@ iree_hal_amd_gpu_aql_publish_result_t iree_hal_amd_gpu_aql_publish(
                          sizeof(iree_hal_amd_gpu_aql_indirect_arguments_t)
                    : kernarg_length,
           8);
-      const uint64_t upload_address =
-          arguments->address + argument_offset + grid_offset;
-      iree_hal_amd_gpu_dispatch_emplace_grid_sync(
-          layout, &request->geometry, upload_address,
-          arguments->memory.contents.data + argument_offset,
-          (void*)(arguments->memory.contents.data + argument_offset +
-                  grid_offset));
+      const iree_hal_amd_gpu_grid_sync_arguments_t initialize = {
+          .grid_address = queue->grid.address,
+          .workitem_count = grid.total_workitem_count,
+          .workgroup_count = grid.workgroup_count,
+      };
+      memcpy(arguments->memory.contents.data + argument_offset + grid_offset,
+             &initialize, sizeof(initialize));
       grid_packet = iree_hal_amd_gpu_aql_grid_sync_packet(
-          queue->options.programs->grid_sync, upload_address);
+          queue->options.programs->grid_sync,
+          arguments->address + argument_offset + grid_offset);
     }
   }
   if (submission->entry.kind == IREE_HAL_AMD_GPU_AQL_ENTRY_TRANSFER) {

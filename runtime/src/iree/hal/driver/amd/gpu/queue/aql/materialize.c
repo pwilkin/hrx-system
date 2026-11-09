@@ -6,6 +6,9 @@
 
 #include "iree/hal/driver/amd/gpu/queue/aql/materialize.h"
 
+#include "amdf/gpu_target.h"
+#include "iree/hal/driver/amd/gpu/image/program.h"
+
 // Relocation-free instructions from materialize.loom. Complete source and
 // descriptor comparison covers every supported instruction family.
 static const uint32_t iree_hal_amd_gpu_aql_materialize_gfx90a[] = {
@@ -464,83 +467,117 @@ iree_status_t iree_hal_amd_gpu_aql_materialize_program_query(
     iree_hal_amd_gpu_gfxip_version_t gfxip, bool profiling,
     iree_const_byte_span_t* out_code,
     iree_hal_amd_gpu_image_kernel_t* out_kernel) {
-  *out_code = iree_const_byte_span_empty();
-  *out_kernel = (iree_hal_amd_gpu_image_kernel_t){0};
-  if (gfxip.major == 9 && gfxip.minor == 0 && gfxip.stepping == 10) {
-    *out_code =
-        profiling ? iree_make_const_byte_span(
+  static const iree_hal_amd_gpu_program_variant_t variants[2][5] = {
+      {
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX90A,
+           .code = {(const uint8_t*)iree_hal_amd_gpu_aql_materialize_gfx90a,
+                    sizeof(iree_hal_amd_gpu_aql_materialize_gfx90a)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc3 = 0x2u,
+                   .compute_pgm_rsrc1 = 0xaf00c1u,
+                   .compute_pgm_rsrc2 = 0x8u,
+                   .code_properties = 0x8u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX94,
+           .code = {(const uint8_t*)iree_hal_amd_gpu_aql_materialize_gfx94,
+                    sizeof(iree_hal_amd_gpu_aql_materialize_gfx94)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc3 = 0x2u,
+                   .compute_pgm_rsrc1 = 0xaf00c1u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x8u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX11,
+           .code = {(const uint8_t*)iree_hal_amd_gpu_aql_materialize_gfx11,
+                    sizeof(iree_hal_amd_gpu_aql_materialize_gfx11)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc1 = 0xe0af0001u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x408u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX12,
+           .code = {(const uint8_t*)iree_hal_amd_gpu_aql_materialize_gfx12,
+                    sizeof(iree_hal_amd_gpu_aql_materialize_gfx12)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc1 = 0xe00f0001u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x408u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX125,
+           .code = {(const uint8_t*)iree_hal_amd_gpu_aql_materialize_gfx125,
+                    sizeof(iree_hal_amd_gpu_aql_materialize_gfx125)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc1 = 0xc00f0000u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x408u,
+               }},
+      },
+      {
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX90A,
+           .code = {(const uint8_t*)
                         iree_hal_amd_gpu_aql_materialize_profile_gfx90a,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx90a))
-                  : iree_make_const_byte_span(
-                        iree_hal_amd_gpu_aql_materialize_gfx90a,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_gfx90a));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc3 = profiling ? 0x6u : 0x2u,
-        .compute_pgm_rsrc1 = profiling ? 0xaf0103u : 0xaf00c1u,
-        .compute_pgm_rsrc2 = 0x8u,
-        .code_properties = 0x8u,
-    };
-  } else if (gfxip.major == 9 && (gfxip.minor == 4 || gfxip.minor == 5)) {
-    *out_code =
-        profiling ? iree_make_const_byte_span(
+                    sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx90a)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc3 = 0x6u,
+                   .compute_pgm_rsrc1 = 0xaf0103u,
+                   .compute_pgm_rsrc2 = 0x8u,
+                   .code_properties = 0x8u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX94,
+           .code = {(const uint8_t*)
                         iree_hal_amd_gpu_aql_materialize_profile_gfx94,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx94))
-                  : iree_make_const_byte_span(
-                        iree_hal_amd_gpu_aql_materialize_gfx94,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_gfx94));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc3 = profiling ? 0x6u : 0x2u,
-        .compute_pgm_rsrc1 = profiling ? 0xaf0103u : 0xaf00c1u,
-        .compute_pgm_rsrc2 = 0x4u,
-        .code_properties = 0x8u,
-    };
-  } else if (gfxip.major == 11 &&
-             (gfxip.minor == 0 || gfxip.minor == 5 || gfxip.minor == 7)) {
-    *out_code =
-        profiling ? iree_make_const_byte_span(
+                    sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx94)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc3 = 0x6u,
+                   .compute_pgm_rsrc1 = 0xaf0103u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x8u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX11,
+           .code = {(const uint8_t*)
                         iree_hal_amd_gpu_aql_materialize_profile_gfx11,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx11))
-                  : iree_make_const_byte_span(
-                        iree_hal_amd_gpu_aql_materialize_gfx11,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_gfx11));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc1 = profiling ? 0xe0af0003u : 0xe0af0001u,
-        .compute_pgm_rsrc2 = 0x4u,
-        .code_properties = 0x408u,
-    };
-  } else if (gfxip.major == 12 && gfxip.minor == 0) {
-    *out_code =
-        profiling ? iree_make_const_byte_span(
+                    sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx11)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc1 = 0xe0af0003u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x408u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX12,
+           .code = {(const uint8_t*)
                         iree_hal_amd_gpu_aql_materialize_profile_gfx12,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx12))
-                  : iree_make_const_byte_span(
-                        iree_hal_amd_gpu_aql_materialize_gfx12,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_gfx12));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc1 = profiling ? 0xe00f0003u : 0xe00f0001u,
-        .compute_pgm_rsrc2 = 0x4u,
-        .code_properties = 0x408u,
-    };
-  } else if (gfxip.major == 12 && gfxip.minor == 5) {
-    *out_code =
-        profiling ? iree_make_const_byte_span(
+                    sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx12)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc1 = 0xe00f0003u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x408u,
+               }},
+          {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX125,
+           .code = {(const uint8_t*)
                         iree_hal_amd_gpu_aql_materialize_profile_gfx125,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx125))
-                  : iree_make_const_byte_span(
-                        iree_hal_amd_gpu_aql_materialize_gfx125,
-                        sizeof(iree_hal_amd_gpu_aql_materialize_gfx125));
-    *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-        .compute_pgm_rsrc1 = profiling ? 0xc00f0001u : 0xc00f0000u,
-        .compute_pgm_rsrc2 = 0x4u,
-        .code_properties = 0x408u,
-    };
-  } else {
-    return iree_make_status(
-        IREE_STATUS_UNIMPLEMENTED,
-        "materialize builtin is unavailable for gfx%u.%u.%u", gfxip.major,
-        gfxip.minor, gfxip.stepping);
-  }
-  return iree_ok_status();
+                    sizeof(iree_hal_amd_gpu_aql_materialize_profile_gfx125)},
+           .kernel =
+               {
+                   .compute_pgm_rsrc1 = 0xc00f0001u,
+                   .compute_pgm_rsrc2 = 0x4u,
+                   .code_properties = 0x408u,
+               }},
+      },
+  };
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  return iree_hal_amd_gpu_program_select(
+      target.instruction_sets, IREE_ARRAYSIZE(variants[0]), variants[profiling],
+      out_code, out_kernel);
 }
 
 iree_hal_amd_gpu_aql_packet_t iree_hal_amd_gpu_aql_materialize_packet(

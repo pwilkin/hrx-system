@@ -6,6 +6,7 @@
 
 #include "iree/hal/driver/amd/gpu/queue/pm4/launch.h"
 
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/gpu/queue/pm4/commands.h"
 
 // RDNA uses architected flat scratch. The old private-buffer/flat-init SGPR
@@ -39,11 +40,10 @@ iree_status_t iree_hal_amd_gpu_pm4_launch_initialize(
     amdf_queue_format_features_t format_features,
     const iree_hal_amd_gpu_image_kernel_t* kernel, uint64_t image_address,
     iree_hal_amd_gpu_pm4_launch_t* out_launch) {
-  const bool gfx11 = gfxip.major == 11 &&
-                     (gfxip.minor == 0 || gfxip.minor == 5 || gfxip.minor == 7);
-  const bool gfx12 = gfxip.major == 12 && gfxip.minor == 0;
-  const bool gfx125 = gfxip.major == 12 && gfxip.minor == 5;
-  if (!gfx11 && !gfx12 && !gfx125) {
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  if (!target.pm4.compute_registers) {
     return iree_make_status(
         IREE_STATUS_UNIMPLEMENTED,
         "PM4 launch encoding is unavailable for gfx%u.%u.%u", gfxip.major,
@@ -62,9 +62,9 @@ iree_status_t iree_hal_amd_gpu_pm4_launch_initialize(
   }
   const uint8_t wavefront_size =
       properties & IREE_HAL_AMD_GPU_PM4_PROPERTY_WAVE32 ? 32 : 64;
-  if (gfx125 && wavefront_size != 32) {
+  if (!(target.shader.wave_size_mask & wavefront_size)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "gfx12.5 requires a wave32 kernel");
+                            "target does not support the kernel wave size");
   }
   const uint64_t address_limit = UINT64_C(1) << 48;
   if (image_address >= address_limit ||
@@ -93,12 +93,12 @@ iree_status_t iree_hal_amd_gpu_pm4_launch_initialize(
                        : 0),
               .resource3 = kernel->compute_pgm_rsrc3,
           },
-      .resource3_register = gfx125 ? 0x2e23u : 0x2e28u,
+      .resource3_register = target.pm4.resource3_register,
       .dispatch_initiator = 0x5u | (wavefront_size == 32 ? 0x8000u : 0),
-      .user_data_count =
-          (uint8_t)((kernel->compute_pgm_rsrc2 >> 1) & (gfx125 ? 63u : 31u)),
+      .user_data_count = (uint8_t)((kernel->compute_pgm_rsrc2 >> 1) &
+                                   target.pm4.user_data_count_mask),
       .wavefront_size_log2 = wavefront_size == 32 ? 5 : 6,
-      .group_segment_unit_log2 = gfx125 ? 11 : 9,
+      .group_segment_unit_log2 = target.pm4.group_segment_unit_log2,
   };
   uint8_t input_count = 0;
   launch.user_data.dispatch_pointer = iree_hal_amd_gpu_pm4_launch_assign_input(

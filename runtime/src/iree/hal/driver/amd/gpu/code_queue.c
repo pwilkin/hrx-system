@@ -6,6 +6,7 @@
 
 #include "iree/hal/driver/amd/gpu/code_queue.h"
 
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/fabric/event.h"
 #include "iree/hal/driver/amd/gpu/queue/aql/ring.h"
 #include "iree/hal/driver/amd/gpu/queue/pm4/barrier.h"
@@ -62,7 +63,7 @@ struct iree_hal_amd_gpu_code_queue_t {
   amdf_gpu_event_info_t event_info;
   // Private KERNEL wake, also signaled by terminal closure.
   iree_async_event_native_t kernel_event;
-  // Complete target-specific instruction and data cache action.
+  // Complete GCR cache action, or zero for coherency-control ACQUIRE_MEM.
   uint32_t cache_control;
   // First native failure, protected by mutex until loaders have joined.
   amdf_status_t failure;
@@ -88,7 +89,11 @@ iree_status_t iree_hal_amd_gpu_code_queue_allocate(
                AMDF_QUEUE_COMMAND_TYPE_GPU_AQL;
   iree_slim_mutex_initialize(&queue->mutex);
   *out_queue = queue;
-  if (context->target_info.gfx_ip.major != 9) {
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(context->target_info.gfx_ip.major,
+                                         context->target_info.gfx_ip.minor,
+                                         context->target_info.gfx_ip.stepping);
+  if (!target.pm4.instruction_cache_uses_coherency_control) {
     iree_hal_amd_gpu_pm4_barrier_profile_t profile;
     IREE_RETURN_IF_ERROR(iree_hal_amd_gpu_pm4_barrier_profile_initialize(
         (iree_hal_amd_gpu_gfxip_version_t){
@@ -189,7 +194,7 @@ iree_status_t iree_hal_amd_gpu_code_queue_allocate(
 static uint32_t* iree_hal_amd_gpu_code_queue_emit_cache(
     const iree_hal_amd_gpu_code_queue_t* queue, uint64_t address,
     uint64_t byte_length, uint32_t* words) {
-  if (queue->context->target_info.gfx_ip.major != 9) {
+  if (queue->cache_control) {
     return iree_hal_amd_gpu_pm4_emit_acquire(words, queue->cache_control);
   }
   // GFX9 uses the coherency-control form. Every XCC executes this action,

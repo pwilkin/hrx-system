@@ -6,6 +6,9 @@
 
 #include "iree/hal/driver/amd/gpu/queue/aql/indirect.h"
 
+#include "amdf/gpu_target.h"
+#include "iree/hal/driver/amd/gpu/image/program.h"
+
 // Relocation-free instructions from indirect.loom. The source comparison covers
 // every instruction and the complete native descriptor for each target family.
 static const uint32_t iree_hal_amd_gpu_aql_indirect_gfx90a[] = {
@@ -96,45 +99,54 @@ static const uint32_t iree_hal_amd_gpu_aql_indirect_gfx125[] = {
 iree_status_t iree_hal_amd_gpu_aql_indirect_program_query(
     iree_hal_amd_gpu_gfxip_version_t gfxip, iree_const_byte_span_t* out_code,
     iree_hal_amd_gpu_image_kernel_t* out_kernel) {
-  *out_code = iree_const_byte_span_empty();
-  *out_kernel = (iree_hal_amd_gpu_image_kernel_t){
-      .entry_offset = 256, .compute_pgm_rsrc2 = 4, .code_properties = 0x408};
-  if (gfxip.major == 9 && gfxip.minor == 0 && gfxip.stepping == 10) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_aql_indirect_gfx90a,
-                                  sizeof(iree_hal_amd_gpu_aql_indirect_gfx90a));
-    out_kernel->compute_pgm_rsrc1 = 0xaf0080;
-    out_kernel->compute_pgm_rsrc2 = 8;
-    out_kernel->code_properties = 8;
-  } else if (gfxip.major == 9 && (gfxip.minor == 4 || gfxip.minor == 5)) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_aql_indirect_gfx94,
-                                  sizeof(iree_hal_amd_gpu_aql_indirect_gfx94));
-    out_kernel->compute_pgm_rsrc1 = 0xaf0080;
-    out_kernel->code_properties = 8;
-  } else if (gfxip.major == 11 &&
-             (gfxip.minor == 0 || gfxip.minor == 5 || gfxip.minor == 7)) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_aql_indirect_gfx11,
-                                  sizeof(iree_hal_amd_gpu_aql_indirect_gfx11));
-    out_kernel->compute_pgm_rsrc1 = 0xe0af0000;
-  } else if (gfxip.major == 12 && gfxip.minor == 0) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_aql_indirect_gfx12,
-                                  sizeof(iree_hal_amd_gpu_aql_indirect_gfx12));
-    out_kernel->compute_pgm_rsrc1 = 0xe00f0000;
-  } else if (gfxip.major == 12 && gfxip.minor == 5) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_aql_indirect_gfx125,
-                                  sizeof(iree_hal_amd_gpu_aql_indirect_gfx125));
-    out_kernel->compute_pgm_rsrc1 = 0xc00f0000;
-  } else {
-    return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                            "AQL indirect publication is unavailable for "
-                            "gfx%u.%u.%u",
-                            gfxip.major, gfxip.minor, gfxip.stepping);
-  }
-  return iree_ok_status();
+  static const iree_hal_amd_gpu_program_variant_t variants[] = {
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX90A,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_aql_indirect_gfx90a,
+                sizeof(iree_hal_amd_gpu_aql_indirect_gfx90a)},
+       .kernel = {.entry_offset = 0x100u,
+                  .compute_pgm_rsrc1 = 0xaf0080u,
+                  .compute_pgm_rsrc2 = 0x8u,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x8u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX94,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_aql_indirect_gfx94,
+                sizeof(iree_hal_amd_gpu_aql_indirect_gfx94)},
+       .kernel = {.entry_offset = 0x100u,
+                  .compute_pgm_rsrc1 = 0xaf0080u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x8u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX11,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_aql_indirect_gfx11,
+                sizeof(iree_hal_amd_gpu_aql_indirect_gfx11)},
+       .kernel = {.entry_offset = 0x100u,
+                  .compute_pgm_rsrc1 = 0xe0af0000u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x408u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX12,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_aql_indirect_gfx12,
+                sizeof(iree_hal_amd_gpu_aql_indirect_gfx12)},
+       .kernel = {.entry_offset = 0x100u,
+                  .compute_pgm_rsrc1 = 0xe00f0000u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x408u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX125,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_aql_indirect_gfx125,
+                sizeof(iree_hal_amd_gpu_aql_indirect_gfx125)},
+       .kernel = {.entry_offset = 0x100u,
+                  .compute_pgm_rsrc1 = 0xc00f0000u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x408u}},
+  };
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  return iree_hal_amd_gpu_program_select(target.instruction_sets,
+                                         IREE_ARRAYSIZE(variants), variants,
+                                         out_code, out_kernel);
 }
 
 void iree_hal_amd_gpu_aql_indirect_prepare(

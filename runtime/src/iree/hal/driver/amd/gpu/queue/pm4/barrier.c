@@ -6,54 +6,25 @@
 
 #include "iree/hal/driver/amd/gpu/queue/pm4/barrier.h"
 
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/gpu/queue/pm4/commands.h"
-
-// ACQUIRE_MEM GCR fields. Bit 6 writes back scalar K$ on GFX11/GFX12.0 and
-// vector V$ on GFX12.5. Whole-cache promotion must preserve either kind of
-// dirty line; a graphics compiler's read-only scalar-cache premise does not
-// apply to arbitrary HIP/Loom code. Forward order carries lower writeback
-// through L2.
-enum {
-  IREE_HAL_AMD_GPU_PM4_GCR_GLM_INV = 1u << 5,
-  IREE_HAL_AMD_GPU_PM4_GCR_LOWER_WB = 1u << 6,
-  IREE_HAL_AMD_GPU_PM4_GCR_GLK_INV = 1u << 7,
-  IREE_HAL_AMD_GPU_PM4_GCR_GLV_INV = 1u << 8,
-  IREE_HAL_AMD_GPU_PM4_GCR_GL1_INV = 1u << 9,
-  IREE_HAL_AMD_GPU_PM4_GCR_GL2_INV = 1u << 14,
-  IREE_HAL_AMD_GPU_PM4_GCR_GL2_WB = 1u << 15,
-  IREE_HAL_AMD_GPU_PM4_GCR_SEQ_FORWARD = 1u << 16,
-  IREE_HAL_AMD_GPU_PM4_GCR_GL2_SCOPE_ALL = 2u << 4,
-};
 
 iree_status_t iree_hal_amd_gpu_pm4_barrier_profile_initialize(
     iree_hal_amd_gpu_gfxip_version_t gfxip,
     iree_hal_amd_gpu_pm4_barrier_profile_t* out_profile) {
   *out_profile = (iree_hal_amd_gpu_pm4_barrier_profile_t){0};
-  const bool gfx11 = gfxip.major == 11 &&
-                     (gfxip.minor == 0 || gfxip.minor == 5 || gfxip.minor == 7);
-  const bool gfx12 = gfxip.major == 12 && gfxip.minor == 0;
-  const bool gfx125 = gfxip.major == 12 && gfxip.minor == 5;
-  if (!gfx11 && !gfx12 && !gfx125) {
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  if (!target.pm4.compute_registers) {
     return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                            "PM4 cache encoding is unavailable for gfx%u.%u.%u",
-                            gfxip.major, gfxip.minor, gfxip.stepping);
+                            "native PM4 cache encoding is unavailable");
   }
-  const uint32_t lower_writeback =
-      IREE_HAL_AMD_GPU_PM4_GCR_LOWER_WB | IREE_HAL_AMD_GPU_PM4_GCR_SEQ_FORWARD;
-  const uint32_t shader = lower_writeback | IREE_HAL_AMD_GPU_PM4_GCR_GLK_INV |
-                          IREE_HAL_AMD_GPU_PM4_GCR_GLV_INV |
-                          (gfx11 ? IREE_HAL_AMD_GPU_PM4_GCR_GLM_INV |
-                                       IREE_HAL_AMD_GPU_PM4_GCR_GL1_INV
-                                 : 0);
-  const uint32_t system_scope =
-      gfx125 ? IREE_HAL_AMD_GPU_PM4_GCR_GL2_SCOPE_ALL : 0;
   *out_profile = (iree_hal_amd_gpu_pm4_barrier_profile_t){
-      .shader = shader,
-      .release =
-          lower_writeback | IREE_HAL_AMD_GPU_PM4_GCR_GL2_WB | system_scope,
-      .acquire = shader | IREE_HAL_AMD_GPU_PM4_GCR_GL2_WB |
-                 IREE_HAL_AMD_GPU_PM4_GCR_GL2_INV | system_scope,
-      .command_processor_bypasses_l2 = !gfx11,
+      .shader = target.pm4.shader_cache_control,
+      .release = target.pm4.release_cache_control,
+      .acquire = target.pm4.acquire_cache_control,
+      .command_processor_bypasses_l2 = target.pm4.command_processor_bypasses_l2,
   };
   return iree_ok_status();
 }

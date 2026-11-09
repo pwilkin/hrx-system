@@ -251,7 +251,9 @@ iree_runtime_cc_library(
     }),
     deps = [
         ":dispatch",
+        "//libamdf:headers",
         "//runtime/src/iree/hal/driver/amd/gpu/image",
+        "//runtime/src/iree/hal/driver/amd/gpu/image:program",
         "//runtime/src/iree/hal/driver/amd/gpu/target:identity",
     ],
 )
@@ -518,8 +520,10 @@ iree_runtime_cc_library(
     hdrs = ["materialize.h"],
     deps = [
         ":packet",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amd/gpu/image",
+        "//runtime/src/iree/hal/driver/amd/gpu/image:program",
         "//runtime/src/iree/hal/driver/amd/gpu/target:identity",
     ],
 )
@@ -566,6 +570,7 @@ iree_runtime_cc_library(
         ":indirect",
         ":materialize",
         ":ring",
+        "//libamdf:headers",
         "//runtime/src/iree/hal/driver/amd:status",
         "//runtime/src/iree/hal/driver/amd/gpu:code",
         "//runtime/src/iree/hal/driver/amd/gpu:dispatch",

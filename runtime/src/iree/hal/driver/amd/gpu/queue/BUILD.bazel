@@ -723,8 +723,10 @@ iree_runtime_cc_library(
     srcs = ["fixup.c"],
     hdrs = ["fixup.h"],
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amd/gpu/image",
+        "//runtime/src/iree/hal/driver/amd/gpu/image:program",
         "//runtime/src/iree/hal/driver/amd/gpu/target:identity",
     ],
 )
@@ -826,8 +828,10 @@ iree_runtime_cc_library(
     srcs = ["blit.c"],
     hdrs = ["blit.h"],
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amd/gpu/image",
+        "//runtime/src/iree/hal/driver/amd/gpu/image:program",
         "//runtime/src/iree/hal/driver/amd/gpu/target:identity",
     ],
 )
@@ -923,7 +927,9 @@ iree_amdgpu_binary_variants_embed_data(
     name = "grid_sync_programs",
     testonly = True,
     srcs = ["grid_sync.c"],
+    copts = ["-Ilibamdf/include"],
     identifier = "iree_hal_amd_gpu_grid_sync_programs",
+    internal_hdrs = ["//libamdf:include/amdf/gpu_device.h"],
     tags = ["manual"],
     target = "amdgcn-amd-amdhsa",
     target_selectors_flag = "//runtime/src/iree/hal/driver/amd/gpu:targets",
@@ -957,6 +963,7 @@ iree_runtime_cc_library(
     hdrs = ["control_program.h"],
     deps = [
         ":control",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amd/gpu/image",
         "//runtime/src/iree/hal/driver/amd/gpu/target:identity",

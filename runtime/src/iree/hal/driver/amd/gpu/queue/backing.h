@@ -41,8 +41,9 @@ typedef struct iree_hal_amd_gpu_byte_storage_t {
 } iree_hal_amd_gpu_byte_storage_t;
 
 // One device-only grid record for ordered direct cooperative dispatches. The
-// command processor initializes it after the preceding grid completes; shaders
-// own it until the next ordered initialization. No CPU mapping is required.
+// command processor or GWS initializer writes it after the preceding grid
+// completes; shaders own it until the next ordered initialization. No CPU
+// mapping is required.
 typedef struct iree_hal_amd_gpu_grid_storage_t {
   // Owned resident backing, released only after the native queue stops.
   amdf_memory_t* memory;
@@ -52,7 +53,7 @@ typedef struct iree_hal_amd_gpu_grid_storage_t {
 
 // Qualifies device-scope shader LOAD/ADD before allocating one grid record from
 // the queue's resident read/write policy. Failure leaves out_storage empty.
-// Ordinary and hardware-GWS queues do not acquire this backing.
+// Queues without cooperative dispatch do not acquire this backing.
 iree_status_t iree_hal_amd_gpu_grid_storage_initialize(
     iree_hal_amd_gpu_context_t* context,
     const iree_hal_amd_fabric_memory_options_t* options,

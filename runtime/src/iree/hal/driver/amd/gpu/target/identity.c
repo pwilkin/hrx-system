@@ -6,6 +6,8 @@
 
 #include "iree/hal/driver/amd/gpu/target/identity.h"
 
+#include "amdf/gpu_target.h"
+
 typedef enum iree_hal_amd_gpu_target_feature_support_bit_e {
   IREE_HAL_AMD_GPU_TARGET_FEATURE_SUPPORT_NONE = 0u,
   IREE_HAL_AMD_GPU_TARGET_FEATURE_SUPPORT_SRAMECC = 1u << 0,
@@ -536,9 +538,10 @@ IREE_API_EXPORT bool iree_hal_amd_gpu_target_identity_equal(
     const iree_hal_amd_gpu_target_identity_t* rhs) {
   IREE_ASSERT_ARGUMENT(lhs);
   IREE_ASSERT_ARGUMENT(rhs);
-  return lhs->kind == rhs->kind && lhs->version.major == rhs->version.major &&
-         lhs->version.minor == rhs->version.minor &&
-         lhs->version.stepping == rhs->version.stepping &&
+  return lhs->kind == rhs->kind &&
+         amdf_gpu_target_equal(lhs->version.major, lhs->version.minor,
+                               lhs->version.stepping, rhs->version.major,
+                               rhs->version.minor, rhs->version.stepping) &&
          lhs->generic_version == rhs->generic_version &&
          lhs->amdhsa_features.sramecc == rhs->amdhsa_features.sramecc &&
          lhs->amdhsa_features.xnack == rhs->amdhsa_features.xnack &&

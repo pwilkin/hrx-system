@@ -6,6 +6,7 @@
 
 #include "iree/hal/driver/amd/gpu/queue/pm4/scratch.h"
 
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/gpu/queue/pm4/commands.h"
 #include "iree/hal/driver/amd/status.h"
 
@@ -33,12 +34,18 @@ iree_status_t iree_hal_amd_gpu_pm4_scratch_profile_initialize(
                             "native PM4 scratch wave capacity exceeds the "
                             "register field");
   }
+  const amdf_gpu_target_capabilities_t capabilities =
+      amdf_gpu_target_query_capabilities(
+          target->gfx_ip.major, target->gfx_ip.minor, target->gfx_ip.stepping);
+  if (!capabilities.pm4.compute_registers) {
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "native PM4 scratch register encoding is unavailable");
+  }
   *out_profile = (iree_hal_amd_gpu_pm4_scratch_profile_t){
-      .size_register = target->gfx_ip.major == 12 && target->gfx_ip.minor == 5
-                           ? 0x2e16
-                           : 0x2e18,
+      .size_register = capabilities.pm4.scratch_size_register,
       .maximum_wave_byte_length =
-          (target->gfx_ip.major >= 12 ? 0x3ffffu : 0x7fffu) << 8,
+          capabilities.pm4.maximum_scratch_wave_byte_length,
       .waves_per_engine = (uint32_t)waves_per_engine,
       .engine_count = engine_count,
   };

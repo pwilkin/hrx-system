@@ -14,6 +14,7 @@
 #include <tuple>
 #include <vector>
 
+#include "amdf/gpu_target.h"
 #include "iree/base/alignment.h"
 #include "iree/hal/driver/amd/gpu/feedback.h"
 #include "iree/hal/driver/amd/gpu/image/hsaco.h"
@@ -342,20 +343,34 @@ class ExecutableTest : public ::testing::TestWithParam<
         source, iree_allocator_system(), &image_));
     iree_byte_sequence_release(source);
     target_ = image_.target;
-    if (!UsesAql() && target_.version.major < 11) {
+    const auto target = amdf_gpu_target_query_capabilities(
+        target_.version.major, target_.version.minor, target_.version.stepping);
+    if (!UsesAql() && !target.pm4.compute_registers) {
       GTEST_SKIP() << "The PM4 launch encoder does not yet admit this ISA";
     }
     if (target_.kind == IREE_HAL_AMD_GPU_TARGET_KIND_GENERIC) {
-      const auto physical =
-          target_.version.major == 9
-              ? (target_.version.minor == 4 ? IREE_SV("gfx942")
-                                            : IREE_SV("gfx900"))
-          : target_.version.major == 10
-              ? (target_.version.minor == 1 ? IREE_SV("gfx1010")
-                                            : IREE_SV("gfx1030"))
-          : target_.version.major == 11 ? IREE_SV("gfx1100")
-          : target_.version.minor == 5  ? IREE_SV("gfx1250")
-                                        : IREE_SV("gfx1201");
+      static const struct {
+        // Instruction requirements shared by the artifact and a physical
+        // target.
+        amdf_gpu_instruction_set_t instructions;
+        // Exact identity used to instantiate a generic compiler artifact.
+        iree_string_view_t target;
+      } variants[] = {
+          {AMDF_GPU_INSTRUCTION_SET_GFX9, IREE_SV("gfx900")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX94, IREE_SV("gfx942")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX101, IREE_SV("gfx1010")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX103, IREE_SV("gfx1030")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX115, IREE_SV("gfx1150")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX117, IREE_SV("gfx1170")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX11, IREE_SV("gfx1100")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX12, IREE_SV("gfx1201")},
+          {AMDF_GPU_INSTRUCTION_SET_GFX125, IREE_SV("gfx1250")},
+      };
+      const uint32_t selected = amdf_gpu_target_select_instructions(
+          target.instruction_sets, IREE_ARRAYSIZE(variants), variants,
+          sizeof(variants[0]));
+      ASSERT_NE(selected, UINT32_MAX);
+      const auto physical = variants[selected].target;
       IREE_ASSERT_OK(iree_hal_amd_gpu_target_identity_parse_artifact_key(
           physical, &target_));
     }
@@ -854,8 +869,7 @@ TEST_P(ExecutableTest, WriteBackHostMappingDoesNotInventCoherence) {
 }
 
 TEST_P(ExecutableTest, RejectsWrongTargetBeforeAllocatingNativeStorage) {
-  const auto wrong_target =
-      target_.version.major == 9 ? IREE_SV("gfx1100") : IREE_SV("gfx942");
+  const auto wrong_target = IREE_SV("gfx1300");
   IREE_ASSERT_OK(iree_hal_amd_gpu_target_identity_parse_artifact_key(
       wrong_target, &target_));
   IREE_EXPECT_STATUS_IS(IREE_STATUS_INCOMPATIBLE, Load());

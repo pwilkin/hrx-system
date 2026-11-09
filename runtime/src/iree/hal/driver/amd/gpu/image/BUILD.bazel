@@ -35,6 +35,17 @@ iree_runtime_cc_library(
 )
 
 iree_runtime_cc_library(
+    name = "program",
+    srcs = ["program.c"],
+    hdrs = ["program.h"],
+    deps = [
+        ":image",
+        "//libamdf:headers",
+        "//runtime/src/iree/base",
+    ],
+)
+
+iree_runtime_cc_library(
     name = "hsaco",
     srcs = ["hsaco.c"],
     hdrs = ["hsaco.h"],

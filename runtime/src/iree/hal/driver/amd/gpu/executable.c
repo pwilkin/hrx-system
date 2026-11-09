@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "amdf/gpu_target.h"
 #include "iree/base/alignment.h"
 #include "iree/base/internal/debugging.h"
 #include "iree/base/internal/math.h"
@@ -315,6 +316,16 @@ static iree_status_t iree_hal_amd_gpu_executable_admit(
         "ASAN global layout requires scale-three ASAN configuration");
   }
   iree_hal_amd_gpu_target_identity_t artifact = image->target;
+  const bool target_requires_revision =
+      amdf_gpu_target_query_capabilities(target->version.major,
+                                         target->version.minor,
+                                         target->version.stepping)
+          .requires_revision_metadata;
+  const bool artifact_requires_revision =
+      amdf_gpu_target_query_capabilities(artifact.version.major,
+                                         artifact.version.minor,
+                                         artifact.version.stepping)
+          .requires_revision_metadata;
   for (iree_host_size_t i = 0; i < image->metadata.kernel_count; ++i) {
     const iree_hal_amd_gpu_metadata_kernel_t* kernel =
         &image->metadata.kernels[i];
@@ -327,8 +338,7 @@ static iree_status_t iree_hal_amd_gpu_executable_admit(
     // LLVM emits this annotation for other processors too. It constrains only
     // GFX1250; interpreting it as an unconditional target would reject ordinary
     // GFX11 and GFX12.0 code objects produced by the same compiler.
-    if (target->version.major == 12 && target->version.minor == 5 &&
-        target->version.stepping == 0 &&
+    if (target_requires_revision &&
         !iree_string_view_is_empty(kernel->gfx1250_revision)) {
       iree_string_view_t required_target;
       if (iree_string_view_equal(kernel->gfx1250_revision, IREE_SV("A0"))) {
@@ -347,8 +357,7 @@ static iree_status_t iree_hal_amd_gpu_executable_admit(
             (int)required_target.size, required_target.data);
       }
       if (artifact.kind == IREE_HAL_AMD_GPU_TARGET_KIND_EXACT &&
-          artifact.version.major == 12 && artifact.version.minor == 5 &&
-          artifact.version.stepping == 0) {
+          artifact_requires_revision) {
         artifact.target = required_target;
       }
     }
@@ -691,9 +700,11 @@ static iree_status_t iree_hal_amd_gpu_executable_load_image(
   }
   byte_length &= ~UINT64_C(63);
   // CDNA uses RSRC3 for accumulator allocation, not instruction prefetch.
-  const uint32_t prefetch_mask = options->target->version.major == 11   ? 0x3f
-                                 : options->target->version.major >= 12 ? 0xff
-                                                                        : 0;
+  const uint32_t prefetch_mask =
+      amdf_gpu_target_query_capabilities(options->target->version.major,
+                                         options->target->version.minor,
+                                         options->target->version.stepping)
+          .instruction_prefetch_mask;
   for (iree_host_size_t i = 0;
        prefetch_mask && i < image->metadata.kernel_count; ++i) {
     uint64_t end = 0;
@@ -1070,13 +1081,15 @@ iree_status_t iree_hal_amd_gpu_executable_create(
     executable->variant_count = variant_count;
     executable->command_type = command_type;
     executable->function_size = function_size;
-    const iree_hal_amd_gpu_grid_sync_strategy_t grid_sync_strategy =
-        iree_hal_amd_gpu_grid_sync_select_strategy(options->target->version);
-    if (grid_sync_strategy != IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_NONE) {
+    const amdf_gpu_grid_barrier_t grid_sync_strategy =
+        amdf_gpu_target_query_capabilities(options->target->version.major,
+                                           options->target->version.minor,
+                                           options->target->version.stepping)
+            .grid_barrier;
+    if (grid_sync_strategy != AMDF_GPU_GRID_BARRIER_NONE) {
       executable->maximum_cooperative_workgroup_count =
-          grid_sync_strategy == IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY
-              ? UINT16_MAX
-              : UINT32_MAX;
+          grid_sync_strategy == AMDF_GPU_GRID_BARRIER_MEMORY ? UINT16_MAX
+                                                             : UINT32_MAX;
     }
     const amdf_queue_format_features_t format_features =
         context->families[options->native_family_ordinal].format_features;

@@ -6,6 +6,8 @@
 
 #include "iree/hal/driver/amd/gpu/queue/pm4/dispatch.h"
 
+#include "amdf/gpu_target.h"
+#include "iree/hal/driver/amd/gpu/image/program.h"
 #include "iree/hal/driver/amd/gpu/queue/pm4/commands.h"
 
 // The relocation-free program in dispatch_info.loom uses two pointer kernargs,
@@ -52,33 +54,32 @@ static const uint32_t iree_hal_amd_gpu_pm4_dispatch_program_gfx125[] = {
 iree_status_t iree_hal_amd_gpu_pm4_dispatch_program_query(
     iree_hal_amd_gpu_gfxip_version_t gfxip,
     iree_hal_amd_gpu_pm4_dispatch_program_t* out_program) {
-  iree_hal_amd_gpu_pm4_dispatch_program_t program = {
-      .kernel = {.compute_pgm_rsrc2 = 4, .code_properties = 0x408},
+  static const iree_hal_amd_gpu_program_variant_t variants[] = {
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX11,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_pm4_dispatch_program_gfx11,
+                sizeof(iree_hal_amd_gpu_pm4_dispatch_program_gfx11)},
+       .kernel = {.compute_pgm_rsrc1 = 0xe0af0000u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .code_properties = 0x408u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX12,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_pm4_dispatch_program_gfx12,
+                sizeof(iree_hal_amd_gpu_pm4_dispatch_program_gfx12)},
+       .kernel = {.compute_pgm_rsrc1 = 0xe00f0000u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .code_properties = 0x408u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX125,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_pm4_dispatch_program_gfx125,
+                sizeof(iree_hal_amd_gpu_pm4_dispatch_program_gfx125)},
+       .kernel = {.compute_pgm_rsrc1 = 0xc00f0000u,
+                  .compute_pgm_rsrc2 = 0x4u,
+                  .code_properties = 0x408u}},
   };
-  if (gfxip.major == 11 &&
-      (gfxip.minor == 0 || gfxip.minor == 5 || gfxip.minor == 7)) {
-    program.code = iree_make_const_byte_span(
-        iree_hal_amd_gpu_pm4_dispatch_program_gfx11,
-        sizeof(iree_hal_amd_gpu_pm4_dispatch_program_gfx11));
-    program.kernel.compute_pgm_rsrc1 = 0xe0af0000u;
-  } else if (gfxip.major == 12 && gfxip.minor == 0) {
-    program.code = iree_make_const_byte_span(
-        iree_hal_amd_gpu_pm4_dispatch_program_gfx12,
-        sizeof(iree_hal_amd_gpu_pm4_dispatch_program_gfx12));
-    program.kernel.compute_pgm_rsrc1 = 0xe00f0000u;
-  } else if (gfxip.major == 12 && gfxip.minor == 5) {
-    program.code = iree_make_const_byte_span(
-        iree_hal_amd_gpu_pm4_dispatch_program_gfx125,
-        sizeof(iree_hal_amd_gpu_pm4_dispatch_program_gfx125));
-    program.kernel.compute_pgm_rsrc1 = 0xc00f0000u;
-  } else {
-    return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                            "dispatch packet preparation is unavailable for "
-                            "gfx%u.%u.%u",
-                            gfxip.major, gfxip.minor, gfxip.stepping);
-  }
-  *out_program = program;
-  return iree_ok_status();
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  return iree_hal_amd_gpu_program_select(
+      target.instruction_sets, IREE_ARRAYSIZE(variants), variants,
+      &out_program->code, &out_program->kernel);
 }
 
 iree_hal_amd_gpu_pm4_dispatch_storage_t iree_hal_amd_gpu_pm4_dispatch_storage(

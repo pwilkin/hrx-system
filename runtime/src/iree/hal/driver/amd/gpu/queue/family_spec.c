@@ -6,6 +6,7 @@
 
 #include "iree/hal/driver/amd/gpu/queue/family_spec.h"
 
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/fabric/memory.h"
 #include "iree/hal/driver/amd/gpu/dispatch.h"
 #include "iree/hal/driver/amd/status.h"
@@ -135,8 +136,10 @@ iree_status_t iree_hal_amd_gpu_queue_family_spec_initialize(
           compute && user_publication &&
                   (native_family->user_queue_capabilities &
                    AMDF_USER_QUEUE_CAPABILITY_COOPERATIVE_DISPATCH) &&
-                  iree_hal_amd_gpu_grid_sync_select_strategy(target_version) !=
-                      IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_NONE
+                  amdf_gpu_target_query_capabilities(target_version.major,
+                                                     target_version.minor,
+                                                     target_version.stepping)
+                          .grid_barrier != AMDF_GPU_GRID_BARRIER_NONE
               ? IREE_HAL_QUEUE_FEATURE_FLAG_COOPERATIVE_DISPATCH
               : 0,
       .provisioned_queue_count = queue_count,

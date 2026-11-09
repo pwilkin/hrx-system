@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "amdf/gpu.h"
+#include "amdf/gpu_target.h"
 #include "iree/hal/driver/amd/gpu/image/hsaco.h"
 #include "iree/hal/driver/amd/gpu/image/hsaco_test_util.h"
 #include "iree/hal/driver/amd/gpu/queue/pm4/commands.h"
@@ -416,7 +417,10 @@ TEST_F(LaunchTest, PreparesActualHipCompilerArtifacts) {
         source, iree_allocator_system(), &image);
     iree_byte_sequence_release(source);
     IREE_ASSERT_OK(status);
-    if (image.target.version.major == 11 || image.target.version.major == 12) {
+    const auto target = amdf_gpu_target_query_capabilities(
+        image.target.version.major, image.target.version.minor,
+        image.target.version.stepping);
+    if (target.pm4.compute_registers) {
       SCOPED_TRACE(files[i].name);
       ++pm4_image_count;
       EXPECT_GT(image.metadata.kernel_count, 0u);

@@ -78,7 +78,7 @@ struct iree_hal_amd_gpu_aql_queue_t {
   } release;
   // Native queue and independently mapped host/device operands.
   iree_hal_amd_gpu_user_queue_t storage;
-  // Device-only state for memory-strategy cooperative grids; empty for GWS.
+  // Device-only cooperative grid state, initialized and reused in queue order.
   iree_hal_amd_gpu_grid_storage_t grid;
   // Device-owned completion facts, borrowed until final queue cleanup.
   struct {

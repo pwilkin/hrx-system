@@ -6,65 +6,99 @@
 
 #include "iree/hal/driver/amd/gpu/dispatch.h"
 
-iree_hal_amd_gpu_grid_sync_strategy_t
-iree_hal_amd_gpu_grid_sync_select_strategy(
-    iree_hal_amd_gpu_gfxip_version_t gfxip) {
-  if ((gfxip.major == 9 && gfxip.minor == 4 && gfxip.stepping == 2) ||
-      (gfxip.major == 9 && gfxip.minor == 5 && gfxip.stepping == 0) ||
-      gfxip.major == 11 || gfxip.major == 12) {
-    return IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_MEMORY;
-  }
-  return gfxip.major == 9 || gfxip.major == 10
-             ? IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_GWS
-             : IREE_HAL_AMD_GPU_GRID_SYNC_STRATEGY_NONE;
-}
+#include "amdf/gpu_target.h"
+#include "iree/hal/driver/amd/gpu/image/program.h"
 
 // Relocation-free grid_sync.c instructions and complete descriptor facts are
 // checked against configured source compilation. GFX9.4 has no private-segment
 // buffer SGPRs; earlier GFX9 and GFX10 receive kernargs in s[4:5].
 static const uint32_t iree_hal_amd_gpu_grid_sync_gfx9[] = {
-    0xc0020002u, 0x00000028u, 0xbefc0080u, 0xbf8cc07fu, 0x8100c100u,
-    0x7e000200u, 0xd9330000u, 0x00000000u, 0xbf8c0000u, 0xbf810000u};
+    0xc00a0002u, 0x00000000u, 0xc0020182u, 0x00000010u, 0x7e020280u,
+    0x7e080281u, 0x7e040301u, 0x7e060301u, 0xbf8cc07fu, 0xdc7c8000u,
+    0x00000101u, 0x7e000206u, 0x7e060202u, 0x7e080203u, 0xdc7c8010u,
+    0x00000101u, 0xbefc0080u, 0x7e080301u, 0x7e060300u, 0xdc7c8020u,
+    0x00000101u, 0x8100c106u, 0x7e000200u, 0xd9330000u, 0x00000000u,
+    0xbf8c0000u, 0xbf810000u};
+static const uint32_t iree_hal_amd_gpu_grid_sync_gfx90a[] = {
+    0xc00a0002u, 0x00000000u, 0xc0020182u, 0x00000010u, 0x7e000280u,
+    0x7e060281u, 0x7e020300u, 0x7e040300u, 0xbf8cc07fu, 0xdc7c8000u,
+    0x00000000u, 0xbefc0080u, 0x7e040202u, 0x7e060203u, 0xdc7c8010u,
+    0x00000000u, 0xbf800000u, 0x7e040206u, 0x7e060300u, 0x8106c106u,
+    0xdc7c8020u, 0x00000000u, 0xbf800000u, 0x7e000206u, 0xd9330000u,
+    0x00000000u, 0xbf8c0000u, 0xbf810000u};
 static const uint32_t iree_hal_amd_gpu_grid_sync_gfx94[] = {
-    0xc0020000u, 0x00000028u, 0xbefc0080u, 0xbf8cc07fu, 0x8100c100u,
-    0x7e000200u, 0xd9330000u, 0x00000000u, 0xbf8c0000u, 0xbf810000u};
-static const uint32_t iree_hal_amd_gpu_grid_sync_gfx10[] = {
-    0xf4000002u, 0xfa000028u, 0xbefc0380u, 0xbf8cc07fu, 0x8100c100u,
-    0x7e000200u, 0xd8660000u, 0x00000000u, 0xbf8c0000u, 0xbf810000u};
+    0xc00a0100u, 0x00000000u, 0xc0020080u, 0x00000010u, 0x7e000280u,
+    0x7e060281u, 0x7e020300u, 0x7e040300u, 0xbf8cc07fu, 0xdc7c8000u,
+    0x00040000u, 0x7e080202u, 0x7e0a0300u, 0x7e040206u, 0x7e060207u,
+    0xdc7c8010u, 0x00040000u, 0x8102c102u, 0xbefc0080u, 0x7e047080u,
+    0xdc7c8020u, 0x00040200u, 0x7e000202u, 0xd9330000u, 0x00000000u,
+    0xbf8c0000u, 0xbf810000u};
+static const uint32_t iree_hal_amd_gpu_grid_sync_gfx101[] = {
+    0xbfa10001u, 0xf4080002u, 0xfa000000u, 0xf4000182u, 0xfa000010u,
+    0x7e020280u, 0x7e080281u, 0xbefc0380u, 0x7e040301u, 0x7e060301u,
+    0xbf8cc07fu, 0xdc788000u, 0x00000101u, 0x7e060202u, 0x7e080203u,
+    0x7e000206u, 0x8102c106u, 0xdc788010u, 0x00000101u, 0x7e080301u,
+    0x7e060300u, 0x7e000202u, 0xdc788020u, 0x00000101u, 0xd8660000u,
+    0x00000000u, 0xbf8c0000u, 0xbf810000u};
+static const uint32_t iree_hal_amd_gpu_grid_sync_gfx103[] = {
+    0xbfa10001u, 0xf4080002u, 0xfa000000u, 0xf4000102u, 0xfa000010u,
+    0x7e020280u, 0x7e080281u, 0xbefc0380u, 0x7e040301u, 0x7e060301u,
+    0xbf8cc07fu, 0xdc788000u, 0x00000101u, 0x7e060202u, 0x7e080203u,
+    0x7e000204u, 0x8102c104u, 0xdc788010u, 0x00000101u, 0x7e080301u,
+    0x7e060300u, 0x7e000202u, 0xdc788020u, 0x00000101u, 0xd8660000u,
+    0x00000000u, 0xbf8c0000u, 0xbf810000u};
 
 iree_status_t iree_hal_amd_gpu_grid_sync_program_query(
     iree_hal_amd_gpu_gfxip_version_t gfxip, iree_const_byte_span_t* out_code,
     iree_hal_amd_gpu_image_kernel_t* out_kernel) {
-  if (gfxip.major == 9 && gfxip.minor < 4) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_grid_sync_gfx9,
-                                  sizeof(iree_hal_amd_gpu_grid_sync_gfx9));
-    *out_kernel =
-        (iree_hal_amd_gpu_image_kernel_t){.compute_pgm_rsrc1 = 0xaf0040u,
-                                          .compute_pgm_rsrc2 = 0x8cu,
-                                          .code_properties = 0x9u};
-  } else if (gfxip.major == 9 && (gfxip.minor == 4 || gfxip.minor == 5)) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_grid_sync_gfx94,
-                                  sizeof(iree_hal_amd_gpu_grid_sync_gfx94));
-    *out_kernel =
-        (iree_hal_amd_gpu_image_kernel_t){.compute_pgm_rsrc1 = 0xaf0000u,
-                                          .compute_pgm_rsrc2 = 0x84u,
-                                          .code_properties = 0x8u};
-  } else if (gfxip.major == 10 && (gfxip.minor == 1 || gfxip.minor == 3)) {
-    *out_code =
-        iree_make_const_byte_span(iree_hal_amd_gpu_grid_sync_gfx10,
-                                  sizeof(iree_hal_amd_gpu_grid_sync_gfx10));
-    *out_kernel =
-        (iree_hal_amd_gpu_image_kernel_t){.compute_pgm_rsrc1 = 0xe0af0000u,
-                                          .compute_pgm_rsrc2 = 0x8cu,
-                                          .code_properties = 0x409u};
-  } else {
-    return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                            "GWS initialization is unavailable for gfx%u.%u.%u",
-                            gfxip.major, gfxip.minor, gfxip.stepping);
-  }
-  return iree_ok_status();
+  static const iree_hal_amd_gpu_program_variant_t variants[] = {
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX90A,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_grid_sync_gfx90a,
+                sizeof(iree_hal_amd_gpu_grid_sync_gfx90a)},
+       .kernel = {.compute_pgm_rsrc1 = 0xaf0040u,
+                  .compute_pgm_rsrc2 = 0x8cu,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x9u,
+                  .kernarg_preload = 0x0u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX9,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_grid_sync_gfx9,
+                sizeof(iree_hal_amd_gpu_grid_sync_gfx9)},
+       .kernel = {.compute_pgm_rsrc1 = 0xaf0041u,
+                  .compute_pgm_rsrc2 = 0x8cu,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x9u,
+                  .kernarg_preload = 0x0u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX94,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_grid_sync_gfx94,
+                sizeof(iree_hal_amd_gpu_grid_sync_gfx94)},
+       .kernel = {.compute_pgm_rsrc1 = 0xaf0040u,
+                  .compute_pgm_rsrc2 = 0x84u,
+                  .compute_pgm_rsrc3 = 0x1u,
+                  .code_properties = 0x8u,
+                  .kernarg_preload = 0x0u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX101,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_grid_sync_gfx101,
+                sizeof(iree_hal_amd_gpu_grid_sync_gfx101)},
+       .kernel = {.compute_pgm_rsrc1 = 0xe0af0000u,
+                  .compute_pgm_rsrc2 = 0x8cu,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x409u,
+                  .kernarg_preload = 0x0u}},
+      {.instructions = AMDF_GPU_INSTRUCTION_SET_GFX103,
+       .code = {(const uint8_t*)iree_hal_amd_gpu_grid_sync_gfx103,
+                sizeof(iree_hal_amd_gpu_grid_sync_gfx103)},
+       .kernel = {.compute_pgm_rsrc1 = 0xe0af0000u,
+                  .compute_pgm_rsrc2 = 0x8cu,
+                  .compute_pgm_rsrc3 = 0x0u,
+                  .code_properties = 0x409u,
+                  .kernarg_preload = 0x0u}},
+  };
+  const amdf_gpu_target_capabilities_t target =
+      amdf_gpu_target_query_capabilities(gfxip.major, gfxip.minor,
+                                         gfxip.stepping);
+  return iree_hal_amd_gpu_program_select(target.instruction_sets,
+                                         IREE_ARRAYSIZE(variants), variants,
+                                         out_code, out_kernel);
 }
 
 void iree_hal_amd_gpu_dispatch_emplace_grid_sync(
@@ -115,6 +149,12 @@ typedef struct iree_hal_amd_gpu_dispatch_residency_t {
   uint32_t local_memory_granule;
   // Standard barrier slots available to multi-wave workgroups in a domain.
   uint32_t barrier_count;
+  // Scalar registers per SIMD, or zero when scalar allocation is not limiting.
+  uint32_t scalar_register_count;
+  // Scalar registers represented by one descriptor block.
+  uint32_t scalar_encoding_granule;
+  // Scalar registers allocated before native trap reservation.
+  uint32_t scalar_allocation_granule;
   // Dynamic allocation removes the static vector-register residency bound.
   bool dynamic_vector_registers;
 } iree_hal_amd_gpu_dispatch_residency_t;
@@ -123,82 +163,58 @@ static iree_status_t iree_hal_amd_gpu_dispatch_residency(
     const amdf_gpu_endpoint_info_t* target,
     const iree_hal_amd_gpu_image_kernel_t* kernel,
     iree_hal_amd_gpu_dispatch_residency_t* out_residency) {
-  const uint32_t major = target->gfx_ip.major;
-  const uint32_t minor = target->gfx_ip.minor;
-  const uint32_t stepping = target->gfx_ip.stepping;
+  const amdf_gpu_shader_capabilities_t capabilities =
+      amdf_gpu_target_query_capabilities(
+          target->gfx_ip.major, target->gfx_ip.minor, target->gfx_ip.stepping)
+          .shader;
+  if (!capabilities.wave_size_mask) {
+    return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                            "native dispatch resource encoding is unavailable");
+  }
   const bool wave32 = (kernel->code_properties & (1u << 10)) != 0;
-  iree_hal_amd_gpu_dispatch_residency_t residency = {
-      .wavefront_size = wave32 ? 32u : 64u,
-      .compute_units_per_domain = 1,
-      .local_memory_granule = 512,
-      .barrier_count = 16,
-  };
-  if (major == 9) {
-    const bool unified =
-        (minor == 0 && stepping == 10) || minor == 4 || minor == 5;
-    if (wave32) {
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "GFX9 requires wave64 execution");
-    }
-    if (unified && (kernel->compute_pgm_rsrc3 & (1u << 16))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "split-workgroup residency requires native cross-CU scheduling "
-          "domain facts");
-    }
-    residency.simds_per_compute_unit = 4;
-    residency.vector_register_count = unified ? 512 : 256;
-    residency.vector_encoding_granule = unified ? 8 : 4;
-    residency.vector_allocation_granule = unified ? 8 : 4;
-    residency.local_memory_granule = minor == 5 ? 1280 : 512;
-  } else if (major >= 10 && major <= 12) {
-    const bool gfx125 = major == 12 && minor == 5;
-    const bool wgp = (kernel->compute_pgm_rsrc1 & (1u << 29)) != 0;
-    if (gfx125 && (!wave32 || wgp)) {
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "GFX12.5 requires wave32 CU-mode execution");
-    }
-    const uint32_t shared_registers =
-        major <= 11 ? (kernel->compute_pgm_rsrc3 & 0xFu) * 8 : 0;
-    if (wave32 && shared_registers) {
-      return iree_make_status(
-          IREE_STATUS_INVALID_ARGUMENT,
-          "shared vector registers require wave64 execution");
-    }
-    if (major == 12 &&
-        (kernel->compute_pgm_rsrc3 &
-         ((1u << 13) | (gfx125 ? (0x7u << 14) | (0x7u << 18) : 0)))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "group-launch, named-barrier, or TCP-split residency requires "
-          "native scheduling resource facts");
-    }
-    const bool large_register_file =
-        major == 12 || (major == 11 && ((minor == 0 && stepping <= 1) ||
-                                        (minor == 5 && stepping == 1)));
-    residency.compute_units_per_domain = wgp ? 2 : 1;
-    residency.simds_per_compute_unit = gfx125 ? 4 : 2;
-    residency.vector_register_count =
-        (large_register_file ? 1536u : 1024u) / (wave32 ? 1u : 2u);
-    residency.vector_encoding_granule = gfx125 ? 16 : (wave32 ? 8 : 4);
-    residency.vector_allocation_granule = (major == 10 && minor == 1 ? 8u
-                                           : large_register_file     ? 24u
-                                                                     : 16u) /
-                                          (wave32 ? 1u : 2u);
-    // Subvector registers are shared by both halves of wave64, consuming
-    // half a private register each, after rounding the private allocation.
-    residency.shared_vector_register_count = shared_registers / 2;
-    residency.local_memory_granule = gfx125 ? 2048 : 512;
-    residency.barrier_count = gfx125 ? 16 : (wgp ? 32 : 16);
-    residency.dynamic_vector_registers =
-        major == 12 && (gfx125 ? (kernel->compute_pgm_rsrc3 & (1u << 17))
-                               : (kernel->compute_pgm_rsrc2 & (1u << 6)));
-  } else {
+  const uint32_t wave_size = wave32 ? 32 : 64;
+  if (!(capabilities.wave_size_mask & wave_size)) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "target does not support the kernel wave size");
+  }
+  const bool wgp =
+      (kernel->compute_pgm_rsrc1 & capabilities.workgroup_processor_mask) != 0;
+  if (wgp && !capabilities.workgroup_processor_mode) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "target requires CU-mode execution");
+  }
+  const uint32_t shared_registers =
+      (kernel->compute_pgm_rsrc3 & capabilities.shared_vector_register_mask) *
+      8;
+  if (wave32 && shared_registers) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "shared vector registers require wave64 execution");
+  }
+  if (kernel->compute_pgm_rsrc3 & capabilities.unmodeled_resource3_mask) {
     return iree_make_status(
         IREE_STATUS_UNIMPLEMENTED,
-        "unknown dispatch resource encoding for GFX%u.%u.%u", major, minor,
-        stepping);
+        "kernel residency requires native scheduling resource facts");
   }
+  const uint32_t mode = wave32 ? 0 : 1;
+  const iree_hal_amd_gpu_dispatch_residency_t residency = {
+      .wavefront_size = wave_size,
+      .compute_units_per_domain = wgp ? 2 : 1,
+      .simds_per_compute_unit = capabilities.simds_per_compute_unit,
+      .vector_register_count = capabilities.vector_register_count[mode],
+      .vector_encoding_granule = capabilities.vector_encoding_granule[mode],
+      .vector_allocation_granule = capabilities.vector_allocation_granule[mode],
+      .shared_vector_register_count = shared_registers / 2,
+      .local_memory_granule = capabilities.local_memory_granule,
+      .barrier_count = capabilities.barrier_count * (wgp ? 2 : 1),
+      .scalar_register_count = capabilities.scalar_register_count,
+      .scalar_encoding_granule = capabilities.scalar_encoding_granule,
+      .scalar_allocation_granule = capabilities.scalar_allocation_granule,
+      .dynamic_vector_registers =
+          (kernel->compute_pgm_rsrc2 &
+           capabilities.dynamic_vector_resource2_mask) ||
+          (kernel->compute_pgm_rsrc3 &
+           capabilities.dynamic_vector_resource3_mask),
+  };
   *out_residency = residency;
   return iree_ok_status();
 }
@@ -255,19 +271,22 @@ iree_status_t iree_hal_amd_gpu_dispatch_query_concurrency(
         iree_min(waves_per_simd, residency.vector_register_count / allocated);
   }
   uint32_t maximum_waves_per_simd = waves_per_simd;
-  if (target->gfx_ip.major == 9) {
+  if (residency.scalar_register_count) {
     // GFX9 reserves scalar registers in 16-register units. Trap allocation
     // belongs to the native context, not the compiler descriptor's trap bit.
-    const uint32_t registers =
-        (((kernel->compute_pgm_rsrc1 >> 6) & 0xFu) + 1) * 8;
-    const uint32_t allocated = (registers + 15) & ~15u;
+    const uint32_t registers = (((kernel->compute_pgm_rsrc1 >> 6) & 0xFu) + 1) *
+                               residency.scalar_encoding_granule;
+    const uint32_t granule = residency.scalar_allocation_granule;
+    const uint32_t allocated = ((registers + granule - 1) / granule) * granule;
     const bool known = scalar_register_reservation != UINT32_MAX;
-    waves_per_simd = iree_min(
-        waves_per_simd,
-        800u / (allocated + (known ? scalar_register_reservation : 16u)));
+    waves_per_simd =
+        iree_min(waves_per_simd,
+                 residency.scalar_register_count /
+                     (allocated + (known ? scalar_register_reservation : 16u)));
     maximum_waves_per_simd =
         known ? waves_per_simd
-              : iree_min(maximum_waves_per_simd, 800u / allocated);
+              : iree_min(maximum_waves_per_simd,
+                         residency.scalar_register_count / allocated);
   }
   const uint32_t waves =
       ((uint32_t)invocation_count + residency.wavefront_size - 1) /
