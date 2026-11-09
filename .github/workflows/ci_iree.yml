@@ -201,6 +201,9 @@ jobs:
 
       - name: Run IREE Bazel CI
         id: iree_bazel_ci
+        env:
+          LOOM_DIAGNOSTIC_CI: "1"
+          LOOM_DIAGNOSTIC_RESULTS_DIRECTORY: ${{ runner.temp }}/native-test-results-${{ github.run_id }}-${{ github.run_attempt }}
         run: python3 .github/scripts/diagnose_loom_gfx1150.py
 
       - name: Capture accelerator kernel errors

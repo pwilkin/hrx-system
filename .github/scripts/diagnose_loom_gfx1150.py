@@ -96,16 +96,13 @@ def run_under(arguments: list[str]) -> int:
 
 
 def run_ci() -> int:
-    if os.environ.get("GITHUB_ACTIONS") != "true":
+    if os.environ.get("LOOM_DIAGNOSTIC_CI") != "1":
         raise RuntimeError("The configuration step is restricted to the CI runner")
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root))
     from build_tools.devtools import ci
 
-    result_directory = Path(os.environ["RUNNER_TEMP"]) / (
-        f"native-test-results-{os.environ['GITHUB_RUN_ID']}-"
-        f"{os.environ['GITHUB_RUN_ATTEMPT']}"
-    )
+    result_directory = Path(os.environ["LOOM_DIAGNOSTIC_RESULTS_DIRECTORY"])
     arguments = ci.parse_arguments(
         [
             "iree-bazel-amdgpu",
