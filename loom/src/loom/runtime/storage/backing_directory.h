@@ -17,8 +17,6 @@ typedef struct loom_runtime_backing_parent_t loom_runtime_backing_parent_t;
 
 // Mutable state for one touched slot in a logical virtual reservation.
 typedef struct loom_runtime_backing_entry_t {
-  // Logical slot index within the virtual reservation.
-  iree_host_size_t index;
   // Physical parent retained by this slot lease, or NULL when uncommitted.
   loom_runtime_backing_parent_t* physical;
   // Source byte origin within the parent, independent of the logical index.
@@ -34,6 +32,11 @@ typedef struct loom_runtime_backing_entry_t {
   // Accepted asynchronous operation excludes another editor of this slot.
   bool in_flight;
 } loom_runtime_backing_entry_t;
+
+// Logical identity belongs to the directory key and occupancy bitmap rather
+// than every compact payload.
+static_assert(sizeof(void*) != 8 || sizeof(loom_runtime_backing_entry_t) == 24,
+              "backing directory entry must remain compact");
 
 typedef struct loom_runtime_backing_bucket_t loom_runtime_backing_bucket_t;
 
@@ -109,31 +112,34 @@ iree_status_t loom_runtime_backing_directory_keep(
 
 // Removes an entry and makes its payload slot reusable.
 void loom_runtime_backing_directory_remove(
-    loom_runtime_backing_directory_t* directory,
+    loom_runtime_backing_directory_t* directory, iree_host_size_t index,
     loom_runtime_backing_entry_t* entry);
 
 // Visits occupied payloads in root/group order. Initialize *cursor to zero;
-// each call advances it and returns NULL at the end. Removing the returned
-// entry is allowed. Insertion or shrink invalidates an active traversal.
+// each call advances it, stores the payload's logical index in *out_index, and
+// returns NULL at the end. Removing the returned entry is allowed. Insertion
+// or shrink invalidates an active traversal.
 loom_runtime_backing_entry_t* loom_runtime_backing_directory_next(
     loom_runtime_backing_directory_t* directory,
-    loom_runtime_backing_cursor_t* cursor);
+    loom_runtime_backing_cursor_t* cursor, iree_host_size_t* out_index);
 const loom_runtime_backing_entry_t* loom_runtime_backing_directory_next_const(
     const loom_runtime_backing_directory_t* directory,
-    loom_runtime_backing_cursor_t* cursor);
+    loom_runtime_backing_cursor_t* cursor, iree_host_size_t* out_index);
 
-// Visits compact slices of occupied entries in a logical range with at most
-// one root lookup per group. Initialize cursor with the desired [index, end)
-// range. Each call advances past one logical group and returns NULL at the end.
-// out_count is the number of entries in the returned slice. Mutation
-// invalidates both the returned slice and an active cursor.
+// Visits contiguous logical runs of compact occupied entries in a range with
+// one root lookup per group for dense ranges. Initialize cursor with the
+// desired [index, end) range. Each call stores the first logical index in
+// *out_index and the entry count in *out_count, and returns NULL at the end.
+// Mutation invalidates both the returned run and an active cursor.
 loom_runtime_backing_entry_t* loom_runtime_backing_directory_range_next(
     loom_runtime_backing_directory_t* directory,
-    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_count);
+    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_index,
+    iree_host_size_t* out_count);
 const loom_runtime_backing_entry_t*
 loom_runtime_backing_directory_range_next_const(
     const loom_runtime_backing_directory_t* directory,
-    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_count);
+    loom_runtime_backing_range_cursor_t* cursor, iree_host_size_t* out_index,
+    iree_host_size_t* out_count);
 
 // Removes marker-only entries with neither physical nor in-flight ownership.
 void loom_runtime_backing_directory_discard_empty(

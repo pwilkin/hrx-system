@@ -70,7 +70,8 @@ static void BM_DeniedSparseGrowth(benchmark::State& state) {
     for (iree_host_size_t i = 0; i < missing_count; ++i) {
       auto* entry = loom_runtime_backing_directory_find(
           &directory, missing_origin + i * 17);
-      loom_runtime_backing_directory_remove(&directory, entry);
+      loom_runtime_backing_directory_remove(&directory, missing_origin + i * 17,
+                                            entry);
     }
     IREE_CHECK_OK(loom_runtime_backing_directory_shrink(&directory));
   }
@@ -84,7 +85,7 @@ static void RemoveDenseRange(loom_runtime_backing_directory_t* directory,
                              iree_host_size_t count) {
   for (iree_host_size_t index = 0; index < count; ++index) {
     auto* entry = loom_runtime_backing_directory_find(directory, index);
-    loom_runtime_backing_directory_remove(directory, entry);
+    loom_runtime_backing_directory_remove(directory, index, entry);
   }
   IREE_CHECK_OK(loom_runtime_backing_directory_shrink(directory));
 }
@@ -129,17 +130,18 @@ static void BM_CommitDenseRange(benchmark::State& state) {
     IREE_CHECK_OK(
         loom_runtime_backing_directory_insert_range(&directory, 0, count));
     loom_runtime_backing_range_cursor_t cursor = {.index = 0, .end = count};
+    iree_host_size_t chunk_index = 0;
     iree_host_size_t chunk_count = 0;
     loom_runtime_backing_entry_t* entries = nullptr;
     while ((entries = loom_runtime_backing_directory_range_next(
-                &directory, &cursor, &chunk_count))) {
+                &directory, &cursor, &chunk_index, &chunk_count))) {
       for (iree_host_size_t index = 0; index < chunk_count; ++index) {
         entries[index].pending_commit = true;
       }
     }
     cursor = {.index = 0, .end = count};
     while ((entries = loom_runtime_backing_directory_range_next(
-                &directory, &cursor, &chunk_count))) {
+                &directory, &cursor, &chunk_index, &chunk_count))) {
       for (iree_host_size_t index = 0; index < chunk_count; ++index) {
         entries[index].pending_commit = false;
         benchmark::DoNotOptimize(&entries[index]);
