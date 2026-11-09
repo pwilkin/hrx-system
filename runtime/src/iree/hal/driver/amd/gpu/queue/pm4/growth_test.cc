@@ -207,6 +207,7 @@ class GrowthTest : public ::testing::Test {
     iree_hal_amd_gpu_context_join_memory(&context_);
     iree_hal_amd_gpu_publication_deinitialize(&publication_);
     EXPECT_EQ(growth_.arguments, nullptr);
+    EXPECT_EQ(growth_.transfers, nullptr);
     EXPECT_EQ(growth_.signals, nullptr);
     EXPECT_EQ(growth_.scratch, nullptr);
     EXPECT_EQ(
@@ -335,11 +336,11 @@ class GrowthTest : public ::testing::Test {
         iree::Status status =
             iree_hal_amd_gpu_pm4_growth_end(entry, 123456, &result);
         if (status.ok()) {
-          if (result.arguments) {
-            EXPECT_EQ(result.arguments->begin, 123456u);
-            EXPECT_EQ(result.arguments->end, 123456u);
-            EXPECT_EQ(result.arguments->capacity, 4096u);
-            iree_hal_amd_gpu_byte_storage_free(&context_, result.arguments);
+          if (result.bytes) {
+            EXPECT_EQ(result.bytes->begin, 123456u);
+            EXPECT_EQ(result.bytes->end, 123456u);
+            EXPECT_EQ(result.bytes->capacity, 4096u);
+            iree_hal_amd_gpu_byte_storage_free(&context_, result.bytes);
           }
           if (result.signals) {
             // A caller may still be preparing this block's wider table. The
@@ -788,6 +789,42 @@ TEST_F(ProgramGrowthTest,
   for (uint32_t i = 0; i < 128; ++i) {
     SCOPED_TRACE(i);
     ASSERT_NO_FATAL_FAILURE(ReuseDuringClone(false, false, true));
+  }
+}
+
+TEST_F(GrowthTest, TransferAndArgumentCohortsHaveIndependentNativeResults) {
+  uint32_t completed = 0;
+  uint32_t failed = 0;
+  for (auto kind : {IREE_HAL_AMD_GPU_PM4_ENTRY_GROW_ARGUMENTS,
+                    IREE_HAL_AMD_GPU_PM4_ENTRY_GROW_TRANSFERS}) {
+    SCOPED_TRACE(kind);
+    const auto other = kind == IREE_HAL_AMD_GPU_PM4_ENTRY_GROW_ARGUMENTS
+                           ? IREE_HAL_AMD_GPU_PM4_ENTRY_GROW_TRANSFERS
+                           : IREE_HAL_AMD_GPU_PM4_ENTRY_GROW_ARGUMENTS;
+    hold_ = true;
+    fail_ = true;
+    Park(kind);
+    entered_.acquire();
+    Park(kind);
+    Park(other);
+    Park(other);
+    EXPECT_NE(growth_.arguments, nullptr);
+    EXPECT_NE(growth_.transfers, nullptr);
+    EXPECT_NE(growth_.arguments, growth_.transfers);
+    EXPECT_TRUE(iree_hal_amd_gpu_publisher_is_idle(&publisher_));
+    resume_.release();
+    for (uint32_t i = 0; i < 4; ++i) {
+      consumed_.acquire();
+    }
+    iree_hal_amd_gpu_context_join_memory(&context_);
+    JoinPublication();
+    completed += 4;
+    failed += 2;
+    EXPECT_EQ(completed_, completed);
+    EXPECT_EQ(failed_, failed);
+    EXPECT_EQ(growth_.arguments, nullptr);
+    EXPECT_EQ(growth_.transfers, nullptr);
+    EXPECT_EQ(live_, 0u);
   }
 }
 
