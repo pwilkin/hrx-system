@@ -123,6 +123,11 @@ typedef struct iree_hal_tlsf_pool_t {
   // Preferred slab to try first for the next allocation. Protected by |mutex|.
   iree_hal_tlsf_pool_slab_t* preferred_slab;
 
+  // One acquisition is preparing shared backing. Other requests use existing
+  // ranges or observe capacity publication instead of duplicating growth.
+  // Protected by |mutex|.
+  bool growth_pending;
+
   // Bounded set of slabs that recently received releases. Protected by |mutex|.
   struct {
     // Direct pointers into the owned inventory, cleared when trimming it.
@@ -1448,6 +1453,8 @@ typedef struct iree_hal_tlsf_pool_acquire_t {
   iree_hal_tlsf_pool_metadata_t metadata;
   // Prepared slab, published only if existing capacity still cannot satisfy us.
   iree_hal_tlsf_pool_slab_t* prepared_slab;
+  // This acquisition owns the pool's unpublished shared backing growth.
+  bool owns_growth;
   // One outstanding parent request, stable through submission and completion.
   struct {
     // Submission and completion must both finish before resuming the pump.
@@ -1518,6 +1525,18 @@ static void iree_hal_tlsf_pool_acquire_finish(
         iree_hal_tlsf_pool_release_dedicated_list(
             pool, acquire->elements[i].dedicated.node);
       }
+    }
+  }
+  if (acquire->owns_growth) {
+    iree_slim_mutex_lock(&pool->mutex);
+    pool->growth_pending = false;
+    iree_slim_mutex_unlock(&pool->mutex);
+    // A refused parent still has no capacity to offer. Its own notification
+    // governs retries; publishing a local change would create a retry loop.
+    if (acquire->parent.result != IREE_HAL_POOL_ACQUIRE_EXHAUSTED &&
+        acquire->parent.result != IREE_HAL_POOL_ACQUIRE_OVER_BUDGET) {
+      iree_async_notification_signal_if_observed(pool->base.notification,
+                                                 INT32_MAX);
     }
   }
   if (iree_status_is_ok(acquire->status)) {
@@ -1680,8 +1699,21 @@ static void iree_hal_tlsf_pool_acquire_progress(
         if (!acquire->parent.dedicated && acquire->prepared_slab) {
           iree_hal_tlsf_pool_publish_slab(pool, acquire->prepared_slab);
           acquire->prepared_slab = NULL;
+          pool->growth_pending = false;
+          acquire->owns_growth = false;
           published_growth = true;
           continue;
+        }
+        if (!acquire->parent.dedicated) {
+          if (pool->growth_pending) {
+            acquire->result = IREE_HAL_POOL_ACQUIRE_EXHAUSTED;
+            element->info = (iree_hal_pool_acquire_info_t){
+                .result = IREE_HAL_POOL_ACQUIRE_EXHAUSTED,
+            };
+            break;
+          }
+          pool->growth_pending = true;
+          acquire->owns_growth = true;
         }
         needs_parent = true;
         break;

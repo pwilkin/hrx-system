@@ -732,11 +732,10 @@ TEST_F(ElasticTextServiceTest,
 TEST_F(ElasticTextServiceTest,
        RetirementJoinsStateTrimWithoutWaitingForNativeFree) {
   auto options = ModelOptions();
-  // Occupy a full KV parent so the warm model below cannot share it. Returning
-  // this reservation then leaves a whole parent for explicit pool trim.
-  options.pool_capacity =
+  const iree_device_size_t slab_size =
       loom_runtime_test_application_options_default().slab_size / 4;
-  options.context_capacity = options.pool_capacity;
+  options.context_capacity = slab_size;
+  options.pool_capacity = 4 * options.context_capacity;
   loom_serve_text_model_t* retiring = nullptr;
   IREE_ASSERT_OK(loom_serve_text_model_allocate(
       device_, storage_owner_, &options, host_allocator_, &retiring));
@@ -745,16 +744,24 @@ TEST_F(ElasticTextServiceTest,
   };
   std::unique_ptr<loom_serve_text_model_t, decltype(release_model)> owner(
       retiring, release_model);
+  // Populate full physical parents before bringing up the peer. Merely
+  // reserving a large virtual address range leaves both models sharing a
+  // partially populated parent, which cannot be freed at this boundary.
+  for (size_t i = 0; i < options.row_count; ++i) {
+    bool admitted = false;
+    IREE_ASSERT_OK(loom_serve_text_row_try_reserve(
+        loom_serve_text_model_row(retiring, i), LOOM_SERVE_TEXT_RESERVE_FRESH,
+        nullptr, options.context_capacity, &admitted));
+    ASSERT_TRUE(admitted);
+  }
   const int32_t tokens[] = {0, 1, 2};
   auto* row = loom_serve_text_model_row(retiring, 0);
-  bool admitted = false;
-  IREE_ASSERT_OK(loom_serve_text_row_try_reserve(
-      row, LOOM_SERVE_TEXT_RESERVE_FRESH, nullptr, options.context_capacity,
-      &admitted));
-  ASSERT_TRUE(admitted);
   IREE_ASSERT_OK(
       loom_serve_text_row_prefill(row, IREE_ARRAYSIZE(tokens), tokens));
-  IREE_ASSERT_OK(loom_serve_text_row_reset(row));
+  for (size_t i = 0; i < options.row_count; ++i) {
+    IREE_ASSERT_OK(
+        loom_serve_text_row_reset(loom_serve_text_model_row(retiring, i)));
+  }
   auto* warm = loom_serve_text_model_row(model_, 0);
   IREE_ASSERT_OK(
       loom_serve_text_row_prefill(warm, IREE_ARRAYSIZE(tokens), tokens));

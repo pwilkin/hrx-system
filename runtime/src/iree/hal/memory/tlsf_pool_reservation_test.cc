@@ -5,17 +5,21 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include <array>
+#include <atomic>
 #include <thread>
 #include <vector>
 
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/notification.h"
+#include "iree/async/proactor.h"
 #include "iree/async/proactor_platform.h"
 #include "iree/hal/memory/cpu_slab_provider.h"
 #include "iree/hal/memory/fixed_block_pool.h"
 #include "iree/hal/memory/passthrough_pool.h"
 #include "iree/hal/memory/slab_cache.h"
 #include "iree/hal/memory/tlsf_pool.h"
+#include "iree/hal/pool_wait.h"
+#include "iree/hal/testing/deferred_pool.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 
@@ -341,21 +345,103 @@ TEST_F(TLSFPoolReservationTest,
   iree_hal_pool_release_reservations(parent, 1, &reservation, nullptr);
 }
 
+TEST_F(TLSFPoolReservationTest, DeferredGrowthPublishesCapacityToPollOwner) {
+  iree::hal::testing::DeferredBackingPool* parent = nullptr;
+  IREE_ASSERT_OK(
+      iree::hal::testing::DeferredBackingPool::Create(cache_, &parent));
+  pools_.push_back(parent);
+  parent->defer = true;
+  iree_hal_pool_t* pool = nullptr;
+  IREE_ASSERT_OK(Create(parent, 0, allocator_, &pool));
+  const auto request = Request(512);
+  iree_hal_pool_reservation_t first;
+  iree_hal_pool_acquire_info_t first_info;
+  bool first_complete = false;
+  IREE_ASSERT_OK(iree_hal_pool_acquire_reservations(
+      pool, 1, &request, nullptr,
+      {
+          .fn =
+              [](void* user_data, iree_status_t status,
+                 iree_hal_pool_acquire_result_t result) {
+                IREE_EXPECT_OK(status);
+                EXPECT_EQ(result, IREE_HAL_POOL_ACQUIRE_OK_FRESH);
+                *static_cast<bool*>(user_data) = true;
+              },
+          .user_data = &first_complete,
+      },
+      IREE_HAL_POOL_RESERVE_FLAG_NONE, &first, &first_info));
+  ASSERT_EQ(parent->PendingRequestCount(), 1u);
+  EXPECT_FALSE(first_complete);
+
+  // Another caller observes shared growth as temporary exhaustion, then
+  // subscribes before retrying. Its capacity wake belongs to the proactor.
+  iree_hal_pool_wait_t* wait = nullptr;
+  IREE_ASSERT_OK(iree_hal_pool_wait_allocate(pool, allocator_, &wait));
+  iree_hal_pool_wait_prepare(wait);
+  iree_hal_pool_reservation_t second;
+  iree_hal_pool_acquire_info_t second_info;
+  iree_hal_pool_acquire_result_t result;
+  IREE_ASSERT_OK(iree_hal_pool_acquire_reservations_sync(
+      pool, 1, &request, nullptr,
+      IREE_HAL_POOL_RESERVE_FLAG_ALLOW_WAIT_FRONTIER, &second, &second_info,
+      &result));
+  ASSERT_EQ(result, IREE_HAL_POOL_ACQUIRE_EXHAUSTED);
+  bool capacity_complete = false;
+  iree_hal_pool_wait_commit(wait, iree_infinite_timeout(),
+                            {
+                                .fn =
+                                    [](void* user_data, iree_status_t status) {
+                                      IREE_EXPECT_OK(status);
+                                      *static_cast<bool*>(user_data) = true;
+                                    },
+                                .user_data = &capacity_complete,
+                            });
+  EXPECT_FALSE(capacity_complete);
+  parent->ResumeAcquisitions();
+  EXPECT_TRUE(first_complete);
+  while (!capacity_complete) {
+    IREE_ASSERT_OK(
+        iree_async_proactor_poll(proactor_, iree_infinite_timeout(), nullptr));
+  }
+  iree_hal_pool_wait_free(wait);
+
+  iree_hal_buffer_t* buffer = nullptr;
+  IREE_ASSERT_OK(iree_hal_pool_allocate_buffer(
+      pool, request, iree_infinite_timeout(), &buffer));
+  CheckBytes(buffer, 0x6B, request.min_alignment);
+  iree_hal_buffer_release(buffer);
+  iree_hal_pool_release_reservations(pool, 1, &first, nullptr);
+  iree_hal_pool_stats_t stats;
+  iree_hal_pool_query_stats(pool, &stats);
+  EXPECT_EQ(stats.reservation_count, 0u);
+  EXPECT_EQ(stats.slab_count, 0u);
+}
+
 TEST_F(TLSFPoolReservationTest, ConcurrentDedicatedReturnAndRegularGrowth) {
   iree_hal_pool_t* pool = nullptr;
   IREE_ASSERT_OK(Create(cache_, 0, allocator_, &pool));
+  auto exercise = [&](size_t i) {
+    for (size_t j = 0; j < 20; ++j) {
+      const auto request = Request(i % 2 ? 8192 : 512, i % 2 ? 128 : 16);
+      iree_hal_buffer_t* buffer = nullptr;
+      IREE_ASSERT_OK(iree_hal_pool_allocate_buffer(
+          pool, request, iree_infinite_timeout(), &buffer));
+      CheckBytes(buffer, static_cast<uint8_t>(i + j), request.min_alignment);
+      iree_hal_buffer_release(buffer);
+    }
+  };
+  std::atomic<size_t> completed{0};
   std::array<std::thread, 4> threads;
   for (size_t i = 0; i < threads.size(); ++i) {
     threads[i] = std::thread([&, i] {
-      for (size_t j = 0; j < 20; ++j) {
-        const auto request = Request(i % 2 ? 8192 : 512, i % 2 ? 128 : 16);
-        iree_hal_buffer_t* buffer = nullptr;
-        IREE_ASSERT_OK(iree_hal_pool_allocate_buffer(
-            pool, request, iree_infinite_timeout(), &buffer));
-        CheckBytes(buffer, static_cast<uint8_t>(i + j), request.min_alignment);
-        iree_hal_buffer_release(buffer);
-      }
+      exercise(i);
+      completed.fetch_add(1, std::memory_order_release);
+      iree_async_proactor_wake(proactor_);
     });
+  }
+  while (completed.load(std::memory_order_acquire) != threads.size()) {
+    IREE_ASSERT_OK(
+        iree_async_proactor_poll(proactor_, iree_infinite_timeout(), nullptr));
   }
   for (auto& thread : threads) {
     thread.join();

@@ -326,7 +326,7 @@ TEST_F(TLSFPoolConcurrencyTest,
       status = iree_hal_pool_allocate_buffer(
           pool_,
           iree_hal_make_pool_reservation_request(length, request.min_alignment),
-          iree_immediate_timeout(), &buffer);
+          iree_infinite_timeout(), &buffer);
       const uint32_t pattern =
           static_cast<uint32_t>(worker_index * kIterationCount + iteration);
       if (iree_status_is_ok(status)) {
@@ -353,6 +353,7 @@ TEST_F(TLSFPoolConcurrencyTest,
       await_start();
       worker_statuses[i] = run_worker(i);
       finished_count.fetch_add(1, std::memory_order_release);
+      iree_async_proactor_wake(proactor_);
     });
   }
   std::thread trimmer([&] {
@@ -367,6 +368,10 @@ TEST_F(TLSFPoolConcurrencyTest,
     start_condition.wait(lock, [&] { return ready_count == kWorkerCount + 1; });
     started = true;
     start_condition.notify_all();
+  }
+  while (finished_count.load(std::memory_order_acquire) != kWorkerCount) {
+    IREE_ASSERT_OK(
+        iree_async_proactor_poll(proactor_, iree_infinite_timeout(), nullptr));
   }
   for (auto& worker : workers) {
     worker.join();
