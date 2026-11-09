@@ -21,22 +21,36 @@ using Buffer = std::unique_ptr<hrx_buffer_s, decltype(&hrx_buffer_release)>;
 
 class MemPoolBackingTest : public ::testing::Test {
  protected:
-  void SetUp() override {
+  static void SetUpTestSuite() {
 #if defined(HRX_TEST_GPU)
     IREE_ASSERT_OK(hrx_status_to_iree(hrx_gpu_initialize(0)));
+    runtime_initialized_ = true;
     IREE_ASSERT_OK(hrx_status_to_iree(hrx_gpu_device_get(0, &device_)));
 #else
     IREE_ASSERT_OK(hrx_status_to_iree(hrx_cpu_initialize(0)));
+    runtime_initialized_ = true;
     IREE_ASSERT_OK(hrx_status_to_iree(hrx_cpu_device_get(0, &device_)));
 #endif
   }
 
-  void TearDown() override {
+  static void TearDownTestSuite() {
+    if (!runtime_initialized_) {
+      return;
+    }
 #if defined(HRX_TEST_GPU)
     IREE_EXPECT_OK(hrx_status_to_iree(hrx_gpu_shutdown()));
 #else
     IREE_EXPECT_OK(hrx_status_to_iree(hrx_cpu_shutdown()));
 #endif
+    device_ = nullptr;
+    runtime_initialized_ = false;
+  }
+
+  void TearDown() override {
+    // Preserve the process-lifetime native device while giving every case a
+    // fresh backing owner with independent storage and accounting state.
+    hrx_mem_pool_backing_deinitialize(&device_->mem_pool_backing);
+    hrx_mem_pool_backing_initialize(&device_->mem_pool_backing);
   }
 
   MemPool CreatePool(size_t max_size = 0) {
@@ -100,9 +114,14 @@ class MemPoolBackingTest : public ::testing::Test {
     IREE_ASSERT_OK(hrx_status_to_iree(hrx_mem_pool_trim(pool, bytes)));
   }
 
-  // Initialized runtime device owning all pools in each test.
-  hrx_device_t device_ = nullptr;
+  // Whether this suite owns the process-global accelerator runtime.
+  static bool runtime_initialized_;
+  // Borrowed device owning the fresh backing state used by each test case.
+  static hrx_device_t device_;
 };
+
+bool MemPoolBackingTest::runtime_initialized_ = false;
+hrx_device_t MemPoolBackingTest::device_ = nullptr;
 
 TEST_F(MemPoolBackingTest, SignalsShareQualifiedBackingAndReuseIdleStorage) {
   const auto* family = iree_hal_queue_family(device_->dispatch_queue);
