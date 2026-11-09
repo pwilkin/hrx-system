@@ -13,6 +13,15 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+amdf_cc_test(
+    name = "target_test",
+    srcs = ["target_test.cc"],
+    deps = [
+        "//third_party:google_test",
+        "//third_party:google_test_main",
+    ],
+)
+
 amdf_cc_library(
     name = "endpoint_profile",
     srcs = ["endpoint_profile.c"],

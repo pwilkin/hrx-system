@@ -46,6 +46,8 @@ amdf_library(
         "include/amdf/api.h",
         "include/amdf/base.h",
         "include/amdf/gpu.h",
+        "include/amdf/gpu_device.h",
+        "include/amdf/gpu_target.h",
         "include/amdf/memory.h",
         "include/amdf/memory_reservation.h",
         "include/amdf/native_event.h",
