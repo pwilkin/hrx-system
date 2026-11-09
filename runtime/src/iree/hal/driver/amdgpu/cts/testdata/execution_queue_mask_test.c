@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "amdf/gpu_device.h"
 #include "iree/hal/driver/amdgpu/device/support/kernel.h"
 
 #define GETREG_IMMED(size, offset, reg) \
@@ -16,7 +17,7 @@ IREE_AMDGPU_ATTRIBUTE_KERNEL void execution_queue_mask_test(uint32_t* output) {
     return;
   }
 
-#if defined(__gfx942__) || defined(__gfx9_4_generic__)
+#if AMDF_GPU_DEVICE_XCC_COMPUTE_UNIT_ID
   // Match HIP's gfx942 __smid decoding. HW_REG_HW_ID is register 4 and
   // provides CU_ID[11:8] and SE_ID[14:13]. HW_REG_XCC_ID is register 20 and
   // provides XCC_ID[3:0]. gfx942 has one shader array per shader engine, so

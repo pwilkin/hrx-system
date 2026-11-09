@@ -19,6 +19,7 @@ iree_runtime_cc_library(
     hdrs = ["identity.h"],
     textual_hdrs = ["identity_catalog.inl"],
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/base",
     ],
 )

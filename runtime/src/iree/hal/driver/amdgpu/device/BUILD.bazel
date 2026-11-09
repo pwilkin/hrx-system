@@ -39,7 +39,7 @@ exports_files(["device_bitcode_sources.bzl"])
 
 filegroup(
     name = "bitcode_hdrs",
-    srcs = DEVICE_HDRS,
+    srcs = DEVICE_HDRS + ["//libamdf:include/amdf/gpu_device.h"],
 )
 
 # Replacement `asanrtl` bitcode archive for AMDGPU external-runtime ASAN.
@@ -63,6 +63,7 @@ iree_runtime_cc_library(
     name = "headers",
     hdrs = DEVICE_HDRS,
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal",
         "//runtime/src/iree/base/threading:thread",
@@ -140,6 +141,7 @@ iree_runtime_cc_library(
     deps = [
         ":dispatch",
         ":headers",
+        "//libamdf:headers",
     ],
 )
 

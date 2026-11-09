@@ -48,6 +48,7 @@ iree_runtime_cc_library(
     srcs = ["queue_execution_resources.c"],
     hdrs = ["queue_execution_resources.h"],
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/driver/amdgpu/target:identity",
@@ -60,6 +61,7 @@ iree_runtime_cc_library(
     hdrs = ["dispatch_concurrency.h"],
     deps = [
         ":queue_execution_resources",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/driver/amdgpu/abi",
@@ -371,6 +373,7 @@ iree_runtime_cc_library(
         ":queue_execution_resources",
         ":source_context",
         "//build_tools/bazel:dl",
+        "//libamdf:headers",
         "//runtime/src/iree/async",
         "//runtime/src/iree/async/util:proactor_pool",
         "//runtime/src/iree/base",

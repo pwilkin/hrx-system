@@ -170,6 +170,59 @@ TEST(PM4DispatchTest, SynthesizesLdsSizeFromGroupSegmentFixedSize) {
           descriptor, GranulatedLdsSize(descriptor.group_segment_fixed_size)));
 }
 
+TEST(PM4DispatchTest, NativeRegisterAndLdsEncodingsCoverAllFamilies) {
+  const struct {
+    // Processor identity supplied by the HSA agent.
+    iree_hal_amdgpu_gfxip_version_t version;
+    // Descriptor LDS allocation unit in bytes.
+    uint32_t granule;
+    // Exact resource register selected in the PM4 command stream.
+    uint32_t resource3_register;
+    // Wave mode selected by a valid kernel descriptor.
+    uint32_t wave_size;
+  } cases[] = {
+      {{9, 0, 0}, 512, 0x2e2d, 64},   {{9, 0, 10}, 512, 0x2e2d, 64},
+      {{9, 4, 2}, 512, 0x2e2d, 64},   {{9, 5, 0}, 1280, 0x2e2d, 64},
+      {{10, 1, 0}, 512, 0x2e28, 32},  {{10, 3, 0}, 512, 0x2e28, 32},
+      {{11, 0, 0}, 512, 0x2e28, 32},  {{11, 5, 1}, 512, 0x2e28, 32},
+      {{11, 7, 0}, 512, 0x2e28, 32},  {{12, 0, 1}, 512, 0x2e28, 32},
+      {{12, 5, 0}, 2048, 0x2e23, 32},
+  };
+  for (const auto& test : cases) {
+    auto descriptor = MakeDescriptor(
+        IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_SGPR_KERNARG_SEGMENT_PTR |
+        (test.wave_size == 32
+             ? IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_WAVEFRONT_SIZE32
+             : 0));
+    descriptor.group_segment_fixed_size = 3 * test.granule - 1;
+    const uint16_t workgroup_size[3] = {64, 1, 1};
+    iree_hal_amdgpu_pm4_dispatch_launch_state_t state;
+    EXPECT_TRUE(iree_hal_amdgpu_pm4_dispatch_launch_state_is_supported(
+        test.version, &descriptor, 0x0000123456780000ull, workgroup_size, 0));
+    IREE_ASSERT_OK(iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
+        test.version, &descriptor, 0x0000123456780000ull, workgroup_size, 0,
+        &state));
+    EXPECT_EQ(state.resources[1], ComputePgmRsrc2WithLdsSize(descriptor, 3));
+    EXPECT_EQ(state.resource3_register_address, test.resource3_register);
+  }
+}
+
+TEST(PM4DispatchTest, WideUserDataFieldCannotSilentlyTruncate) {
+  auto descriptor = MakeDescriptor(
+      IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_SGPR_KERNARG_SEGMENT_PTR |
+          IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_WAVEFRONT_SIZE32,
+      34);
+  const uint16_t workgroup_size[3] = {32, 1, 1};
+  const iree_hal_amdgpu_gfxip_version_t version = {12, 5, 0};
+  EXPECT_FALSE(iree_hal_amdgpu_pm4_dispatch_launch_state_is_supported(
+      version, &descriptor, 0x0000123456780000ull, workgroup_size, 0));
+  iree_hal_amdgpu_pm4_dispatch_launch_state_t state;
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
+                        iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
+                            version, &descriptor, 0x0000123456780000ull,
+                            workgroup_size, 0, &state));
+}
+
 TEST(PM4DispatchTest, RejectsUnrepresentableStaticLdsSize) {
   iree_hal_amdgpu_kernel_descriptor_t descriptor = MakeDescriptor();
   descriptor.group_segment_fixed_size = 512u * 512u;

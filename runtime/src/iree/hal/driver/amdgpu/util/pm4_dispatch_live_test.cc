@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "amdf/gpu_hsa.h"
 #include "iree/base/api.h"
 #include "iree/base/threading/processor.h"
 #include "iree/hal/driver/amdgpu/abi/kernel_descriptor.h"
@@ -195,7 +196,9 @@ BarrierCapabilitiesForGfxIp(iree_hal_amdgpu_gfxip_version_t gfxip_version) {
       IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_EVENT_WRITE |
       IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM;
   capabilities |=
-      gfxip_version.major == 9
+      amdf_gpu_target_query_capabilities(
+          gfxip_version.major, gfxip_version.minor, gfxip_version.stepping)
+              .pm4.instruction_cache_uses_coherency_control
           ? IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM_GFX9
           : IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM_GFX10;
   return capabilities;
@@ -501,7 +504,10 @@ class PM4DispatchLiveTest : public ::testing::Test {
                                     &agent_code_object_target)) {
       GTEST_SKIP() << "could not query AMDGPU agent ISA";
     }
-    if (agent_gfxip_version.major < 9 || agent_gfxip_version.major > 12) {
+    if (!amdf_gpu_hsa_query_target(agent_gfxip_version.major,
+                                   agent_gfxip_version.minor,
+                                   agent_gfxip_version.stepping)
+             .resource3_register) {
       GTEST_SKIP() << "PM4 dispatch test does not support agent "
                    << agent_exact_target;
     }

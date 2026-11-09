@@ -24,4 +24,11 @@
 #define AMDF_GPU_DEVICE_EVENT_ID_MASK 0xFFu
 #endif
 
+// Whether HW_ID and XCC_ID expose the published XCC/SE/CU ordinal encoding.
+#if defined(__gfx942__) || defined(__gfx9_4_generic__)
+#define AMDF_GPU_DEVICE_XCC_COMPUTE_UNIT_ID 1
+#else
+#define AMDF_GPU_DEVICE_XCC_COMPUTE_UNIT_ID 0
+#endif
+
 #endif  // AMDF_GPU_DEVICE_H_

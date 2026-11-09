@@ -16,6 +16,7 @@
 #ifndef IREE_HAL_DRIVER_AMDGPU_DEVICE_SUPPORT_SIGNAL_H_
 #define IREE_HAL_DRIVER_AMDGPU_DEVICE_SUPPORT_SIGNAL_H_
 
+#include "amdf/gpu_device.h"
 #include "iree/hal/driver/amdgpu/abi/signal.h"  // IWYU pragma: export
 #include "iree/hal/driver/amdgpu/device/support/common.h"
 
@@ -30,16 +31,7 @@
 
 static inline IREE_AMDGPU_ATTRIBUTE_ALWAYS_INLINE uint32_t
 iree_hsa_signal_mailbox_message_id(uint32_t event_id) {
-#if defined(__GFX10__)
-  return event_id & 0x7FFFFFu;
-#elif defined(__GFX9__) || defined(__GFX11__) || defined(__GFX12__)
-  return event_id & 0xFFFFFFu;
-#else
-  // Matches ROCm device-libs for pre-gfx9 targets. IREE does not build
-  // device binaries for those targets today, but keeping the fallback preserves
-  // the source-level signal contract.
-  return event_id & 0xFFu;
-#endif  // __GFX*
+  return event_id & AMDF_GPU_DEVICE_EVENT_ID_MASK;
 }
 
 static inline IREE_AMDGPU_ATTRIBUTE_ALWAYS_INLINE void

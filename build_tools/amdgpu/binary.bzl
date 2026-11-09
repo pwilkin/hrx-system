@@ -65,6 +65,7 @@ def _amdgpu_base_copts(target, arch, builtin_headers_include_flag, copts):
         builtin_headers_include_flag,
         "-I$(BINDIR)/runtime/src",
         "-Iruntime/src",
+        "-Ilibamdf/include",
 
         # Avoid warnings about things we do that are not compatible across
         # compilers but are fine because we're only ever compiling with clang.

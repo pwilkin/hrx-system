@@ -9,47 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 
-enum {
-  // PM4 packet families shared by supported CDNA targets using the gfx9 packet
-  // layouts.
-  IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_CDNA =
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_AQL_PM4_IB |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_EVENT_WRITE |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_SET_SH_REG |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM_GFX9 |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_COMPUTE_DISPATCH_DIRECT,
-  // PM4 packet families shared by supported RDNA targets using the gfx10+
-  // packet layouts.
-  IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_RDNA =
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_AQL_PM4_IB |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_WAIT_REG_MEM64 |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_WRITE_DATA_MEMORY |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_COPY_DATA_MEMORY |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_EVENT_WRITE |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_SET_SH_REG |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_SET_UCONFIG_REG |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_REGISTER_READBACK |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_PERFCOUNTER_READBACK |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_IMMEDIATE_WRITE |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ACQUIRE_MEM_GFX10 |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_COMPUTE_DISPATCH_DIRECT |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_COMPUTE_DISPATCH_INDIRECT |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ATOMIC_WAIT |
-      IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ATOMIC_STORE,
-};
-
-static bool iree_hal_amdgpu_gfxip_is_cdna(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  return version.major == 9 &&
-         ((version.minor == 0 && version.stepping >= 8) || version.minor >= 4);
-}
-
-static bool iree_hal_amdgpu_gfxip_is_rdna(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  return version.major >= 10 && version.major <= 12;
-}
+#include "amdf/gpu_hsa.h"
 
 // Public HSA AMD agent attributes introduced with clustered dispatch support.
 // These local names keep this driver buildable against older HSA SDK headers;
@@ -649,32 +609,6 @@ iree_status_t iree_hal_amdgpu_select_physical_topology_edge(
   return iree_ok_status();
 }
 
-static bool iree_hal_amdgpu_gfxip_is_gfx94x(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  return version.major == 9 && version.minor >= 4 && version.stepping <= 2;
-}
-
-static bool iree_hal_amdgpu_gfxip_is_gfx120x(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  return version.major == 12 && version.minor == 0;
-}
-
-static bool iree_hal_amdgpu_gfxip_is_gfx125x(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  return version.major == 12 && version.minor >= 5;
-}
-
-bool iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  // Matches the device-kernarg family gate in CLR's setKernelArgImpl, plus
-  // RDNA4 (gfx120x): its HDP 7.0 block takes the same HDP_MEM_FLUSH_CNTL write
-  // to publish host stores into CPU-visible VRAM. Other families stay on host
-  // kernarg memory until they have a validated device-local publication path.
-  return iree_hal_amdgpu_gfxip_is_gfx94x(version) ||
-         iree_hal_amdgpu_gfxip_is_gfx120x(version) ||
-         iree_hal_amdgpu_gfxip_is_gfx125x(version);
-}
-
 iree_status_t iree_hal_amdgpu_select_cpu_visible_device_coarse_memory(
     const iree_hal_amdgpu_cpu_visible_device_coarse_memory_selection_t*
         selection,
@@ -698,8 +632,10 @@ iree_status_t iree_hal_amdgpu_select_cpu_visible_device_coarse_memory(
           IREE_HAL_AMDGPU_CPU_VISIBLE_DEVICE_COARSE_MEMORY_SELECTION_FLAG_HOST_WRITE_PUBLICATION_SUPPORTED)) {
     return iree_ok_status();
   }
-  if (!iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(
-          selection->gfxip_version)) {
+  if (!amdf_gpu_hsa_query_target(selection->gfxip_version.major,
+                                 selection->gfxip_version.minor,
+                                 selection->gfxip_version.stepping)
+           .host_data_path_flush) {
     return iree_ok_status();
   }
   if (!selection->hdp.registers.HDP_MEM_FLUSH_CNTL ||
@@ -797,48 +733,22 @@ iree_hal_amdgpu_select_profiling_completion_signal_memory_pool(
 iree_hal_amdgpu_vendor_packet_capability_flags_t
 iree_hal_amdgpu_select_vendor_packet_capabilities(
     iree_hal_amdgpu_gfxip_version_t version) {
-  // AQL PM4-IB is available across the known gfx9-gfx12 HSA families. The
-  // packet streams carried by those IBs follow architecture-family layouts,
-  // not exact processor revision allowlists.
-  const bool known_pm4_ib_family = version.major >= 9 && version.major <= 12;
-  iree_hal_amdgpu_vendor_packet_capability_flags_t capabilities =
-      known_pm4_ib_family ? IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_AQL_PM4_IB
-                          : 0;
-  if (iree_hal_amdgpu_gfxip_is_cdna(version)) {
-    capabilities |= IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_CDNA;
-  } else if (iree_hal_amdgpu_gfxip_is_rdna(version)) {
-    capabilities |= IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_RDNA;
-    if (version.major == 12) {
-      capabilities |=
-          IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_CP_MEMORY_BYPASSES_GL2;
-    }
-  }
-
-  // BARRIER_VALUE is an HSA vendor-packet capability with a narrower
-  // CLR-derived agent gate than the CDNA PM4 packet family: gfx9.0.10 or
-  // gfx9.[minor >= 4].[stepping 0..2].
-  if (version.major == 9 && ((version.minor == 0 && version.stepping == 10) ||
-                             (version.minor >= 4 && version.stepping <= 2))) {
-    capabilities |= IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_AQL_BARRIER_VALUE;
-  }
-  return capabilities;
+  return amdf_gpu_hsa_query_target(version.major, version.minor,
+                                   version.stepping)
+      .packet_features;
 }
 
 iree_hal_amdgpu_pm4_timestamp_strategy_t
 iree_hal_amdgpu_select_pm4_timestamp_strategy(
     iree_hal_amdgpu_gfxip_version_t version) {
-  // COPY_DATA GPU-clock readback is the queue-device timestamp path selected on
-  // PM4-IB queues. The destination and cache-policy fields mirror the
-  // aqlprofile command builder families: gfx9 including gfx94/gfx95 uses
-  // memory stream, gfx10/gfx11 uses TC_L2 with LRU, and gfx12 uses TC_L2 with
-  // last-use temporal policy.
-  switch (version.major) {
-    case 9:
+  switch (
+      amdf_gpu_hsa_query_target(version.major, version.minor, version.stepping)
+          .clock_copy) {
+    case AMDF_GPU_HSA_CLOCK_COPY_MEMORY_STREAM:
       return IREE_HAL_AMDGPU_PM4_TIMESTAMP_STRATEGY_COPY_CLOCK_MEMORY_STREAM;
-    case 10:
-    case 11:
+    case AMDF_GPU_HSA_CLOCK_COPY_TC_L2_LRU:
       return IREE_HAL_AMDGPU_PM4_TIMESTAMP_STRATEGY_COPY_CLOCK_TC_L2_LRU;
-    case 12:
+    case AMDF_GPU_HSA_CLOCK_COPY_TC_L2_LAST_USE:
       return IREE_HAL_AMDGPU_PM4_TIMESTAMP_STRATEGY_COPY_CLOCK_TC_L2_LU;
     default:
       return IREE_HAL_AMDGPU_PM4_TIMESTAMP_STRATEGY_NONE;
@@ -847,18 +757,16 @@ iree_hal_amdgpu_select_pm4_timestamp_strategy(
 
 iree_hal_amdgpu_grid_sync_strategy_t iree_hal_amdgpu_select_grid_sync_strategy(
     iree_hal_amdgpu_gfxip_version_t version) {
-  // Mirrors the cooperative-groups device library gate. GFX942 and GFX950
-  // avoid GWS, as do all supported GFX11 and GFX12 targets. Other GFX9 and
-  // GFX10 targets use hardware GWS.
-  if ((version.major == 9 && version.minor == 4 && version.stepping == 2) ||
-      (version.major == 9 && version.minor == 5 && version.stepping == 0) ||
-      version.major == 11 || version.major == 12) {
-    return IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_MEMORY;
+  switch (amdf_gpu_target_query_capabilities(version.major, version.minor,
+                                             version.stepping)
+              .grid_barrier) {
+    case AMDF_GPU_GRID_BARRIER_MEMORY:
+      return IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_MEMORY;
+    case AMDF_GPU_GRID_BARRIER_GWS:
+      return IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_GWS;
+    default:
+      return IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_NONE;
   }
-  if (version.major == 9 || version.major == 10) {
-    return IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_GWS;
-  }
-  return IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_NONE;
 }
 
 iree_hal_amdgpu_wait_barrier_strategy_t

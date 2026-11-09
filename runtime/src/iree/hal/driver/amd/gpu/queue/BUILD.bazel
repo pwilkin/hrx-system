@@ -927,7 +927,6 @@ iree_amdgpu_binary_variants_embed_data(
     name = "grid_sync_programs",
     testonly = True,
     srcs = ["grid_sync.c"],
-    copts = ["-Ilibamdf/include"],
     identifier = "iree_hal_amd_gpu_grid_sync_programs",
     internal_hdrs = ["//libamdf:include/amdf/gpu_device.h"],
     tags = ["manual"],

@@ -284,6 +284,7 @@ iree_runtime_cc_library(
         "pm4_emitter.h",
     ],
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amdgpu/abi",
     ],
@@ -345,6 +346,7 @@ iree_runtime_cc_library(
     hdrs = ["pm4_dispatch.h"],
     deps = [
         ":packet",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/hal/driver/amdgpu/abi",
         "//runtime/src/iree/hal/driver/amdgpu/target:identity",
@@ -740,6 +742,7 @@ iree_runtime_cc_test(
         ":queue_primitives",
         ":topology",
         ":vmem",
+        "//libamdf:headers",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/threading",
         "//runtime/src/iree/hal/driver/amdgpu/abi",

@@ -6,6 +6,8 @@
 
 #include "iree/hal/driver/amdgpu/dispatch_concurrency.h"
 
+#include "amdf/gpu_hsa.h"
+
 // Architectural resources available to workgroups in one scheduling domain.
 typedef struct iree_hal_amdgpu_dispatch_concurrency_profile_t {
   // Wavefront size selected by the loaded kernel descriptor.
@@ -36,57 +38,6 @@ typedef struct iree_hal_amdgpu_dispatch_concurrency_profile_t {
   uint32_t uses_dynamic_vector_register_allocation : 1;
 } iree_hal_amdgpu_dispatch_concurrency_profile_t;
 
-static bool iree_hal_amdgpu_dispatch_concurrency_is_supported_target(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  switch (version.major) {
-    case 9:
-      if (version.minor == 0) {
-        switch (version.stepping) {
-          case 0:   // gfx900
-          case 2:   // gfx902
-          case 4:   // gfx904
-          case 6:   // gfx906
-          case 8:   // gfx908
-          case 9:   // gfx909
-          case 10:  // gfx90a
-          case 12:  // gfx90c
-            return true;
-          default:
-            return false;
-        }
-      } else if (version.minor == 4) {
-        return version.stepping <= 2;  // gfx940-gfx942
-      } else if (version.minor == 5) {
-        return version.stepping == 0;  // gfx950
-      }
-      return false;
-    case 10:
-      return (version.minor == 1 && version.stepping <= 3) ||
-             (version.minor == 3 && version.stepping <= 6);
-    case 11:
-      return (version.minor == 0 && version.stepping <= 3) ||
-             (version.minor == 5 && version.stepping <= 3) ||
-             (version.minor == 7 && version.stepping <= 2);
-    case 12:
-      return ((version.minor == 0 || version.minor == 5) &&
-              version.stepping <= 1);
-    default:
-      return false;
-  }
-}
-
-static bool iree_hal_amdgpu_dispatch_concurrency_has_1536_vector_registers(
-    iree_hal_amdgpu_gfxip_version_t version) {
-  if (version.major == 12 && version.minor == 0) {
-    return true;
-  }
-  if (version.major != 11) {
-    return false;
-  }
-  return (version.minor == 0 && version.stepping <= 1) ||
-         (version.minor == 5 && version.stepping == 1);
-}
-
 static uint32_t iree_hal_amdgpu_dispatch_concurrency_align_up(
     uint32_t value, uint32_t alignment) {
   return ((value + alignment - 1u) / alignment) * alignment;
@@ -104,10 +55,12 @@ static iree_status_t iree_hal_amdgpu_dispatch_concurrency_select_profile(
         IREE_STATUS_UNIMPLEMENTED,
         "loaded AMDGPU function has no host-readable kernel descriptor");
   }
+  const iree_hal_amdgpu_gfxip_version_t version = capabilities->gfxip_version;
+  const amdf_gpu_hsa_target_capabilities_t target =
+      amdf_gpu_hsa_query_target(version.major, version.minor, version.stepping);
   if (IREE_UNLIKELY(capabilities->target_kind !=
                         IREE_HAL_AMDGPU_TARGET_KIND_EXACT ||
-                    !iree_hal_amdgpu_dispatch_concurrency_is_supported_target(
-                        capabilities->gfxip_version))) {
+                    !target.shader_resource_model)) {
     return iree_make_status(
         IREE_STATUS_UNIMPLEMENTED,
         "dispatch concurrency is not defined for AMDGPU target gfx%u.%u.%u",
@@ -115,159 +68,50 @@ static iree_status_t iree_hal_amdgpu_dispatch_concurrency_select_profile(
         capabilities->gfxip_version.stepping);
   }
 
-  const iree_hal_amdgpu_gfxip_version_t version = capabilities->gfxip_version;
-  const bool descriptor_uses_wave32 = iree_any_bit_set(
+  const bool wave32 = iree_any_bit_set(
       descriptor->kernel_code_properties,
       IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_WAVEFRONT_SIZE32);
-  iree_hal_amdgpu_dispatch_concurrency_profile_t profile = {0};
-  if (version.major == 9) {
-    if (IREE_UNLIKELY(descriptor_uses_wave32)) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "gfx9 kernel descriptor requests unsupported wave32 execution");
-    }
-    const bool uses_512_vector_register_file =
-        (version.minor == 0 && version.stepping == 10) || version.minor == 4 ||
-        version.minor == 5;
-    if (IREE_UNLIKELY(
-            uses_512_vector_register_file &&
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc3,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX90A_THREADGROUP_SPLIT))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "AMDGPU threadgroup-split dispatch does not have an exact "
-          "concurrency model");
-    }
-    profile = (iree_hal_amdgpu_dispatch_concurrency_profile_t){
-        .wavefront_size = 64,
-        .compute_units_per_domain = 1,
-        .local_memory_size_per_domain =
-            version.minor == 5 ? 160u * 1024u : 64u * 1024u,
-        .local_memory_allocation_granule = version.minor == 5 ? 1280u : 512u,
-        .vector_register_count_per_simd =
-            uses_512_vector_register_file ? 512u : 256u,
-        .vector_register_encoding_granule =
-            uses_512_vector_register_file ? 8u : 4u,
-        .vector_register_allocation_granule =
-            uses_512_vector_register_file ? 8u : 4u,
-        .standard_barrier_count_per_domain = 16,
-        .scalar_register_count_per_simd = 800,
-        .scalar_register_encoding_granule = 8,
-        .scalar_register_allocation_granule = 16,
-        .trap_scalar_register_count_per_wave =
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc2,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC2_GFX9_TRAP_HANDLER_ENABLE)
-                ? 16u
-                : 0u,
-    };
-  } else if (version.major == 12 && version.minor == 5) {
-    if (IREE_UNLIKELY(!descriptor_uses_wave32)) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "gfx12.5 kernel descriptor does not select required wave32 "
-          "execution");
-    }
-    if (IREE_UNLIKELY(
-            iree_any_bit_set(descriptor->compute_pgm_rsrc1,
-                             IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC1_WGP_MODE))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "gfx12.5 kernel descriptor requests unsupported WGP execution");
-    }
-    if (IREE_UNLIKELY(iree_any_bit_set(
-            descriptor->compute_pgm_rsrc3,
-            IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX12_GROUP_LAUNCH_GUARANTEE_ENABLE))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "AMDGPU group-launch-guarantee dispatch does not have an exact "
-          "concurrency model");
-    }
-    if (IREE_UNLIKELY(
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc3,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX125_NAMED_BARRIER_COUNT_MASK) ||
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc3,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX125_TCP_SPLIT_MASK))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "gfx12.5 named barriers and TCP split dispatches do not have an "
-          "exact concurrency model");
-    }
-    profile = (iree_hal_amdgpu_dispatch_concurrency_profile_t){
-        .wavefront_size = 32,
-        .compute_units_per_domain = 2,
-        .local_memory_size_per_domain = 320u * 1024u,
-        .local_memory_allocation_granule = 2048,
-        .vector_register_count_per_simd = 1536,
-        .vector_register_encoding_granule = 16,
-        .vector_register_allocation_granule = 24,
-        .standard_barrier_count_per_domain = 16,
-        .uses_dynamic_vector_register_allocation =
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc3,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX125_DYNAMIC_VGPR_ENABLE)
-                ? 1u
-                : 0u,
-    };
-  } else {
-    if (IREE_UNLIKELY(
-            version.major <= 11 &&
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc3,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX10_GFX11_SHARED_VGPR_COUNT_MASK))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "AMDGPU shared-VGPR dispatch does not have an exact concurrency "
-          "model");
-    }
-    if (IREE_UNLIKELY(
-            version.major == 12 &&
-            iree_any_bit_set(
-                descriptor->compute_pgm_rsrc3,
-                IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC3_GFX12_GROUP_LAUNCH_GUARANTEE_ENABLE))) {
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "AMDGPU group-launch-guarantee dispatch does not have an exact "
-          "concurrency model");
-    }
-    const bool wgp_mode =
-        iree_any_bit_set(descriptor->compute_pgm_rsrc1,
-                         IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC1_WGP_MODE);
-    const bool has_1536_vector_registers =
-        iree_hal_amdgpu_dispatch_concurrency_has_1536_vector_registers(version);
-    const uint32_t wavefront_size = descriptor_uses_wave32 ? 32u : 64u;
-    uint32_t vector_register_allocation_granule = 0;
-    if (version.major == 10 && version.minor == 1) {
-      vector_register_allocation_granule = descriptor_uses_wave32 ? 8u : 4u;
-    } else if (has_1536_vector_registers) {
-      vector_register_allocation_granule = descriptor_uses_wave32 ? 24u : 12u;
-    } else {
-      vector_register_allocation_granule = descriptor_uses_wave32 ? 16u : 8u;
-    }
-    profile = (iree_hal_amdgpu_dispatch_concurrency_profile_t){
-        .wavefront_size = wavefront_size,
-        .compute_units_per_domain = wgp_mode ? 2u : 1u,
-        .local_memory_size_per_domain = wgp_mode ? 128u * 1024u : 64u * 1024u,
-        .local_memory_allocation_granule = 512,
-        .vector_register_count_per_simd =
-            has_1536_vector_registers ? (descriptor_uses_wave32 ? 1536u : 768u)
-                                      : (descriptor_uses_wave32 ? 1024u : 512u),
-        .vector_register_encoding_granule = descriptor_uses_wave32 ? 8u : 4u,
-        .vector_register_allocation_granule =
-            vector_register_allocation_granule,
-        .standard_barrier_count_per_domain = wgp_mode ? 32u : 16u,
-        .uses_dynamic_vector_register_allocation =
-            version.major == 12 &&
-                    iree_any_bit_set(
-                        descriptor->compute_pgm_rsrc2,
-                        IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC2_GFX12_DYNAMIC_VGPR_ENABLE)
-                ? 1u
-                : 0u,
-    };
+  const uint32_t wave_size = wave32 ? 32 : 64;
+  const bool wgp = (descriptor->compute_pgm_rsrc1 &
+                    target.shader.workgroup_processor_mask) != 0;
+  if (!(target.shader.wave_size_mask & wave_size) ||
+      (wgp && !target.shader.workgroup_processor_mode)) {
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "kernel wave size or workgroup mode has no native HSA resource model");
   }
+  if (descriptor->compute_pgm_rsrc3 &
+      (target.shader.unmodeled_resource3_mask |
+       target.shader.shared_vector_register_mask)) {
+    return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                            "kernel scheduling features require additional "
+                            "native HSA resource facts");
+  }
+  const uint32_t mode = wave32 ? 0 : 1;
+  const iree_hal_amdgpu_dispatch_concurrency_profile_t profile = {
+      .wavefront_size = wave_size,
+      .compute_units_per_domain = target.compute_units_per_domain[wgp],
+      .local_memory_size_per_domain = target.local_memory_byte_length[wgp],
+      .local_memory_allocation_granule = target.shader.local_memory_granule,
+      .vector_register_count_per_simd =
+          target.shader.vector_register_count[mode],
+      .vector_register_encoding_granule =
+          target.shader.vector_encoding_granule[mode],
+      .vector_register_allocation_granule =
+          target.shader.vector_allocation_granule[mode],
+      .standard_barrier_count_per_domain = target.barrier_count[wgp],
+      .scalar_register_count_per_simd = target.shader.scalar_register_count,
+      .scalar_register_encoding_granule = target.shader.scalar_encoding_granule,
+      .scalar_register_allocation_granule =
+          target.shader.scalar_allocation_granule,
+      .trap_scalar_register_count_per_wave =
+          descriptor->compute_pgm_rsrc2 & target.trap_handler_mask ? 16u : 0u,
+      .uses_dynamic_vector_register_allocation =
+          (descriptor->compute_pgm_rsrc2 &
+           target.shader.dynamic_vector_resource2_mask) ||
+          (descriptor->compute_pgm_rsrc3 &
+           target.shader.dynamic_vector_resource3_mask),
+  };
 
   *out_profile = profile;
   return iree_ok_status();
@@ -284,7 +128,10 @@ iree_hal_amdgpu_dispatch_concurrency_calculate_domain_count(
       iree_hal_amdgpu_queue_execution_resource_topology_verify(topology));
 
   const uint32_t expected_execution_units_per_resource =
-      inputs->capabilities->gfxip_version.major == 9 ? 1u : 2u;
+      amdf_gpu_hsa_query_target(inputs->capabilities->gfxip_version.major,
+                                inputs->capabilities->gfxip_version.minor,
+                                inputs->capabilities->gfxip_version.stepping)
+          .compute_units_per_resource;
   if (IREE_UNLIKELY(topology->execution_units_per_resource !=
                     expected_execution_units_per_resource)) {
     return iree_make_status(

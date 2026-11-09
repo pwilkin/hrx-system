@@ -109,25 +109,33 @@ TEST_F(LaunchTest, PartialWave64GeometryAndIndirectControl) {
 }
 
 TEST_F(LaunchTest, TargetRowsAndWaveModes) {
-  for (auto target : {iree_hal_amd_gpu_gfxip_version_t{11, 0, 0},
-                      {11, 5, 1},
-                      {11, 7, 0},
-                      {12, 0, 0},
-                      {12, 5, 0}}) {
+  const struct {
+    // Input target identity.
+    iree_hal_amd_gpu_gfxip_version_t version;
+    // Expected register address in prepared launch state.
+    uint32_t resource3_register;
+    // Expected admitted wave modes.
+    uint32_t wave_size_mask;
+  } cases[] = {
+      {{11, 0, 0}, 0x2e28, 96}, {{11, 5, 1}, 0x2e28, 96},
+      {{11, 7, 0}, 0x2e28, 96}, {{12, 0, 0}, 0x2e28, 96},
+      {{12, 5, 0}, 0x2e23, 32},
+  };
+  for (const auto& test : cases) {
+    const auto target = test.version;
     for (uint32_t wavefront_size : {32u, 64u}) {
       SCOPED_TRACE(::testing::Message() << target.major << '.' << target.minor
                                         << " wave" << wavefront_size);
       kernel_.code_properties = wavefront_size == 32 ? 0x408 : 8;
       iree_hal_amd_gpu_pm4_launch_t launch;
-      if (target.major == 12 && target.minor == 5 && wavefront_size == 64) {
+      if (!(test.wave_size_mask & wavefront_size)) {
         IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
                               iree_hal_amd_gpu_pm4_launch_initialize(
                                   target, 0, &kernel_, kImageAddress, &launch));
       } else {
         IREE_ASSERT_OK(iree_hal_amd_gpu_pm4_launch_initialize(
             target, 0, &kernel_, kImageAddress, &launch));
-        EXPECT_EQ(launch.resource3_register,
-                  target.major == 12 && target.minor == 5 ? 0x2e23u : 0x2e28u);
+        EXPECT_EQ(launch.resource3_register, test.resource3_register);
         EXPECT_EQ(launch.dispatch_initiator,
                   wavefront_size == 32 ? 0x8005u : 5u);
         for (const std::array<uint32_t, 3>& partial_size : {
@@ -299,11 +307,17 @@ TEST_F(LaunchTest, LdsRebindingReplacesAndCanShrink) {
     // Encoded allocation for GFX11/GFX12 and GFX12.5, respectively.
     std::array<uint32_t, 2> units;
   };
-  for (auto target : {iree_hal_amd_gpu_gfxip_version_t{11, 0, 0},
-                      {11, 5, 1},
-                      {11, 7, 0},
-                      {12, 0, 0},
-                      {12, 5, 0}}) {
+  const struct {
+    // Input target identity.
+    iree_hal_amd_gpu_gfxip_version_t version;
+    // Expected LDS encoding column in the exact allocation cases below.
+    uint32_t allocation_column;
+  } targets[] = {
+      {{11, 0, 0}, 0}, {{11, 5, 1}, 0}, {{11, 7, 0}, 0},
+      {{12, 0, 0}, 0}, {{12, 5, 0}, 1},
+  };
+  for (const auto& test_target : targets) {
+    const auto target = test_target.version;
     SCOPED_TRACE(::testing::Message() << target.major << '.' << target.minor);
     auto launch = Prepare(target);
     for (const Case& test_case : {Case{0, {0, 0}},
@@ -319,8 +333,7 @@ TEST_F(LaunchTest, LdsRebindingReplacesAndCanShrink) {
       std::array<uint32_t, 64> words = {};
       iree_hal_amd_gpu_pm4_launch_emit(words.data(), &launch, workgroup_size,
                                        partial_size, test_case.length, &inputs);
-      const uint32_t units =
-          test_case.units[target.major == 12 && target.minor == 5];
+      const uint32_t units = test_case.units[test_target.allocation_column];
       EXPECT_EQ(words[7], 0x84u | (units << 15));
       EXPECT_EQ(words[13], 0u);
     }

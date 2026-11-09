@@ -25,6 +25,7 @@ function(_iree_amdgpu_bitcode_copts out_var target arch)
     "-isystem"
       "${IREE_HAL_AMDGPU_DEVICE_TOOLCHAIN_RESOLVED_CLANG_RESOURCE_INCLUDE}"
     "-I${IREE_SOURCE_DIR}/runtime/src"
+    "-I${IREE_SOURCE_DIR}/libamdf/include"
     "-I${IREE_BINARY_DIR}/runtime/src"
 
     # Avoid warnings about things we do that are not compatible across compilers

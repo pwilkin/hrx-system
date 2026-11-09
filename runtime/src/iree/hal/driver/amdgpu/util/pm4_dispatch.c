@@ -9,20 +9,16 @@
 #include <inttypes.h>
 #include <string.h>
 
-enum {
-  IREE_HAL_AMDGPU_PM4_DISPATCH_LDS_GRANULE_SIZE = 512u,
-};
+#include "amdf/gpu_hsa.h"
 
 static uint32_t iree_hal_amdgpu_pm4_compute_num_thread(uint16_t value) {
   return (uint32_t)value;
 }
 
 static bool iree_hal_amdgpu_pm4_dispatch_granulated_lds_size(
-    uint32_t byte_count, uint32_t* out_granulated_lds_size) {
+    uint32_t byte_count, uint32_t granule, uint32_t* out_granulated_lds_size) {
   const uint64_t granulated_lds_size =
-      ((uint64_t)byte_count + IREE_HAL_AMDGPU_PM4_DISPATCH_LDS_GRANULE_SIZE -
-       1u) /
-      IREE_HAL_AMDGPU_PM4_DISPATCH_LDS_GRANULE_SIZE;
+      ((uint64_t)byte_count + granule - 1u) / granule;
   if (granulated_lds_size >
       (IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC2_GRANULATED_LDS_SIZE_MASK >>
        IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC2_GRANULATED_LDS_SIZE_SHIFT)) {
@@ -44,10 +40,8 @@ static uint32_t iree_hal_amdgpu_pm4_dispatch_compute_pgm_rsrc2(
 }
 
 static uint32_t iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(
-    const iree_hal_amdgpu_kernel_descriptor_t* descriptor) {
-  return (descriptor->compute_pgm_rsrc2 &
-          IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC2_USER_SGPR_COUNT_MASK) >>
-         IREE_HAL_AMDGPU_COMPUTE_PGM_RSRC2_USER_SGPR_COUNT_SHIFT;
+    const iree_hal_amdgpu_kernel_descriptor_t* descriptor, uint32_t mask) {
+  return (descriptor->compute_pgm_rsrc2 >> 1) & mask;
 }
 
 static bool iree_hal_amdgpu_pm4_kernel_descriptor_uses_wave32(
@@ -62,33 +56,6 @@ static bool iree_hal_amdgpu_pm4_kernel_descriptor_has_kernarg_pointer(
   return iree_any_bit_set(
       descriptor->kernel_code_properties,
       IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_SGPR_KERNARG_SEGMENT_PTR);
-}
-
-static bool iree_hal_amdgpu_pm4_dispatch_gfxip_is_supported(
-    iree_hal_amdgpu_gfxip_version_t gfxip_version) {
-  return gfxip_version.major >= 9 && gfxip_version.major <= 12;
-}
-
-static uint32_t iree_hal_amdgpu_pm4_dispatch_resource3_register_address(
-    iree_hal_amdgpu_gfxip_version_t gfxip_version) {
-  return gfxip_version.major == 9
-             ? IREE_HAL_AMDGPU_PM4_COMPUTE_PGM_RSRC3_GFX9_REGISTER
-             : IREE_HAL_AMDGPU_PM4_COMPUTE_PGM_RSRC3_GFX10_REGISTER;
-}
-
-static uint32_t iree_hal_amdgpu_pm4_dispatch_allowed_kernel_code_properties(
-    iree_hal_amdgpu_gfxip_version_t gfxip_version) {
-  uint32_t allowed_properties =
-      IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_SGPR_KERNARG_SEGMENT_PTR;
-  if (gfxip_version.major <= 10) {
-    allowed_properties |=
-        IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_SGPR_PRIVATE_SEGMENT_BUFFER;
-  }
-  if (gfxip_version.major >= 10) {
-    allowed_properties |=
-        IREE_HAL_AMDGPU_KERNEL_CODE_PROPERTY_ENABLE_WAVEFRONT_SIZE32;
-  }
-  return allowed_properties;
 }
 
 static uint32_t iree_hal_amdgpu_pm4_kernel_descriptor_kernarg_user_data_offset(
@@ -186,8 +153,19 @@ static iree_status_t iree_hal_amdgpu_pm4_entry_address(
 }
 
 static iree_status_t iree_hal_amdgpu_pm4_dispatch_validate_descriptor(
-    iree_hal_amdgpu_gfxip_version_t gfxip_version,
+    const amdf_gpu_hsa_target_capabilities_t* target,
     const iree_hal_amdgpu_kernel_descriptor_t* descriptor) {
+  const uint32_t wave_size =
+      iree_hal_amdgpu_pm4_kernel_descriptor_uses_wave32(descriptor) ? 32 : 64;
+  if (!(target->shader.wave_size_mask & wave_size) ||
+      ((descriptor->compute_pgm_rsrc1 &
+        target->shader.workgroup_processor_mask) &&
+       !target->shader.workgroup_processor_mode)) {
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "kernel wave mode is not supported by the native PM4 target");
+  }
+
   if (IREE_UNLIKELY(descriptor->private_segment_fixed_size != 0)) {
     return iree_make_status(
         IREE_STATUS_UNIMPLEMENTED,
@@ -204,29 +182,28 @@ static iree_status_t iree_hal_amdgpu_pm4_dispatch_validate_descriptor(
   }
   uint32_t granulated_lds_size = 0;
   if (IREE_UNLIKELY(!iree_hal_amdgpu_pm4_dispatch_granulated_lds_size(
-          descriptor->group_segment_fixed_size, &granulated_lds_size))) {
+          descriptor->group_segment_fixed_size, target->local_memory_granule,
+          &granulated_lds_size))) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "PM4 dispatch static LDS size %" PRIu32
                             " exceeds COMPUTE_PGM_RSRC2 LDS encoding",
                             descriptor->group_segment_fixed_size);
   }
-  const uint32_t allowed_properties =
-      iree_hal_amdgpu_pm4_dispatch_allowed_kernel_code_properties(
-          gfxip_version);
+  const uint32_t allowed_properties = target->kernel_code_properties;
   if (IREE_UNLIKELY(iree_any_bit_set(descriptor->kernel_code_properties,
                                      (uint16_t)~allowed_properties))) {
     return iree_make_status(
         IREE_STATUS_UNIMPLEMENTED,
-        "PM4 dispatch for gfx%" PRIu32 ".%" PRIu32 ".%" PRIu32
-        " does not support descriptor kernel code properties 0x%04" PRIx16,
-        gfxip_version.major, gfxip_version.minor, gfxip_version.stepping,
+        "native PM4 target does not support descriptor kernel code properties "
+        "0x%04" PRIx16,
         descriptor->kernel_code_properties & (uint16_t)~allowed_properties);
   }
 
   const bool has_kernarg_pointer =
       iree_hal_amdgpu_pm4_kernel_descriptor_has_kernarg_pointer(descriptor);
   const uint32_t user_data_dword_count =
-      iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(descriptor);
+      iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(
+          descriptor, target->user_data_count_mask);
   if (IREE_UNLIKELY(user_data_dword_count >
                     IREE_HAL_AMDGPU_PM4_DISPATCH_USER_DATA_DWORD_CAPACITY)) {
     return iree_make_status(
@@ -304,8 +281,17 @@ static bool iree_hal_amdgpu_pm4_dispatch_entry_address_is_supported(
 }
 
 static bool iree_hal_amdgpu_pm4_dispatch_descriptor_is_supported(
-    iree_hal_amdgpu_gfxip_version_t gfxip_version,
+    const amdf_gpu_hsa_target_capabilities_t* target,
     const iree_hal_amdgpu_kernel_descriptor_t* descriptor) {
+  const uint32_t wave_size =
+      iree_hal_amdgpu_pm4_kernel_descriptor_uses_wave32(descriptor) ? 32 : 64;
+  if (!(target->shader.wave_size_mask & wave_size) ||
+      ((descriptor->compute_pgm_rsrc1 &
+        target->shader.workgroup_processor_mask) &&
+       !target->shader.workgroup_processor_mode)) {
+    return false;
+  }
+
   if (descriptor->private_segment_fixed_size != 0) {
     return false;
   }
@@ -316,19 +302,19 @@ static bool iree_hal_amdgpu_pm4_dispatch_descriptor_is_supported(
   }
   uint32_t granulated_lds_size = 0;
   if (!iree_hal_amdgpu_pm4_dispatch_granulated_lds_size(
-          descriptor->group_segment_fixed_size, &granulated_lds_size)) {
+          descriptor->group_segment_fixed_size, target->local_memory_granule,
+          &granulated_lds_size)) {
     return false;
   }
-  const uint32_t allowed_properties =
-      iree_hal_amdgpu_pm4_dispatch_allowed_kernel_code_properties(
-          gfxip_version);
+  const uint32_t allowed_properties = target->kernel_code_properties;
   if (iree_any_bit_set(descriptor->kernel_code_properties,
                        (uint16_t)~allowed_properties)) {
     return false;
   }
 
   const uint32_t user_data_dword_count =
-      iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(descriptor);
+      iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(
+          descriptor, target->user_data_count_mask);
   if (user_data_dword_count >
       IREE_HAL_AMDGPU_PM4_DISPATCH_USER_DATA_DWORD_CAPACITY) {
     return false;
@@ -377,10 +363,15 @@ bool iree_hal_amdgpu_pm4_dispatch_launch_state_is_supported(
     const iree_hal_amdgpu_kernel_descriptor_t* descriptor,
     uint64_t kernel_object, const uint16_t workgroup_size[3],
     iree_hal_amdgpu_pm4_dispatch_launch_flags_t flags) {
+  const amdf_gpu_hsa_target_capabilities_t capabilities =
+      amdf_gpu_hsa_query_target(gfxip_version.major, gfxip_version.minor,
+                                gfxip_version.stepping);
+  const amdf_gpu_hsa_target_capabilities_t* target = &capabilities;
+
   if (!descriptor || !workgroup_size || kernel_object == 0) {
     return false;
   }
-  if (!iree_hal_amdgpu_pm4_dispatch_gfxip_is_supported(gfxip_version)) {
+  if (!target->resource3_register) {
     return false;
   }
   if ((flags & ~IREE_HAL_AMDGPU_PM4_DISPATCH_LAUNCH_FLAG_ORDER_MODE) != 0) {
@@ -391,7 +382,7 @@ bool iree_hal_amdgpu_pm4_dispatch_launch_state_is_supported(
       return false;
     }
   }
-  return iree_hal_amdgpu_pm4_dispatch_descriptor_is_supported(gfxip_version,
+  return iree_hal_amdgpu_pm4_dispatch_descriptor_is_supported(target,
                                                               descriptor) &&
          iree_hal_amdgpu_pm4_dispatch_entry_address_is_supported(
              kernel_object, descriptor->kernel_code_entry_byte_offset);
@@ -413,6 +404,11 @@ iree_status_t iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
     uint64_t kernel_object, const uint16_t workgroup_size[3],
     iree_hal_amdgpu_pm4_dispatch_launch_flags_t flags,
     iree_hal_amdgpu_pm4_dispatch_launch_state_t* out_state) {
+  const amdf_gpu_hsa_target_capabilities_t capabilities =
+      amdf_gpu_hsa_query_target(gfxip_version.major, gfxip_version.minor,
+                                gfxip_version.stepping);
+  const amdf_gpu_hsa_target_capabilities_t* target = &capabilities;
+
   IREE_ASSERT_ARGUMENT(descriptor);
   IREE_ASSERT_ARGUMENT(workgroup_size);
   IREE_ASSERT_ARGUMENT(out_state);
@@ -422,8 +418,7 @@ iree_status_t iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "kernel object address is required");
   }
-  if (IREE_UNLIKELY(
-          !iree_hal_amdgpu_pm4_dispatch_gfxip_is_supported(gfxip_version))) {
+  if (IREE_UNLIKELY(!target->resource3_register)) {
     return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                             "PM4 dispatch launch state is not implemented for "
                             "gfx%" PRIu32 ".%" PRIu32 ".%" PRIu32,
@@ -445,8 +440,8 @@ iree_status_t iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
     }
   }
 
-  IREE_RETURN_IF_ERROR(iree_hal_amdgpu_pm4_dispatch_validate_descriptor(
-      gfxip_version, descriptor));
+  IREE_RETURN_IF_ERROR(
+      iree_hal_amdgpu_pm4_dispatch_validate_descriptor(target, descriptor));
 
   uint64_t entry_address = 0;
   IREE_RETURN_IF_ERROR(iree_hal_amdgpu_pm4_entry_address(
@@ -465,13 +460,13 @@ iree_status_t iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
   uint32_t granulated_lds_size = 0;
   const bool granulated_lds_size_valid =
       iree_hal_amdgpu_pm4_dispatch_granulated_lds_size(
-          descriptor->group_segment_fixed_size, &granulated_lds_size);
+          descriptor->group_segment_fixed_size, target->local_memory_granule,
+          &granulated_lds_size);
   IREE_ASSERT(granulated_lds_size_valid);
   out_state->resources[1] = iree_hal_amdgpu_pm4_dispatch_compute_pgm_rsrc2(
       descriptor, granulated_lds_size);
   out_state->resource3 = descriptor->compute_pgm_rsrc3;
-  out_state->resource3_register_address =
-      iree_hal_amdgpu_pm4_dispatch_resource3_register_address(gfxip_version);
+  out_state->resource3_register_address = target->resource3_register;
   out_state->temporary_ring_size = 0;
   out_state->restart[0] = 0;
   out_state->restart[1] = 0;
@@ -489,7 +484,8 @@ iree_status_t iree_hal_amdgpu_pm4_dispatch_launch_state_initialize(
   out_state->start_and_threads[6] = 0;
   out_state->start_and_threads[7] = 0;
   out_state->user_data_dword_count =
-      iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(descriptor);
+      iree_hal_amdgpu_pm4_kernel_descriptor_user_sgpr_count(
+          descriptor, target->user_data_count_mask);
   out_state->kernarg_user_data_offset =
       iree_hal_amdgpu_pm4_kernel_descriptor_kernarg_user_data_offset(
           descriptor);

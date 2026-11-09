@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "amdf/gpu_hsa.h"
 #include "iree/hal/cts/util/test_base.h"
 #include "iree/hal/driver/amdgpu/target/identity.h"
 
@@ -48,9 +49,10 @@ class AmdgpuQueueExecutionResourceTest : public CtsTestBase<> {
         exact_target_result.target->target_key, &exact_target_identity));
     const iree_hal_amdgpu_gfxip_version_t gfxip_version =
         exact_target_identity.version;
-    if (gfxip_version.major != 9u || gfxip_version.minor != 4u ||
-        gfxip_version.stepping != 2u) {
-      GTEST_SKIP() << "physical execution-unit decoding is gfx942-specific";
+    if (!amdf_gpu_hsa_query_target(gfxip_version.major, gfxip_version.minor,
+                                   gfxip_version.stepping)
+             .xcc_compute_unit_id) {
+      GTEST_SKIP() << "native execution-unit ordinal decoding is unavailable";
     }
     if (!iree_any_bit_set(
             family_spec_->flags,

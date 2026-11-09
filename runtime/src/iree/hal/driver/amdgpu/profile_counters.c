@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "amdf/gpu_hsa.h"
 #include "iree/base/internal/debugging.h"
 #include "iree/hal/driver/amdgpu/host_queue.h"
 #include "iree/hal/driver/amdgpu/host_queue_profile.h"
@@ -33,21 +34,6 @@ enum { iree_hal_amdgpu_profile_counter_packets_per_set = 3u };
 enum { iree_hal_amdgpu_profile_counter_event_unsupported = UINT32_MAX };
 enum { iree_hal_amdgpu_profile_counter_range_bank_count = 2u };
 
-typedef enum iree_hal_amdgpu_profile_counter_family_e {
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_UNSUPPORTED = 0,
-  // ROCProfiler `gfx9` base counter family.
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9,
-  // ROCProfiler `gfx90a` counter family.
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A,
-  // ROCProfiler `gfx940` counter family inherited by `gfx941` and `gfx942`.
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940,
-  // ROCProfiler `gfx10` counter family.
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10,
-  // ROCProfiler `gfx11` counter family.
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11,
-  IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_COUNT,
-} iree_hal_amdgpu_profile_counter_family_t;
-
 typedef uint32_t iree_hal_amdgpu_profile_counter_session_flags_t;
 enum iree_hal_amdgpu_profile_counter_session_flag_bits_t {
   IREE_HAL_AMDGPU_PROFILE_COUNTER_SESSION_FLAG_NONE = 0u,
@@ -70,8 +56,8 @@ typedef struct iree_hal_amdgpu_profile_counter_descriptor_t {
   iree_hal_profile_counter_unit_t unit;
   // aqlprofile hardware block identifier for this counter.
   iree_hal_amdgpu_aqlprofile_block_name_t block_name_id;
-  // aqlprofile event ids indexed by iree_hal_amdgpu_profile_counter_family_t.
-  uint32_t event_ids[IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_COUNT];
+  // aqlprofile event ids indexed by amdf_gpu_hsa_counter_encoding_t.
+  uint32_t event_ids[AMDF_GPU_HSA_COUNTER_ENCODING_COUNT];
 } iree_hal_amdgpu_profile_counter_descriptor_t;
 
 #define IREE_HAL_AMDGPU_PROFILE_COUNTER_SV(value) {(value), sizeof(value) - 1}
@@ -89,11 +75,11 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_SQ,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] = 4,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 4,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 4,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] = 4,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] = 4,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] = 4,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 4,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 4,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] = 4,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] = 4,
                 },
         },
         {
@@ -105,13 +91,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_SQ,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 6,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 6,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 6,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 6,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -124,12 +110,12 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_SQ,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 3,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 3,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] = 3,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] = 3,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 3,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 3,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] = 3,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] = 3,
                 },
         },
         {
@@ -141,11 +127,11 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_SQ,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] = 26,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 26,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 26,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] = 64,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] = 62,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] = 26,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 26,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 26,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] = 64,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] = 62,
                 },
         },
         {
@@ -157,12 +143,12 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_SQ,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] = 28,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 54,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 58,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] = 28,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 54,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 58,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -175,12 +161,12 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_SQ,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] = 27,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 53,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 57,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] = 27,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 53,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 57,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -194,13 +180,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TA,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 45,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 33,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 45,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 33,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -214,13 +200,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TA,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 46,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 34,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 46,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 34,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -233,13 +219,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCC,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 38,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 38,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 38,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 38,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -252,13 +238,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCC,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 39,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 39,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 39,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 39,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -271,13 +257,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCC,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 26,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 26,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 26,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 26,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -290,13 +276,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCC,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 27,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 27,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 27,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 27,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -309,13 +295,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCC,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 102,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 102,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 102,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 102,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -328,13 +314,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCC,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 103,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 103,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 103,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 103,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -347,13 +333,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCP,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 30,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 28,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 30,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 28,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -366,13 +352,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCP,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 32,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 30,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 32,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 30,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -385,13 +371,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCP,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 69,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 65,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 69,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 65,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -404,13 +390,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCP,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 70,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 66,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 70,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 66,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -424,13 +410,13 @@ static const iree_hal_amdgpu_profile_counter_descriptor_t
             .block_name_id = IREE_HAL_AMDGPU_AQLPROFILE_BLOCK_NAME_TCP,
             .event_ids =
                 {
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX9] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A] = 7,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940] = 7,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX90A] = 7,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX940] = 7,
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX10] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
-                    [IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11] =
+                    [AMDF_GPU_HSA_COUNTER_ENCODING_GFX11] =
                         IREE_HAL_AMDGPU_PROFILE_COUNTER_UNSUPPORTED,
                 },
         },
@@ -609,43 +595,14 @@ static bool iree_hal_amdgpu_profile_counter_status_allows_default_noop(
   }
 }
 
-static iree_hal_amdgpu_profile_counter_family_t
-iree_hal_amdgpu_profile_counter_select_family(
-    iree_hal_amdgpu_gfxip_version_t gfxip_version) {
-  switch (gfxip_version.major) {
-    case 9:
-      if (gfxip_version.minor == 0 && gfxip_version.stepping == 10) {
-        return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX90A;
-      }
-      if (gfxip_version.minor == 0) {
-        return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX9;
-      }
-      if (gfxip_version.minor == 4 && gfxip_version.stepping <= 2) {
-        return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX940;
-      }
-      return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_UNSUPPORTED;
-    case 10:
-      if ((gfxip_version.minor == 1 && gfxip_version.stepping == 0) ||
-          (gfxip_version.minor == 3 && gfxip_version.stepping <= 2)) {
-        return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX10;
-      }
-      return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_UNSUPPORTED;
-    case 11:
-      if (gfxip_version.minor == 0 && gfxip_version.stepping <= 2) {
-        return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_GFX11;
-      }
-      return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_UNSUPPORTED;
-    default:
-      return IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_UNSUPPORTED;
-  }
-}
-
 static bool iree_hal_amdgpu_profile_counter_resolve_event_id(
     const iree_hal_amdgpu_profile_counter_descriptor_t* descriptor,
     iree_hal_amdgpu_gfxip_version_t gfxip_version, uint32_t* out_event_id) {
-  const iree_hal_amdgpu_profile_counter_family_t family =
-      iree_hal_amdgpu_profile_counter_select_family(gfxip_version);
-  if (family == IREE_HAL_AMDGPU_PROFILE_COUNTER_FAMILY_UNSUPPORTED) {
+  const amdf_gpu_hsa_counter_encoding_t family =
+      amdf_gpu_hsa_query_target(gfxip_version.major, gfxip_version.minor,
+                                gfxip_version.stepping)
+          .counter_encoding;
+  if (family == AMDF_GPU_HSA_COUNTER_ENCODING_NONE) {
     *out_event_id = iree_hal_amdgpu_profile_counter_event_unsupported;
     return false;
   }

@@ -71,20 +71,6 @@ static bool iree_hal_amd_gpu_parse_decimal_digit(char c, uint32_t* out_value) {
   return true;
 }
 
-static bool iree_hal_amd_gpu_parse_hex_digit(char c, uint32_t* out_value) {
-  if (c >= '0' && c <= '9') {
-    *out_value = (uint32_t)(c - '0');
-    return true;
-  } else if (c >= 'a' && c <= 'f') {
-    *out_value = (uint32_t)(c - 'a' + 10);
-    return true;
-  } else if (c >= 'A' && c <= 'F') {
-    *out_value = (uint32_t)(c - 'A' + 10);
-    return true;
-  }
-  return false;
-}
-
 static bool iree_hal_amd_gpu_parse_decimal_number(iree_string_view_t value,
                                                   uint32_t* out_number) {
   if (iree_string_view_is_empty(value)) {
@@ -115,31 +101,9 @@ static bool iree_hal_amd_gpu_parse_exact_processor(
     return false;
   }
 
-  uint32_t major0 = 0;
-  uint32_t major1 = 0;
-  uint32_t minor = 0;
-  uint32_t stepping = 0;
-  if (processor.size == 4 &&
-      iree_hal_amd_gpu_parse_decimal_digit(processor.data[0], &major0) &&
-      major0 == 1 &&
-      iree_hal_amd_gpu_parse_decimal_digit(processor.data[1], &major1) &&
-      iree_hal_amd_gpu_parse_decimal_digit(processor.data[2], &minor) &&
-      iree_hal_amd_gpu_parse_hex_digit(processor.data[3], &stepping)) {
-    out_version->major = 10 + major1;
-    out_version->minor = minor;
-    out_version->stepping = stepping;
-    return true;
-  }
-  if (processor.size == 3 &&
-      iree_hal_amd_gpu_parse_decimal_digit(processor.data[0], &major0) &&
-      iree_hal_amd_gpu_parse_decimal_digit(processor.data[1], &minor) &&
-      iree_hal_amd_gpu_parse_hex_digit(processor.data[2], &stepping)) {
-    out_version->major = major0;
-    out_version->minor = minor;
-    out_version->stepping = stepping;
-    return true;
-  }
-  return false;
+  return amdf_gpu_target_parse_version(processor.data, processor.size,
+                                       &out_version->major, &out_version->minor,
+                                       &out_version->stepping);
 }
 
 static const iree_hal_amd_gpu_target_mapping_t*

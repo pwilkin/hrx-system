@@ -14,6 +14,15 @@ package(
 )
 
 amdf_cc_test(
+    name = "hsa_target_test",
+    srcs = ["hsa_target_test.cc"],
+    deps = [
+        "//third_party:google_test",
+        "//third_party:google_test_main",
+    ],
+)
+
+amdf_cc_test(
     name = "target_test",
     srcs = ["target_test.cc"],
     deps = [

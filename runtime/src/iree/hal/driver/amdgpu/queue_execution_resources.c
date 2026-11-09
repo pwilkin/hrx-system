@@ -6,6 +6,8 @@
 
 #include "iree/hal/driver/amdgpu/queue_execution_resources.h"
 
+#include "amdf/gpu_hsa.h"
+
 iree_status_t iree_hal_amdgpu_queue_execution_resource_topology_verify(
     const iree_hal_amdgpu_queue_execution_resource_topology_t* topology) {
   if (IREE_UNLIKELY(topology->execution_unit_count == 0 ||
@@ -74,29 +76,15 @@ iree_status_t iree_hal_amdgpu_queue_execution_resource_topology_initialize(
     iree_hal_amdgpu_gfxip_version_t gfxip_version,
     uint32_t execution_unit_count, uint32_t partition_count,
     iree_hal_amdgpu_queue_execution_resource_topology_t* out_topology) {
-  uint32_t execution_units_per_resource = 0;
-  switch (gfxip_version.major) {
-    case 9:
-      execution_units_per_resource = 1;
-      break;
-    case 10:
-    case 11:
-      execution_units_per_resource = 2;
-      break;
-    case 12:
-      if (gfxip_version.minor != 0 && gfxip_version.minor != 5) {
-        return iree_make_status(
-            IREE_STATUS_UNIMPLEMENTED,
-            "AMDGPU queue resource topology is not defined for gfx%u.%u.%u",
-            gfxip_version.major, gfxip_version.minor, gfxip_version.stepping);
-      }
-      execution_units_per_resource = 2;
-      break;
-    default:
-      return iree_make_status(
-          IREE_STATUS_UNIMPLEMENTED,
-          "AMDGPU queue resource topology is not defined for gfx%u.%u.%u",
-          gfxip_version.major, gfxip_version.minor, gfxip_version.stepping);
+  const uint32_t execution_units_per_resource =
+      amdf_gpu_hsa_query_target(gfxip_version.major, gfxip_version.minor,
+                                gfxip_version.stepping)
+          .compute_units_per_resource;
+  if (!execution_units_per_resource) {
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "native HSA execution resource topology is unavailable for gfx%u.%u.%u",
+        gfxip_version.major, gfxip_version.minor, gfxip_version.stepping);
   }
 
   const iree_hal_amdgpu_queue_execution_resource_topology_t topology = {

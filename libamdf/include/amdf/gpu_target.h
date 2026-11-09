@@ -68,7 +68,7 @@ typedef struct amdf_gpu_shader_capabilities_t {
   uint32_t scalar_allocation_granule;
   /// Bytes in one workgroup-local memory allocation unit.
   uint32_t local_memory_granule;
-  /// Architectural LDS capacity per physical CU, before native qualification.
+  /// Architectural LDS capacity in CU mode, before native qualification.
   uint32_t local_memory_byte_length;
   /// Standard barrier slots in one CU-mode scheduling domain.
   uint32_t barrier_count;
@@ -80,8 +80,6 @@ typedef struct amdf_gpu_shader_capabilities_t {
   uint32_t dynamic_vector_resource2_mask;
   /// RSRC3 bit enabling dynamic VGPR allocation, or zero when absent.
   uint32_t dynamic_vector_resource3_mask;
-  /// Physical compute units in one native execution-selection resource.
-  uint32_t compute_units_per_resource;
 } amdf_gpu_shader_capabilities_t;
 
 /// PM4 compute encodings, separate from a live family's publication contract.
@@ -184,7 +182,6 @@ static inline amdf_gpu_target_capabilities_t amdf_gpu_target_query_capabilities(
     result.shader.local_memory_byte_length = (minor == 5 ? 160u : 64u) * 1024;
     result.shader.barrier_count = 16;
     result.shader.unmodeled_resource3_mask = unified ? 1u << 16 : 0;
-    result.shader.compute_units_per_resource = 1;
   } else if (major >= 10 && major <= 12) {
     const uint32_t wave32_only = major == 12 && minor == 5;
     const uint32_t large_register_file =
@@ -205,7 +202,7 @@ static inline amdf_gpu_target_capabilities_t amdf_gpu_target_query_capabilities(
     result.shader.vector_allocation_granule[1] =
         result.shader.vector_allocation_granule[0] / 2;
     result.shader.local_memory_granule = wave32_only ? 2048 : 512;
-    result.shader.local_memory_byte_length = (wave32_only ? 160u : 64u) * 1024;
+    result.shader.local_memory_byte_length = (wave32_only ? 320u : 64u) * 1024;
     result.shader.barrier_count = 16;
     result.shader.shared_vector_register_mask = major <= 11 ? 0xf : 0;
     result.shader.unmodeled_resource3_mask =
@@ -214,7 +211,6 @@ static inline amdf_gpu_target_capabilities_t amdf_gpu_target_query_capabilities(
     result.shader.dynamic_vector_resource2_mask =
         major == 12 && !wave32_only ? 1u << 6 : 0;
     result.shader.dynamic_vector_resource3_mask = wave32_only ? 1u << 17 : 0;
-    result.shader.compute_units_per_resource = 2;
   }
   result.pm4.instruction_cache_uses_coherency_control = major == 9;
   const uint32_t pm4_supported =
@@ -265,6 +261,37 @@ static inline uint32_t amdf_gpu_target_select_instructions(
     }
   }
   return UINT32_MAX;
+}
+
+/// Parses the numeric suffix of an exact AMDGPU processor (for example,
+/// "90a" or "1250"). The input span need not be terminated. Returns zero for
+/// malformed spelling and leaves output storage unchanged. Qualifiers and
+/// generic target syntax belong to the surrounding artifact grammar.
+static inline int amdf_gpu_target_parse_version(const char* data,
+                                                uint64_t length,
+                                                uint32_t* out_major,
+                                                uint32_t* out_minor,
+                                                uint32_t* out_stepping) {
+  if (length != 3 && length != 4) {
+    return 0;
+  }
+  if (length == 4 && data[0] != '1') {
+    return 0;
+  }
+  const uint32_t first = (uint32_t)(data[length - 3] - '0');
+  const uint32_t minor = (uint32_t)(data[length - 2] - '0');
+  const char digit = data[length - 1];
+  const uint32_t stepping = digit >= '0' && digit <= '9'   ? digit - '0'
+                            : digit >= 'a' && digit <= 'f' ? digit - 'a' + 10
+                            : digit >= 'A' && digit <= 'F' ? digit - 'A' + 10
+                                                           : UINT32_MAX;
+  if (first > 9 || minor > 9 || stepping > 15) {
+    return 0;
+  }
+  *out_major = first + (length == 4 ? 10 : 0);
+  *out_minor = minor;
+  *out_stepping = stepping;
+  return 1;
 }
 
 /// Compares exact native/artifact identities without deriving capabilities.

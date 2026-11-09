@@ -6,6 +6,8 @@
 
 #include "iree/hal/driver/amdgpu/device/grid_sync.h"
 
+#include "amdf/gpu_device.h"
+
 #if !defined(IREE_AMDGPU_TARGET_DEVICE)
 
 #include <inttypes.h>
@@ -100,21 +102,21 @@ void iree_hal_amdgpu_device_grid_sync_gws_initialize_emplace(
 // Newer architectures use a memory-backed grid barrier. Their code objects
 // retain this inert kernel because builtin kernel descriptors are resolved as
 // one eager table, but the host must never submit it.
-#if defined(__GFX9__) || defined(__GFX10__)
+#if AMDF_GPU_DEVICE_GLOBAL_WAVE_SYNC
 #define IREE_HAL_AMDGPU_DEVICE_GRID_SYNC_GWS_ATTRIBUTE \
   __attribute__((target("gws")))
 #else
 #define IREE_HAL_AMDGPU_DEVICE_GRID_SYNC_GWS_ATTRIBUTE
-#endif  // __GFX9__ || __GFX10__
+#endif  // AMDF_GPU_DEVICE_GLOBAL_WAVE_SYNC
 
 IREE_AMDGPU_ATTRIBUTE_KERNEL IREE_HAL_AMDGPU_DEVICE_GRID_SYNC_GWS_ATTRIBUTE void
 iree_hal_amdgpu_device_grid_sync_gws_initialize(
     uint32_t workgroup_count_minus_one) {
-#if defined(__GFX9__) || defined(__GFX10__)
+#if AMDF_GPU_DEVICE_GLOBAL_WAVE_SYNC
   __builtin_amdgcn_ds_gws_init(workgroup_count_minus_one, 0);
 #else
   (void)workgroup_count_minus_one;
-#endif  // __GFX9__ || __GFX10__
+#endif  // AMDF_GPU_DEVICE_GLOBAL_WAVE_SYNC
 }
 
 #undef IREE_HAL_AMDGPU_DEVICE_GRID_SYNC_GWS_ATTRIBUTE

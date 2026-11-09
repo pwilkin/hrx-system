@@ -574,39 +574,6 @@ TEST_F(PhysicalDeviceCapabilitiesTest, PublicationGatesDisableCoarseMemory) {
       &capability));
 }
 
-TEST_F(PhysicalDeviceCapabilitiesTest, GfxIpGatesHdpPublication) {
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 0, 7)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 0, 8)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 0, 10)));
-  EXPECT_TRUE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 4, 0)));
-  EXPECT_TRUE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 4, 2)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 4, 3)));
-  EXPECT_TRUE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(9, 5, 0)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(10, 0, 0)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(10, 1, 0)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(10, 3, 0)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(11, 0, 0)));
-  EXPECT_TRUE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(12, 0, 0)));
-  EXPECT_TRUE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(12, 0, 1)));
-  EXPECT_FALSE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(12, 1, 0)));
-  EXPECT_TRUE(
-      iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(GfxIp(12, 5, 0)));
-}
-
 TEST_F(PhysicalDeviceCapabilitiesTest, UnsupportedGfxIpDisablesCoarseMemory) {
   iree_hal_amdgpu_cpu_visible_device_coarse_memory_selection_t selection =
       MakeCoarseMemorySelection();
@@ -1047,14 +1014,24 @@ TEST_F(PhysicalDeviceCapabilitiesTest, SelectsRdnaPm4FamilyCapabilities) {
           IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_COMPUTE_DISPATCH_INDIRECT |
           IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ATOMIC_WAIT |
           IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_ATOMIC_STORE;
-  const char* processors[] = {
-      "gfx1010", "gfx1011", "gfx1012", "gfx1013", "gfx1030", "gfx1031",
-      "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036", "gfx1100",
-      "gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1151", "gfx1152",
-      "gfx1153", "gfx1170", "gfx1171", "gfx1172", "gfx1200", "gfx1201",
-      "gfx1250", "gfx1251",
+  const struct {
+    // Processor identity parsed at the same boundary as native discovery.
+    const char* processor;
+    // Expected command-processor cache relationship.
+    bool bypasses_l2;
+  } cases[] = {
+      {"gfx1010", false}, {"gfx1011", false}, {"gfx1012", false},
+      {"gfx1013", false}, {"gfx1030", false}, {"gfx1031", false},
+      {"gfx1032", false}, {"gfx1033", false}, {"gfx1034", false},
+      {"gfx1035", false}, {"gfx1036", false}, {"gfx1100", false},
+      {"gfx1101", false}, {"gfx1102", false}, {"gfx1103", false},
+      {"gfx1150", false}, {"gfx1151", false}, {"gfx1152", false},
+      {"gfx1153", false}, {"gfx1170", false}, {"gfx1171", false},
+      {"gfx1172", false}, {"gfx1200", true},  {"gfx1201", true},
+      {"gfx1250", true},  {"gfx1251", true},
   };
-  for (const char* processor : processors) {
+  for (const auto& test : cases) {
+    const char* processor = test.processor;
     SCOPED_TRACE(processor);
     const iree_hal_amdgpu_gfxip_version_t version =
         GfxIpFromProcessor(processor);
@@ -1062,7 +1039,7 @@ TEST_F(PhysicalDeviceCapabilitiesTest, SelectsRdnaPm4FamilyCapabilities) {
         iree_hal_amdgpu_select_vendor_packet_capabilities(version);
     const iree_hal_amdgpu_vendor_packet_capability_flags_t expected_capabilities =
         kExpectedCapabilities |
-        (version.major == 12
+        (test.bypasses_l2
              ? IREE_HAL_AMDGPU_VENDOR_PACKET_CAPABILITY_PM4_CP_MEMORY_BYPASSES_GL2
              : 0u);
     EXPECT_EQ(capabilities, expected_capabilities);

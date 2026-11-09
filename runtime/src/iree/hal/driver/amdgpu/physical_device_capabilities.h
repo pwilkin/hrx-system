@@ -261,10 +261,6 @@ iree_status_t iree_hal_amdgpu_select_physical_topology_edge(
     const iree_hal_amdgpu_physical_topology_edge_selection_t* selection,
     iree_hal_amdgpu_physical_topology_edge_t* out_edge);
 
-// Returns true if the gfx IP family permits HDP kernarg publication.
-bool iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(
-    iree_hal_amdgpu_gfxip_version_t version);
-
 // Selects CPU-visible device-coarse memory from already-queried topology facts.
 iree_status_t iree_hal_amdgpu_select_cpu_visible_device_coarse_memory(
     const iree_hal_amdgpu_cpu_visible_device_coarse_memory_selection_t*

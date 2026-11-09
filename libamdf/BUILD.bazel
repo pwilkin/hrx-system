@@ -47,6 +47,7 @@ amdf_library(
         "include/amdf/base.h",
         "include/amdf/gpu.h",
         "include/amdf/gpu_device.h",
+        "include/amdf/gpu_hsa.h",
         "include/amdf/gpu_target.h",
         "include/amdf/memory.h",
         "include/amdf/memory_reservation.h",

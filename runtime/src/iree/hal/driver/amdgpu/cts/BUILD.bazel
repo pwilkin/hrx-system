@@ -225,6 +225,7 @@ iree_runtime_cc_library(
     testonly = True,
     srcs = ["queue_execution_resource_test.cc"],
     deps = [
+        "//libamdf:headers",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/cts/util:test_base",
         "//runtime/src/iree/hal/driver/amdgpu/target:identity",

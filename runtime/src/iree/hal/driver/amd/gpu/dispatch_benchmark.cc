@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "amdf/gpu_target.h"
 #include "benchmark/benchmark.h"
 #include "iree/hal/driver/amd/gpu/dispatch.h"
 
@@ -13,12 +14,20 @@ namespace {
 // queries. This measures residency arithmetic, not executable lookup, public
 // queue validation, submission, or device execution.
 static void BM_QueryConcurrency(benchmark::State& state) {
-  const uint32_t major = state.range(0);
+  const iree_hal_amd_gpu_gfxip_version_t targets[] = {
+      {9, 4, 2},
+      {11, 0, 0},
+      {12, 0, 0},
+  };
+  const auto version = targets[state.range(0)];
+  const auto capabilities = amdf_gpu_target_query_capabilities(
+      version.major, version.minor, version.stepping);
+  const bool wave32 = capabilities.shader.wave_size_mask & 32;
   amdf_gpu_endpoint_info_t target = {
-      .gfx_ip = {major, major == 9 ? 4u : 0u, major == 9 ? 2u : 0u},
+      .gfx_ip = {version.major, version.minor, version.stepping},
       .compute =
           {
-              .wavefront_size = major == 9 ? 64u : 32u,
+              .wavefront_size = wave32 ? 32u : 64u,
               .compute_unit_count = 96,
               .maximum_wave_count_per_compute_unit = 32,
               .local_data_share_byte_length = 65536,
@@ -26,7 +35,7 @@ static void BM_QueryConcurrency(benchmark::State& state) {
   };
   iree_hal_amd_gpu_image_kernel_t kernel = {
       .compute_pgm_rsrc1 = 19u | (7u << 6),
-      .code_properties = static_cast<uint16_t>(major == 9 ? 0 : 1u << 10),
+      .code_properties = static_cast<uint16_t>(wave32 ? 1u << 10 : 0),
   };
   iree_hal_amd_gpu_metadata_kernel_t metadata = {
       .group_segment_fixed_size = 1024,
@@ -50,12 +59,12 @@ static void BM_QueryConcurrency(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_QueryConcurrency)
-    ->ArgNames({"gfx_major", "dynamic_lds"})
-    ->Args({9, 0})
-    ->Args({9, 32768})
-    ->Args({11, 0})
-    ->Args({11, 32768})
-    ->Args({12, 0})
-    ->Args({12, 32768});
+    ->ArgNames({"target_case", "dynamic_lds"})
+    ->Args({0, 0})
+    ->Args({0, 32768})
+    ->Args({1, 0})
+    ->Args({1, 32768})
+    ->Args({2, 0})
+    ->Args({2, 32768});
 
 }  // namespace

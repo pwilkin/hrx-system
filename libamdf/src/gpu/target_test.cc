@@ -240,6 +240,7 @@ TEST(GpuTargetTest, CacheAndDescriptorFactsAreIndependentCapabilities) {
   EXPECT_EQ(vector_cache.pm4.group_segment_unit_log2, 11u);
   EXPECT_EQ(vector_cache.pm4.user_data_count_mask, 63u);
   EXPECT_EQ(vector_cache.shader.workgroup_processor_mode, 0u);
+  EXPECT_EQ(vector_cache.shader.local_memory_byte_length, 320u * 1024);
   EXPECT_EQ(vector_cache.shader.dynamic_vector_resource3_mask, 1u << 17);
   EXPECT_EQ(vector_cache.requires_revision_metadata, 1u);
   EXPECT_EQ(
@@ -280,6 +281,28 @@ TEST(GpuTargetTest, ProgramSelectionUsesDeclaredInstructionsAndPreference) {
   }
   EXPECT_EQ(amdf_gpu_target_select_instructions(UINT32_MAX, 0, nullptr, 0),
             UINT32_MAX);
+}
+
+TEST(GpuTargetTest, ExactVersionSpellingAndTransactionalFailure) {
+  uint32_t major = 0, minor = 0, stepping = 0;
+  EXPECT_TRUE(
+      amdf_gpu_target_parse_version("90a", 3, &major, &minor, &stepping));
+  EXPECT_EQ(major, 9u);
+  EXPECT_EQ(minor, 0u);
+  EXPECT_EQ(stepping, 10u);
+  EXPECT_TRUE(
+      amdf_gpu_target_parse_version("1250", 4, &major, &minor, &stepping));
+  EXPECT_EQ(major, 12u);
+  EXPECT_EQ(minor, 5u);
+  EXPECT_EQ(stepping, 0u);
+  for (const char* invalid :
+       {"", "gfx90a", "11000", "20a0", "12z0", "9/a", "90g"}) {
+    EXPECT_FALSE(amdf_gpu_target_parse_version(invalid, std::strlen(invalid),
+                                               &major, &minor, &stepping));
+    EXPECT_EQ(major, 12u);
+    EXPECT_EQ(minor, 5u);
+    EXPECT_EQ(stepping, 0u);
+  }
 }
 
 TEST(GpuTargetTest, UnknownArchitecturesHaveNoEncodingCapabilities) {

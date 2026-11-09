@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 
+#include "amdf/gpu_hsa.h"
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/notification.h"
 #include "iree/hal/driver/amdgpu/abi/signal.h"
@@ -490,7 +491,9 @@ iree_hal_amdgpu_physical_device_initialize_cpu_visible_device_coarse_memory(
   if (!iree_hal_amdgpu_host_write_fence_is_supported()) {
     return iree_ok_status();
   }
-  if (!iree_hal_amdgpu_gfxip_allows_hdp_kernarg_publication(gfxip_version)) {
+  if (!amdf_gpu_hsa_query_target(gfxip_version.major, gfxip_version.minor,
+                                 gfxip_version.stepping)
+           .host_data_path_flush) {
     return iree_ok_status();
   }
   if (!hdp_flush->HDP_MEM_FLUSH_CNTL || !hdp_flush->HDP_REG_FLUSH_CNTL) {
@@ -869,20 +872,23 @@ iree_hal_amdgpu_physical_device_initialize_queue_execution_strategy(
       out_physical_device->dispatch_concurrency_capabilities
           .has_cooperative_compute_unit_count = true;
     }
+    const amdf_gpu_hsa_target_capabilities_t target = amdf_gpu_hsa_query_target(
+        gfxip_version.major, gfxip_version.minor, gfxip_version.stepping);
     if (out_physical_device->grid_sync_strategy ==
             IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_GWS &&
-        gfxip_version.major == 9 && gfxip_version.minor == 0 &&
-        gfxip_version.stepping == 10) {
-      // gfx90a GWS schedules complete 8-CU groups and reserves one group for
-      // forward progress. Clamp the reported count so both full-agent and
-      // already-restricted HSA reports produce the architecture-safe bound.
-      const uint32_t grouped_compute_unit_count =
-          out_physical_device->queue_execution_resources.execution_unit_count &
-          ~UINT32_C(7);
-      const uint32_t maximum_gws_compute_unit_count =
-          grouped_compute_unit_count >= 8 ? grouped_compute_unit_count - 8 : 0;
-      cooperative_compute_unit_count = iree_min(cooperative_compute_unit_count,
-                                                maximum_gws_compute_unit_count);
+        target.cooperative_compute_unit_granule) {
+      // Native scheduling facts bound both full-agent and already-restricted
+      // HSA reports while reserving resources for forward progress.
+      const uint32_t granule = target.cooperative_compute_unit_granule;
+      const uint32_t grouped =
+          out_physical_device->queue_execution_resources.execution_unit_count /
+          granule * granule;
+      const uint32_t maximum =
+          grouped >= target.cooperative_reserved_compute_units
+              ? grouped - target.cooperative_reserved_compute_units
+              : 0;
+      cooperative_compute_unit_count =
+          iree_min(cooperative_compute_unit_count, maximum);
     }
     out_physical_device->dispatch_concurrency_capabilities
         .cooperative_compute_unit_count = cooperative_compute_unit_count;

@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "amdf/gpu_hsa.h"
 #include "iree/base/internal/math.h"
 #include "iree/hal/driver/amdgpu/access_policy.h"
 #include "iree/hal/driver/amdgpu/atomic_memory.h"
@@ -979,9 +980,13 @@ iree_status_t iree_hal_amdgpu_allocator_create(
           HSA_AMD_MEMORY_POOL_STANDARD_FLAG,
           &allocator->memory_pools.device_uncached[i]);
     }
-    if (iree_status_is_ok(status) &&
+    const iree_hal_amdgpu_gfxip_version_t target_version =
         logical_device->system->gpu_agent_targets[i]
-                .primary_isa.identity.version.major >= 12) {
+            .primary_isa.identity.version;
+    if (iree_status_is_ok(status) &&
+        amdf_gpu_hsa_query_target(target_version.major, target_version.minor,
+                                  target_version.stepping)
+            .uncached_allocations) {
       if (!device_uncached_pool_available) {
         allocator->memory_pools.device_uncached[i] =
             allocator->memory_pools.device_coarse[i];

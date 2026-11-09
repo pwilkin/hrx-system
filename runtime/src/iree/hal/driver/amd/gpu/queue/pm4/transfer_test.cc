@@ -431,10 +431,19 @@ TEST(TransferBatchTest, ProgramCopiesRespectPacketArgumentsAndOperationBounds) {
       .operations = operations.data(),
       .cursor = {.index = 0, .offset = 3},
   };
-  for (auto target : {iree_hal_amd_gpu_gfxip_version_t{11, 0, 0},
-                      {11, 5, 1},
-                      {12, 0, 1},
-                      {12, 5, 0}}) {
+  const struct {
+    // Input target identity.
+    iree_hal_amd_gpu_gfxip_version_t version;
+    // Expected resource register offset in the emitted packet stream.
+    uint32_t resource3_register;
+  } targets[] = {
+      {{11, 0, 0}, 0x228},
+      {{11, 5, 1}, 0x228},
+      {{12, 0, 1}, 0x228},
+      {{12, 5, 0}, 0x223},
+  };
+  for (const auto& test : targets) {
+    const auto target = test.version;
     iree_hal_amd_gpu_pm4_launch_t launch;
     IREE_ASSERT_OK(iree_hal_amd_gpu_pm4_launch_initialize(
         target, 0, &kernel, UINT64_C(0x123456780000), &launch));
@@ -472,7 +481,7 @@ TEST(TransferBatchTest, ProgramCopiesRespectPacketArgumentsAndOperationBounds) {
               0xE0AF0000,
               0x84,
               0xC0017602,
-              target.major == 12 && target.minor == 5 ? 0x223u : 0x228u,
+              test.resource3_register,
               0x20,
               0xC0017602,
               0x215,
