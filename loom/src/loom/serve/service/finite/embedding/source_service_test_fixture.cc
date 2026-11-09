@@ -268,10 +268,12 @@ void SourceEmbeddingServiceTest::TearDown() {
   loom_serve_http_server_free(server_);
   IREE_EXPECT_OK(loom_service_finite_model_free(model_));
   IREE_EXPECT_OK(loom_service_finite_model_free(retained_));
-  loom_runtime_workspace_set_observer(
-      loom_runtime_pool_workspace(storage_owner_), {});
-  if (auto* pool = loom_runtime_pool_memory(storage_owner_)) {
-    loom_runtime_memory_pool_set_observer(pool, nullptr, nullptr);
+  if (storage_owner_) {
+    loom_runtime_workspace_set_observer(
+        loom_runtime_pool_workspace(storage_owner_), {});
+    if (auto* pool = loom_runtime_pool_memory(storage_owner_)) {
+      loom_runtime_memory_pool_set_observer(pool, nullptr, nullptr);
+    }
   }
   iree_notification_deinitialize(&notification_);
 }
