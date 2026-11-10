@@ -27,8 +27,12 @@ permissions:
 
 jobs:
   presubmit:
-    name: Presubmit
-    runs-on: azure-linux-scale-rocm
+    name: Presubmit / ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["azure-linux-scale-rocm","az-linux-scale-rocm-small-dev","az-linux-scale-rocm-medium-dev","az-linux-scale-rocm-default-dev"]' || '["azure-linux-scale-rocm"]') }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     container:
       image: ghcr.io/rocm/therock_build_manylinux_x86_64@sha256:702a5133851e6d1daf1207d2c9fbb01c2667914a5b6dc5a01faeb3ce66ea6421
@@ -54,6 +58,18 @@ jobs:
 
       - name: Adjust git config
         run: git config --global --add safe.directory "$PWD"
+
+      - name: Inspect runner resources
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          echo "runner=$RUNNER_LABEL"
+          uname -a
+          nproc
+          lscpu
+          free --human
+          df --human-readable --print-type "$GITHUB_WORKSPACE"
+          findmnt --target "$GITHUB_WORKSPACE"
 
       - name: Fetch ROCm LLVM toolchain
         run: bash .github/scripts/fetch_rocm_toolchain.sh
