@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["azure-linux-scale-rocm","az-linux-scale-rocm-small-dev","az-linux-scale-rocm-medium-dev","az-linux-scale-rocm-default-dev"]' || '["azure-linux-scale-rocm"]') }}
+        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["azure-linux-scale-rocm","az-linux-scale-rocm-medium-dev","az-linux-scale-rocm-default-dev"]' || '["azure-linux-scale-rocm"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     container:
@@ -70,6 +70,14 @@ jobs:
           free --human
           df --human-readable --print-type "$GITHUB_WORKSPACE"
           findmnt --target "$GITHUB_WORKSPACE"
+          grep --extended-regexp 'Cpus_allowed_list|Mems_allowed_list' /proc/self/status
+          cat /proc/self/cgroup
+          for control in cpu.max memory.max cpuset.cpus.effective cpuset.mems.effective; do
+            if [ -r "/sys/fs/cgroup/$control" ]; then
+              printf '%s=' "$control"
+              cat "/sys/fs/cgroup/$control"
+            fi
+          done
 
       - name: Fetch ROCm LLVM toolchain
         run: bash .github/scripts/fetch_rocm_toolchain.sh
