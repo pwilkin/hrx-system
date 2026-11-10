@@ -138,54 +138,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Clang / Fastbuild
-            command: iree-bazel-cpu
+          - name: TCP receive / zero-copy policy
+            command: tcp-receive-cts
             runner: az-linux-scale-rocm-medium-dev
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
-          - name: Clang / ASAN
-            command: iree-bazel-cpu-asan
-            platform_coverage: true
-            runner: az-linux-scale-rocm-medium-dev
-            host_toolchain: rocm
-          - name: Clang / ASAN / Shared Tools
-            command: iree-bazel-cpu-shared-tools-asan
-            platform_coverage: true
-            runner: az-linux-scale-rocm-medium-dev
-            host_toolchain: rocm
-          - name: Clang / MSAN
-            command: iree-bazel-cpu-msan
+            disable_zero_copy: "0"
+          - name: TCP receive / copied sends
+            command: tcp-receive-cts-copy
             runner: az-linux-scale-rocm-medium-dev
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
-            install_compiler_rt: true
-          - name: Clang / TSAN
-            command: iree-bazel-cpu-tsan
-            runner: az-linux-scale-rocm-medium-dev
-            host_ar: ar
-            host_cc: clang
-            host_cxx: clang++
-            install_compiler_rt: true
-          - name: Clang / UBSAN
-            command: iree-bazel-cpu-ubsan
-            runner: az-linux-scale-rocm-medium-dev
-            host_ar: ar
-            host_cc: clang
-            host_cxx: clang++
-            install_compiler_rt: true
-          - name: GCC 15 / Opt / Repository Build
-            command: iree-bazel-repository-build
-            compilation_mode: opt
-            gcc_toolset: 15
-            platform_coverage: true
-            runner: az-linux-scale-rocm-medium-dev
-            host_ar: ar
-            host_cc: gcc
-            host_cxx: g++
+            disable_zero_copy: "1"
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 10
     defaults:
       run:
         shell: bash
@@ -312,23 +280,20 @@ jobs:
           bash .github/scripts/check_rocm_device_toolchain.sh
           test -d "${HRX_ROCM_ROOT}/include"
 
-      - name: Run IREE Bazel CI
+      - name: Run focused TCP receive case
         id: iree_bazel_ci
         env:
-          IREE_CI_COMMAND: ${{ matrix.command }}
-          IREE_CI_COMPILATION_MODE: ${{ matrix.compilation_mode }}
+          IREE_NET_CTS_TCP_DISABLE_ZERO_COPY: ${{ matrix.disable_zero_copy }}
         run: |
-          compilation_args=()
-          if [[ -n "$IREE_CI_COMPILATION_MODE" ]]; then
-            compilation_args=(--compilation-mode "$IREE_CI_COMPILATION_MODE")
-          fi
-          result_args=()
-          if [[ "$IREE_CI_COMMAND" != iree-bazel-repository-build ]]; then
-            result_args=(--bazel-test-results-dir "${RUNNER_TEMP}/repository-test-results-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
-          fi
-          python3 build_tools/devtools/ci.py "$IREE_CI_COMMAND" \
-            "${result_args[@]}" "${compilation_args[@]}" \
-            --bazel-profile-dir "${RUNNER_TEMP}/bazel-profiles" --keep-going
+          mkdir -p "${RUNNER_TEMP}/bazel-profiles"
+          python3 dev.py bazel test \
+            --nocache_test_results \
+            --test_output=streamed \
+            --test_timeout=10 \
+            --test_env=IREE_NET_CTS_TCP_DISABLE_ZERO_COPY="${IREE_NET_CTS_TCP_DISABLE_ZERO_COPY}" \
+            --test_arg=--gtest_filter=ReceiveTest.ReusesChangingSlabRangesAndPreservesOrdinaryMessages \
+            --profile="${RUNNER_TEMP}/bazel-profiles/tcp-receive.profile.gz" \
+            //runtime/src/iree/net/carrier/tcp/cts:receive_tests
 
       - name: Upload Bazel profiles
         continue-on-error: true

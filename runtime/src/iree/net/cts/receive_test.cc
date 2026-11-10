@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -37,6 +38,12 @@ struct Completion {
     ++self->count;
     self->code = iree_status_code(status);
     self->bytes = bytes;
+    std::fprintf(stderr,
+                 "[tcp-receive-probe] completion=%p count=%d code=%d "
+                 "bytes=%" PRIhsz "\n",
+                 static_cast<void*>(self), self->count,
+                 static_cast<int>(self->code), self->bytes);
+    std::fflush(stderr);
     iree_status_free(status);
     if (self->then) {
       self->then();
@@ -222,9 +229,8 @@ class ReceiveTest : public ::testing::Test {
 };
 
 TEST_F(ReceiveTest, ReusesChangingSlabRangesAndPreservesOrdinaryMessages) {
-  if (strcmp(GetTransportBackend().name, "tcp") == 0) {
-    GTEST_SKIP() << "TCP receive operation reuse does not make progress";
-  }
+  std::fprintf(stderr, "[tcp-receive-probe] test-body-entered\n");
+  std::fflush(stderr);
   constexpr size_t kMaximumLength = 40976 * 512;
   std::vector<uint8_t> slab(kMaximumLength + 128, 0xCC);
   iree_net_message_receive_operation_t operation = {};
@@ -237,12 +243,25 @@ TEST_F(ReceiveTest, ReusesChangingSlabRangesAndPreservesOrdinaryMessages) {
     const std::string body(length, static_cast<char>(tokens % 127));
     const int initial_count = received.count;
     maximum_allocation_ = 0;
+    std::fprintf(stderr,
+                 "[tcp-receive-probe] post tokens=%zu length=%zu "
+                 "received=%p\n",
+                 tokens, length, static_cast<void*>(&received));
+    std::fflush(stderr);
     IREE_ASSERT_OK(Post(&operation, prefix,
                         iree_make_byte_span(slab.data() + offset, length),
                         &received));
     Completion sent;
+    std::fprintf(stderr,
+                 "[tcp-receive-probe] send tokens=%zu length=%zu sent=%p\n",
+                 tokens, length, static_cast<void*>(&sent));
+    std::fflush(stderr);
     Send(prefix, body, &sent);
     PollUntil([&] { return sent.count && received.count > initial_count; });
+    std::fprintf(stderr,
+                 "[tcp-receive-probe] joined tokens=%zu sent=%d received=%d\n",
+                 tokens, sent.count, received.count);
+    std::fflush(stderr);
     ASSERT_EQ(sent.code, IREE_STATUS_OK);
     ASSERT_EQ(received.code, IREE_STATUS_OK);
     EXPECT_EQ(received.bytes, length);
