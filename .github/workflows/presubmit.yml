@@ -27,6 +27,7 @@ permissions:
 
 jobs:
   presubmit:
+    if: github.event_name != 'workflow_dispatch'
     name: Presubmit / ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -115,3 +116,222 @@ jobs:
       - name: Run core Linux smoke
         if: github.event_name == 'merge_group'
         run: python3 build_tools/devtools/ci.py iree-bazel-cpu --keep-going
+
+  cpu_qualification:
+    if: github.event_name == 'workflow_dispatch'
+    name: CPU qualification / ${{ matrix.name }} / ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Clang / Fastbuild
+            command: iree-bazel-cpu
+            runner: az-linux-scale-rocm-medium-dev
+            host_ar: ar
+            host_cc: clang
+            host_cxx: clang++
+          - name: Clang / ASAN
+            command: iree-bazel-cpu-asan
+            platform_coverage: true
+            runner: az-linux-scale-rocm-medium-dev
+            host_toolchain: rocm
+          - name: Clang / ASAN / Shared Tools
+            command: iree-bazel-cpu-shared-tools-asan
+            platform_coverage: true
+            runner: az-linux-scale-rocm-medium-dev
+            host_toolchain: rocm
+          - name: Clang / MSAN
+            command: iree-bazel-cpu-msan
+            runner: az-linux-scale-rocm-medium-dev
+            host_ar: ar
+            host_cc: clang
+            host_cxx: clang++
+            install_compiler_rt: true
+          - name: Clang / TSAN
+            command: iree-bazel-cpu-tsan
+            runner: az-linux-scale-rocm-medium-dev
+            host_ar: ar
+            host_cc: clang
+            host_cxx: clang++
+            install_compiler_rt: true
+          - name: Clang / UBSAN
+            command: iree-bazel-cpu-ubsan
+            runner: az-linux-scale-rocm-medium-dev
+            host_ar: ar
+            host_cc: clang
+            host_cxx: clang++
+            install_compiler_rt: true
+          - name: GCC 15 / Opt / Repository Build
+            command: iree-bazel-repository-build
+            compilation_mode: opt
+            gcc_toolset: 15
+            platform_coverage: true
+            runner: az-linux-scale-rocm-medium-dev
+            host_ar: ar
+            host_cc: gcc
+            host_cxx: g++
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ${{ matrix.command == 'iree-bazel-repository-build' && 'ghcr.io/rocm/therock_build_manylinux_x86_64@sha256:702a5133851e6d1daf1207d2c9fbb01c2667914a5b6dc5a01faeb3ce66ea6421' || 'ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98' }}
+    env:
+      IREE_CI_PLATFORM_COVERAGE: ${{ matrix.platform_coverage && '1' || '0' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Adjust git config
+        run: |
+          mkdir -p "$HOME"
+          git config --global --add safe.directory "$PWD"
+
+      - name: Inspect runner resources
+        run: |
+          uname -a
+          nproc
+          lscpu
+          free --human
+          df --human-readable --print-type "$GITHUB_WORKSPACE"
+          findmnt --target "$GITHUB_WORKSPACE"
+          grep --extended-regexp 'Cpus_allowed_list|Mems_allowed_list' /proc/self/status
+          cat /proc/self/cgroup
+          for control in cpu.max memory.max cpuset.cpus.effective cpuset.mems.effective; do
+            if [ -r "/sys/fs/cgroup/$control" ]; then
+              printf '%s=' "$control"
+              cat "/sys/fs/cgroup/$control"
+            fi
+          done
+
+      - name: Configure build environment
+        run: |
+          output_dir="${GITHUB_WORKSPACE}/build/iree-bazel"
+          {
+            echo "HRX_ARTIFACT_SET=core"
+            echo "HRX_DOWNLOAD_CACHE_DIR=${output_dir}/downloads"
+            echo "HRX_OUTPUT_DIR=${output_dir}"
+            echo "HRX_PYTHON=${output_dir}/python/bin/python3"
+            echo "HRX_RELEASE_TYPE=nightly"
+            echo "HRX_ROCM_ROOT=${output_dir}/rocm-root"
+            echo "PIP_CACHE_DIR=${output_dir}/caches/pip"
+          } >> "$GITHUB_ENV"
+          case "${{ matrix.host_toolchain }}" in
+            rocm)
+              {
+                echo "AR=${output_dir}/rocm-root/lib/llvm/bin/llvm-ar"
+                echo "CC=${output_dir}/rocm-root/lib/llvm/bin/clang"
+                echo "CXX=${output_dir}/rocm-root/lib/llvm/bin/clang++"
+              } >> "$GITHUB_ENV"
+              ;;
+            *)
+              {
+                echo "AR=${{ matrix.host_ar }}"
+                echo "CC=${{ matrix.host_cc }}"
+                echo "CXX=${{ matrix.host_cxx }}"
+              } >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: Install repository GCC toolset
+        if: matrix.gcc_toolset
+        env:
+          GCC_TOOLSET: ${{ matrix.gcc_toolset }}
+        run: |
+          yum install -y \
+            "gcc-toolset-${GCC_TOOLSET}-binutils" \
+            "gcc-toolset-${GCC_TOOLSET}-gcc" \
+            "gcc-toolset-${GCC_TOOLSET}-gcc-c++" \
+            "gcc-toolset-${GCC_TOOLSET}-libatomic-devel"
+          toolset_root="/opt/rh/gcc-toolset-${GCC_TOOLSET}/root"
+          echo "${toolset_root}/usr/bin" >> "$GITHUB_PATH"
+          {
+            echo "AR=${toolset_root}/usr/bin/ar"
+            echo "CC=${toolset_root}/usr/bin/gcc"
+            echo "CXX=${toolset_root}/usr/bin/g++"
+            echo "DEVTOOLSET_ROOTPATH=${toolset_root}"
+            echo "LIBRARY_PATH=${toolset_root}/usr/lib64:${toolset_root}/usr/lib"
+            echo "LD_LIBRARY_PATH=${toolset_root}/usr/lib64:${toolset_root}/usr/lib"
+          } >> "$GITHUB_ENV"
+          test "$("${toolset_root}/usr/bin/gcc" -dumpversion)" = "$GCC_TOOLSET"
+          test "$("${toolset_root}/usr/bin/g++" -dumpversion)" = "$GCC_TOOLSET"
+
+      - name: Set up Python
+        if: matrix.command != 'iree-bazel-repository-build'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        if: matrix.command != 'iree-bazel-repository-build'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install Clang sanitizer runtimes
+        if: matrix.install_compiler_rt
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libclang-rt-18-dev
+
+      - name: Fetch ROCm toolchain
+        run: bash .github/scripts/fetch_rocm_toolchain.sh
+
+      - name: Install Bazel host tools
+        run: |
+          python3 --version
+          python3 dev.py bazel setup --venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check tool versions
+        run: |
+          bazel --version
+          expect_rocm=()
+          if [[ "${{ matrix.host_toolchain }}" == rocm ]]; then
+            expect_rocm=(--expect-rocm)
+          fi
+          bash .github/scripts/check_host_toolchain.sh "${expect_rocm[@]}"
+          bash .github/scripts/check_rocm_device_toolchain.sh
+          test -d "${HRX_ROCM_ROOT}/include"
+
+      - name: Run IREE Bazel CI
+        id: iree_bazel_ci
+        env:
+          IREE_CI_COMMAND: ${{ matrix.command }}
+          IREE_CI_COMPILATION_MODE: ${{ matrix.compilation_mode }}
+        run: |
+          compilation_args=()
+          if [[ -n "$IREE_CI_COMPILATION_MODE" ]]; then
+            compilation_args=(--compilation-mode "$IREE_CI_COMPILATION_MODE")
+          fi
+          result_args=()
+          if [[ "$IREE_CI_COMMAND" != iree-bazel-repository-build ]]; then
+            result_args=(--bazel-test-results-dir "${RUNNER_TEMP}/repository-test-results-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          fi
+          python3 build_tools/devtools/ci.py "$IREE_CI_COMMAND" \
+            "${result_args[@]}" "${compilation_args[@]}" \
+            --bazel-profile-dir "${RUNNER_TEMP}/bazel-profiles" --keep-going
+
+      - name: Upload Bazel profiles
+        continue-on-error: true
+        if: ${{ always() && steps.iree_bazel_ci.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-bazel-profiles-${{ matrix.command }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bazel-profiles/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload failed test results
+        if: ${{ always() && steps.iree_bazel_ci.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-test-results-${{ matrix.command }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/repository-test-results-${{ github.run_id }}-${{ github.run_attempt }}/**/bazel-testlogs/**
+          if-no-files-found: warn
+          retention-days: 7
