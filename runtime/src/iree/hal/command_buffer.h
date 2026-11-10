@@ -83,8 +83,7 @@ enum iree_hal_command_category_bits_t {
   // always specify the strictest set possible (for example, only transfer
   // commands to ensure they get placed on a DMA queue).
   IREE_HAL_COMMAND_CATEGORY_ANY = IREE_HAL_COMMAND_CATEGORY_TRANSFER |
-                                  IREE_HAL_COMMAND_CATEGORY_DISPATCH |
-                                  IREE_HAL_COMMAND_CATEGORY_ATOMIC,
+      IREE_HAL_COMMAND_CATEGORY_DISPATCH | IREE_HAL_COMMAND_CATEGORY_ATOMIC,
 };
 typedef uint32_t iree_hal_command_category_t;
 
@@ -356,10 +355,10 @@ typedef struct iree_hal_dispatch_config_t {
   //   operation producing the parameters and the dispatch to ensure the proper
   //   values are observed.
   // - IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS:
-  //   Device _may_ fetch the workgroup count at any point after the command
-  //   buffer submission is issued (all wait conditions satisfied) as the
-  //   flag indicates the parameters will not change during the execution of
-  //   the command buffer.
+  //   Device _may_ fetch the workgroup count as soon as the containing queue
+  //   operation is issued, including before its wait conditions are satisfied.
+  //   The caller must ensure the parameters have their final values before
+  //   issuing the operation and remain unchanged during execution.
   // The workgroup count buffer must have been allocated with
   // IREE_HAL_BUFFER_USAGE_DISPATCH_INDIRECT_PARAMETERS and be of
   // IREE_HAL_MEMORY_TYPE_DEVICE_VISIBLE.

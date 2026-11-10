@@ -209,6 +209,8 @@ TEST_P(DispatchIndirectParametersTest, StaticParametersFromQueueUpdate) {
       transfer_queue_, empty_wait, update_signal, parameter_data,
       /*source_offset=*/0, parameter_buffer, /*target_offset=*/0,
       sizeof(parameter_data), /*barriers=*/NULL, IREE_HAL_UPDATE_FLAG_NONE));
+  IREE_ASSERT_OK(iree_hal_semaphore_list_wait(
+      update_signal, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE));
 
   iree_hal_buffer_binding_t binding_table_values[2];
   iree_hal_buffer_binding_table_t binding_table =
@@ -254,6 +256,8 @@ TEST_P(DispatchIndirectParametersTest, WholeBufferParameterRef) {
       transfer_queue_, empty_wait, update_signal, parameter_data,
       /*source_offset=*/0, parameter_buffer, /*target_offset=*/0,
       sizeof(parameter_data), /*barriers=*/NULL, IREE_HAL_UPDATE_FLAG_NONE));
+  IREE_ASSERT_OK(iree_hal_semaphore_list_wait(
+      update_signal, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE));
 
   iree_hal_buffer_binding_t binding_table_values[2];
   iree_hal_buffer_binding_table_t binding_table =

@@ -77,10 +77,10 @@ typedef enum iree_hal_queue_placement_e {
 // producer access, or semaphore-based ordering.
 typedef uint32_t iree_hal_queue_placement_capabilities_t;
 enum iree_hal_queue_placement_capability_bits_e {
-  IREE_HAL_QUEUE_PLACEMENT_CAPABILITY_HOST_LOCAL =
-      1u << IREE_HAL_QUEUE_PLACEMENT_HOST_LOCAL,
-  IREE_HAL_QUEUE_PLACEMENT_CAPABILITY_DEVICE_LOCAL =
-      1u << IREE_HAL_QUEUE_PLACEMENT_DEVICE_LOCAL,
+  IREE_HAL_QUEUE_PLACEMENT_CAPABILITY_HOST_LOCAL = 1u
+      << IREE_HAL_QUEUE_PLACEMENT_HOST_LOCAL,
+  IREE_HAL_QUEUE_PLACEMENT_CAPABILITY_DEVICE_LOCAL = 1u
+      << IREE_HAL_QUEUE_PLACEMENT_DEVICE_LOCAL,
 };
 
 // Native work required to make prepared commands visible to their execution
@@ -386,10 +386,12 @@ enum iree_hal_dispatch_flag_bits_t {
   // ignored.
   IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS = 1ull << 0,
 
-  // Indirect parameters such as workgroup count are static at the time the
-  // command buffer is issued. This is in contrast to dynamic parameters that
-  // may be changed by dispatches within the same command buffer. Enabling when
-  // known can lead to lower dispatch overhead.
+  // Indirect parameters such as workgroup count are static when the containing
+  // queue operation is issued. Implementations may snapshot the parameters
+  // during the queue call before wait conditions are satisfied. This is in
+  // contrast to dynamic parameters that may be changed by preceding queue
+  // operations or commands within the same command buffer. Enabling when known
+  // can lead to lower dispatch overhead.
   IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS = 1ull << 1,
 
   // Disables HAL ABI handling. The provided constants are passed through as
