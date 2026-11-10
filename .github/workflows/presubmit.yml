@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       qualification:
-        description: Production workload to exercise on the development pool
+        description: Runner qualification workload
         type: choice
-        options: [cpu, cmake]
-        default: cpu
+        options: [tier, cpu, cmake]
+        default: tier
   merge_group:
     types:
       - checks_requested
@@ -33,12 +33,12 @@ permissions:
 
 jobs:
   presubmit:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || inputs.qualification == 'tier'
     name: Presubmit / ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["azure-linux-scale-rocm","az-linux-scale-rocm-small-dev","az-linux-scale-rocm-medium-dev","az-linux-scale-rocm-default-dev"]' || '["azure-linux-scale-rocm"]') }}
+        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["azure-linux-scale-rocm","az-linux-scale-rocm-small-prod","az-linux-scale-rocm-medium-prod","az-linux-scale-rocm-default-prod"]' || '["azure-linux-scale-rocm"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     container:
@@ -132,37 +132,37 @@ jobs:
         include:
           - name: Clang / Fastbuild
             command: iree-bazel-cpu
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
           - name: Clang / ASAN
             command: iree-bazel-cpu-asan
             platform_coverage: true
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_toolchain: rocm
           - name: Clang / ASAN / Shared Tools
             command: iree-bazel-cpu-shared-tools-asan
             platform_coverage: true
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_toolchain: rocm
           - name: Clang / MSAN
             command: iree-bazel-cpu-msan
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
             install_compiler_rt: true
           - name: Clang / TSAN
             command: iree-bazel-cpu-tsan
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
             install_compiler_rt: true
           - name: Clang / UBSAN
             command: iree-bazel-cpu-ubsan
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
@@ -172,7 +172,7 @@ jobs:
             compilation_mode: opt
             gcc_toolset: 15
             platform_coverage: true
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_ar: ar
             host_cc: gcc
             host_cxx: g++
@@ -344,8 +344,8 @@ jobs:
 
   cmake_qualification:
     if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'cmake'
-    name: CMake qualification / Linux x86-64 / Clang / Repository Build / az-linux-scale-rocm-medium-dev
-    runs-on: az-linux-scale-rocm-medium-dev
+    name: CMake qualification / Linux x86-64 / Clang / Repository Build / az-linux-scale-rocm-default-prod
+    runs-on: az-linux-scale-rocm-default-prod
     timeout-minutes: 45
     defaults:
       run:
