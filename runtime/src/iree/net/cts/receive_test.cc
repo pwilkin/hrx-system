@@ -44,6 +44,10 @@ struct Completion {
                  static_cast<void*>(self), self->count,
                  static_cast<int>(self->code), self->bytes);
     std::fflush(stderr);
+    if (!iree_status_is_ok(status)) {
+      std::fprintf(stderr, "[tcp-receive-probe] terminal status: ");
+      iree_status_fprint(stderr, status);
+    }
     iree_status_free(status);
     if (self->then) {
       self->then();
