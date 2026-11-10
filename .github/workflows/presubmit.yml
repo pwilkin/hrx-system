@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       qualification:
-        description: Production workload to exercise on the development pool
+        description: Production workload to exercise on the production pool
         type: choice
         options: [cpu, cmake]
         default: cpu
@@ -140,7 +140,7 @@ jobs:
         include:
           - name: TCP receive / zero-copy policy
             command: tcp-receive-cts
-            runner: az-linux-scale-rocm-medium-dev
+            runner: az-linux-scale-rocm-default-prod
             host_ar: ar
             host_cc: clang
             host_cxx: clang++
