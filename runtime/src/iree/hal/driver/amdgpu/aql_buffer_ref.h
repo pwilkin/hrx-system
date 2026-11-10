@@ -35,6 +35,23 @@ iree_status_t iree_hal_amdgpu_aql_resolve_static_binding_source_pointer(
     const iree_hal_amdgpu_command_buffer_binding_source_t* binding_source,
     uint64_t* out_binding_pointer);
 
+// Resolves an indirect-parameter source to its validated buffer reference and
+// AMDGPU device pointer. Legacy raw-pointer sources have an empty
+// |out_buffer_ref| and cannot be inspected through a host binding.
+iree_status_t iree_hal_amdgpu_aql_resolve_indirect_parameter_source(
+    iree_hal_command_buffer_t* command_buffer,
+    iree_hal_buffer_binding_table_t binding_table,
+    const iree_hal_amdgpu_command_buffer_binding_source_t* binding_source,
+    iree_hal_buffer_ref_t* out_buffer_ref,
+    const uint32_t** out_device_workgroup_count);
+
+// Tries to snapshot a validated indirect-parameter reference through its
+// prepared AMDGPU host binding. Returns unavailable for device-only storage.
+// AMDGPU host-visible allocations are coherent with their device binding.
+iree_status_t iree_hal_amdgpu_aql_try_snapshot_host_visible_indirect_parameters(
+    iree_hal_buffer_ref_t buffer_ref, bool* out_available,
+    uint32_t out_workgroup_count[3]);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

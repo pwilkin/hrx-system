@@ -383,7 +383,8 @@ enum iree_hal_dispatch_flag_bits_t {
   // the overhead of an indirect dispatch.
   //
   // When defined the static workgroup_count[] in the dispatch config is
-  // ignored.
+  // ignored. Mutually exclusive with
+  // IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS.
   IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS = 1ull << 0,
 
   // Indirect parameters such as workgroup count are static when the containing
@@ -391,7 +392,8 @@ enum iree_hal_dispatch_flag_bits_t {
   // during the queue call before wait conditions are satisfied. This is in
   // contrast to dynamic parameters that may be changed by preceding queue
   // operations or commands within the same command buffer. Enabling when known
-  // can lead to lower dispatch overhead.
+  // can lead to lower dispatch overhead. Mutually exclusive with
+  // IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS.
   IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS = 1ull << 1,
 
   // Disables HAL ABI handling. The provided constants are passed through as

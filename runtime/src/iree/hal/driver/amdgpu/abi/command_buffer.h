@@ -69,7 +69,7 @@ typedef enum iree_hal_amdgpu_command_buffer_binding_source_flag_bits_e {
   IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_NONE = 0u,
   IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_DYNAMIC = 1u << 0,
   IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS = 1u
-                                                                           << 1,
+      << 1,
   IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_STATIC_BUFFER = 1u << 2,
 } iree_hal_amdgpu_command_buffer_binding_source_flag_bits_t;
 
@@ -80,8 +80,8 @@ typedef enum iree_hal_amdgpu_command_buffer_dispatch_flag_bits_e {
   // |kernel_object| stores a host pointer to a uint64_t table indexed by the
   // executing queue's physical_queue_ordinal instead of a direct HSA kernel
   // object. Used when executable globals are queue scoped.
-  IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_QUEUE_SCOPED_KERNEL_OBJECT =
-      1u << 1,
+  IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_QUEUE_SCOPED_KERNEL_OBJECT = 1u
+      << 1,
   // The dispatch uses the AMD extended packet with |workgroup_cluster_size|.
   IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_WORKGROUP_CLUSTER = 1u << 2,
   // The dispatch requires a cooperative-capable queue and per-execution grid
@@ -89,6 +89,11 @@ typedef enum iree_hal_amdgpu_command_buffer_dispatch_flag_bits_e {
   IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_COOPERATIVE = 1u << 3,
   // The dispatch uses |workitem_count| as the exact ordinary packet grid size.
   IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_EXACT_WORKITEM_COUNT = 1u << 4,
+  // Indirect workgroup counts are stable when the command buffer is issued.
+  // Replay may snapshot host-visible parameters instead of dispatching the
+  // device-side patch helper.
+  IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS = 1u
+      << 5,
 } iree_hal_amdgpu_command_buffer_dispatch_flag_bits_t;
 
 // Kernarg storage mode for a dispatch command.

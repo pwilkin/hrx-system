@@ -33,17 +33,20 @@ enum {
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_STATIC_BUFFER_PAGE_CAPACITY_LOG2 = 9,
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_STATIC_BUFFER_PAGE_CAPACITY = 512,
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_STATIC_BUFFER_PAGE_MASK =
-      IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_STATIC_BUFFER_PAGE_CAPACITY - 1,
+          IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_STATIC_BUFFER_PAGE_CAPACITY -
+      1,
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_PAGE_CAPACITY_LOG2 = 9,
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_PAGE_CAPACITY = 512,
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_PAGE_MASK =
-      IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_PAGE_CAPACITY - 1,
+          IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_PAGE_CAPACITY -
+      1,
 };
 
 typedef enum iree_hal_amdgpu_aql_command_buffer_rodata_segment_flag_bits_e {
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_FLAG_NONE = 0u,
   IREE_HAL_AMDGPU_AQL_COMMAND_BUFFER_RODATA_SEGMENT_FLAG_PREPUBLISHED_KERNARGS =
-      1u << 0,
+          1u
+      << 0,
 } iree_hal_amdgpu_aql_command_buffer_rodata_segment_flag_bits_t;
 
 typedef uint32_t iree_hal_amdgpu_aql_command_buffer_rodata_segment_flags_t;
@@ -1353,6 +1356,17 @@ static iree_status_t iree_hal_amdgpu_aql_command_buffer_check_dispatch_flags(
         "indirect dispatch arguments are not supported by AMDGPU command "
         "buffers yet");
   }
+  const iree_hal_dispatch_flags_t indirect_parameter_flags =
+      flags & (IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS |
+               IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS);
+  if (IREE_UNLIKELY(iree_all_bits_set(
+          indirect_parameter_flags,
+          IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS |
+              IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS))) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "AQL dispatch cannot use both static and dynamic indirect parameters");
+  }
   const iree_hal_dispatch_flags_t supported_flags =
       IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS |
       IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS |
@@ -1577,7 +1591,7 @@ iree_hal_amdgpu_aql_command_buffer_prepare_dispatch_binding_sources(
 }
 
 static iree_status_t
-iree_hal_amdgpu_aql_command_buffer_record_deferred_dispatch_binding_source(
+iree_hal_amdgpu_aql_command_buffer_record_static_dispatch_binding_source(
     iree_hal_amdgpu_aql_command_buffer_t* command_buffer,
     const iree_hal_buffer_ref_t* binding,
     iree_hal_amdgpu_command_buffer_binding_source_t* binding_source) {
@@ -1644,7 +1658,7 @@ iree_hal_amdgpu_aql_command_buffer_write_dispatch_binding_patch_sources(
       iree_hal_amdgpu_command_buffer_binding_source_t* binding_source =
           &binding_sources[source_index++];
       status =
-          iree_hal_amdgpu_aql_command_buffer_record_deferred_dispatch_binding_source(
+          iree_hal_amdgpu_aql_command_buffer_record_static_dispatch_binding_source(
               command_buffer, binding, binding_source);
       binding_source->target_qword_index = binding_slots[i].target_qword_index;
       continue;
@@ -1675,6 +1689,7 @@ static iree_status_t
 iree_hal_amdgpu_aql_command_buffer_write_indirect_parameter_source(
     iree_hal_amdgpu_aql_command_buffer_t* command_buffer,
     iree_hal_buffer_ref_t buffer_ref,
+    bool preserve_host_visible_buffer_identity,
     iree_hal_amdgpu_command_buffer_binding_source_t* binding_source) {
   memset(binding_source, 0, sizeof(*binding_source));
   IREE_RETURN_IF_ERROR(
@@ -1717,10 +1732,11 @@ iree_hal_amdgpu_aql_command_buffer_write_indirect_parameter_source(
         command_buffer->resource_set, /*count=*/1, &buffer_ref.buffer));
   }
 
-  if (iree_hal_amdgpu_aql_command_buffer_should_defer_static_buffer_ref(
+  if (preserve_host_visible_buffer_identity ||
+      iree_hal_amdgpu_aql_command_buffer_should_defer_static_buffer_ref(
           command_buffer, &buffer_ref)) {
     IREE_RETURN_IF_ERROR(
-        iree_hal_amdgpu_aql_command_buffer_record_deferred_dispatch_binding_source(
+        iree_hal_amdgpu_aql_command_buffer_record_static_dispatch_binding_source(
             command_buffer, &buffer_ref, binding_source));
     binding_source->flags |=
         IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS;
@@ -1916,6 +1932,7 @@ typedef enum iree_hal_amdgpu_aql_dispatch_plan_flag_bits_e {
   IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_INDIRECT_PARAMETERS = 1u << 1,
   IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_QUEUE_SCOPED_KERNEL_OBJECT = 1u << 2,
   IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_TSAN = 1u << 3,
+  IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_STATIC_INDIRECT_PARAMETERS = 1u << 4,
 } iree_hal_amdgpu_aql_dispatch_plan_flag_bits_t;
 
 typedef uint32_t iree_hal_amdgpu_aql_dispatch_plan_flags_t;
@@ -1998,6 +2015,13 @@ static bool iree_hal_amdgpu_aql_dispatch_plan_uses_indirect_parameters(
     const iree_hal_amdgpu_aql_dispatch_plan_t* plan) {
   return iree_any_bit_set(
       plan->flags, IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_INDIRECT_PARAMETERS);
+}
+
+static bool iree_hal_amdgpu_aql_dispatch_plan_uses_static_indirect_parameters(
+    const iree_hal_amdgpu_aql_dispatch_plan_t* plan) {
+  return iree_any_bit_set(
+      plan->flags,
+      IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_STATIC_INDIRECT_PARAMETERS);
 }
 
 static bool iree_hal_amdgpu_aql_dispatch_plan_uses_queue_scoped_kernel_object(
@@ -2156,6 +2180,11 @@ static iree_status_t iree_hal_amdgpu_aql_command_buffer_prepare_dispatch_plan(
   if (iree_hal_dispatch_uses_indirect_parameters(inputs->flags)) {
     out_plan->flags |=
         IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_INDIRECT_PARAMETERS;
+  }
+  if (iree_any_bit_set(inputs->flags,
+                       IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS)) {
+    out_plan->flags |=
+        IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_STATIC_INDIRECT_PARAMETERS;
   }
   if (iree_hal_amdgpu_executable_uses_tsan(inputs->executable)) {
     out_plan->flags |= IREE_HAL_AMDGPU_AQL_DISPATCH_PLAN_FLAG_TSAN;
@@ -2442,6 +2471,10 @@ static void iree_hal_amdgpu_aql_command_buffer_initialize_dispatch_command(
       uses_indirect_parameters
           ? IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_INDIRECT_PARAMETERS
           : IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_NONE;
+  if (iree_hal_amdgpu_aql_dispatch_plan_uses_static_indirect_parameters(plan)) {
+    dispatch_command->dispatch_flags |=
+        IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS;
+  }
   if (uses_queue_scoped_kernel_object) {
     dispatch_command->dispatch_flags |=
         IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_QUEUE_SCOPED_KERNEL_OBJECT;
@@ -2590,8 +2623,11 @@ static iree_status_t iree_hal_amdgpu_aql_command_buffer_append_dispatch_command(
   iree_hal_amdgpu_command_buffer_command_header_t* header = NULL;
   const bool uses_indirect_parameters =
       iree_hal_amdgpu_aql_dispatch_plan_uses_indirect_parameters(plan);
+  const bool uses_dynamic_indirect_parameters =
+      uses_indirect_parameters &&
+      !iree_hal_amdgpu_aql_dispatch_plan_uses_static_indirect_parameters(plan);
   uint8_t command_flags =
-      uses_indirect_parameters ||
+      uses_dynamic_indirect_parameters ||
               iree_hal_amdgpu_aql_dispatch_layout_uses_gws_initialize(
                   command_buffer, layout)
           ? IREE_HAL_AMDGPU_COMMAND_BUFFER_COMMAND_FLAG_HAS_BARRIER
@@ -2652,10 +2688,18 @@ static iree_status_t iree_hal_amdgpu_aql_command_buffer_write_dispatch_payload(
     iree_hal_amdgpu_command_buffer_binding_source_t* parameter_source =
         binding_sources +
         (uses_custom_direct_arguments ? 0 : plan->bindings.patch_count);
+    const iree_hal_buffer_ref_t parameter_ref =
+        inputs->config.workgroup_count_ref;
+    const bool preserve_host_visible_buffer_identity =
+        iree_hal_amdgpu_aql_dispatch_plan_uses_static_indirect_parameters(
+            plan) &&
+        parameter_ref.buffer &&
+        iree_all_bits_set(iree_hal_buffer_memory_type(parameter_ref.buffer),
+                          IREE_HAL_MEMORY_TYPE_HOST_VISIBLE);
     IREE_RETURN_IF_ERROR(
         iree_hal_amdgpu_aql_command_buffer_write_indirect_parameter_source(
-            command_buffer, inputs->config.workgroup_count_ref,
-            parameter_source));
+            command_buffer, parameter_ref,
+            preserve_host_visible_buffer_identity, parameter_source));
   }
   if (iree_hal_amdgpu_aql_dispatch_layout_prepublishes_kernargs(layout)) {
     return iree_ok_status();

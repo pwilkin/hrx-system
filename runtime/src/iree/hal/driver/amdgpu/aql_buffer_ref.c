@@ -128,3 +128,66 @@ iree_status_t iree_hal_amdgpu_aql_resolve_static_binding_source_pointer(
       (uint64_t)((uintptr_t)device_pointer + (uintptr_t)device_offset);
   return iree_ok_status();
 }
+
+iree_status_t iree_hal_amdgpu_aql_resolve_indirect_parameter_source(
+    iree_hal_command_buffer_t* command_buffer,
+    iree_hal_buffer_binding_table_t binding_table,
+    const iree_hal_amdgpu_command_buffer_binding_source_t* binding_source,
+    iree_hal_buffer_ref_t* out_buffer_ref,
+    const uint32_t** out_device_workgroup_count) {
+  memset(out_buffer_ref, 0, sizeof(*out_buffer_ref));
+  *out_device_workgroup_count = NULL;
+  const uint8_t flags = binding_source->flags;
+  if (flags ==
+      IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS) {
+    *out_device_workgroup_count =
+        (const uint32_t*)(uintptr_t)binding_source->offset_or_pointer;
+    return iree_ok_status();
+  }
+
+  iree_hal_amdgpu_command_buffer_binding_kind_t kind =
+      IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_KIND_INVALID;
+  if (flags ==
+      (IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_DYNAMIC |
+       IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS)) {
+    kind = IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_KIND_DYNAMIC;
+  } else if (
+      flags ==
+      (IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_STATIC_BUFFER |
+       IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS)) {
+    kind = IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_KIND_STATIC;
+  } else {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "malformed AQL command-buffer indirect parameter source flags %u",
+        binding_source->flags);
+  }
+
+  uint8_t* device_pointer = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_amdgpu_aql_resolve_command_buffer_ref(
+      command_buffer, binding_table, kind, binding_source->slot,
+      binding_source->offset_or_pointer, sizeof(uint32_t[3]),
+      IREE_HAL_BUFFER_USAGE_DISPATCH_INDIRECT_PARAMETERS,
+      IREE_HAL_MEMORY_ACCESS_READ, out_buffer_ref, &device_pointer));
+  *out_device_workgroup_count = (const uint32_t*)device_pointer;
+  return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdgpu_aql_try_snapshot_host_visible_indirect_parameters(
+    iree_hal_buffer_ref_t buffer_ref, bool* out_available,
+    uint32_t out_workgroup_count[3]) {
+  *out_available = false;
+  memset(out_workgroup_count, 0, sizeof(uint32_t[3]));
+  if (!buffer_ref.buffer ||
+      !iree_all_bits_set(iree_hal_buffer_memory_type(buffer_ref.buffer),
+                         IREE_HAL_MEMORY_TYPE_HOST_VISIBLE)) {
+    return iree_ok_status();
+  }
+
+  iree_byte_span_t host_span = iree_byte_span_empty();
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_native_host_span(
+      buffer_ref.buffer, buffer_ref.offset, sizeof(uint32_t[3]), &host_span));
+  memcpy(out_workgroup_count, host_span.data, sizeof(uint32_t[3]));
+  *out_available = true;
+  return iree_ok_status();
+}

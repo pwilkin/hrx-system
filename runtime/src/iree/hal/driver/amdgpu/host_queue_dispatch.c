@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "iree/hal/driver/amdgpu/aql_buffer_ref.h"
 #include "iree/hal/driver/amdgpu/buffer.h"
 #include "iree/hal/driver/amdgpu/device/dispatch.h"
 #include "iree/hal/driver/amdgpu/device/grid_sync.h"
@@ -44,6 +45,12 @@ typedef struct iree_hal_amdgpu_host_queue_dispatch_plan_t {
   uint32_t workgroup_cluster_count[3];
   // True when workgroup counts are read from a device buffer before dispatch.
   bool uses_indirect_parameters;
+  // True when indirect workgroup counts are stable when submission is issued.
+  bool uses_static_indirect_parameters;
+  // True when static indirect counts were resolved through a host binding.
+  bool has_host_workgroup_count;
+  // Submit-time snapshot used when |has_host_workgroup_count| is true.
+  uint32_t host_workgroup_count[3];
   // True when the direct packet uses the exact work-item extents from config.
   bool uses_exact_workitem_count;
   // Per-dispatch cooperative grid synchronization state. A zero |grid_count|
@@ -58,6 +65,19 @@ static iree_status_t iree_hal_amdgpu_host_queue_validate_dispatch_flags(
         IREE_STATUS_UNIMPLEMENTED,
         "indirect dispatch arguments are not supported by AMDGPU "
         "queue_dispatch yet");
+  }
+
+  const iree_hal_dispatch_flags_t indirect_parameter_flags =
+      flags & (IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS |
+               IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS);
+  if (IREE_UNLIKELY(iree_all_bits_set(
+          indirect_parameter_flags,
+          IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS |
+              IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS))) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "AMDGPU queue dispatch cannot use both static and dynamic indirect "
+        "parameters");
   }
 
   const iree_hal_dispatch_flags_t supported_flags =
@@ -449,6 +469,8 @@ static iree_status_t iree_hal_amdgpu_host_queue_prepare_dispatch_plan(
       out_plan->workgroup_cluster_count));
   out_plan->uses_indirect_parameters =
       iree_hal_dispatch_uses_indirect_parameters(flags);
+  out_plan->uses_static_indirect_parameters = iree_any_bit_set(
+      flags, IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS);
   out_plan->uses_exact_workitem_count =
       iree_any_bit_set(flags, IREE_HAL_DISPATCH_FLAG_EXACT_WORKITEM_COUNT);
 
@@ -683,7 +705,8 @@ static iree_status_t iree_hal_amdgpu_host_queue_submit_dispatch_packets(
       needs_grid_sync_info &&
       queue->grid_sync_strategy == IREE_HAL_AMDGPU_GRID_SYNC_STRATEGY_GWS;
   const bool needs_pre_dispatch_packet =
-      plan->uses_indirect_parameters || needs_gws_initialize;
+      (plan->uses_indirect_parameters && !plan->has_host_workgroup_count) ||
+      needs_gws_initialize;
 
   uint64_t executable_id = 0;
   bool should_profile_dispatch = false;
@@ -846,9 +869,12 @@ static iree_status_t iree_hal_amdgpu_host_queue_submit_dispatch_packets(
     profile_harvest_kernarg_data = profile_harvest_kernarg_blocks->data;
   }
   const uint32_t placeholder_workgroup_count[3] = {0, 0, 0};
-  const uint32_t* target_workgroup_count = plan->uses_indirect_parameters
-                                               ? placeholder_workgroup_count
-                                               : config.workgroup_count;
+  const uint32_t* target_workgroup_count = config.workgroup_count;
+  if (plan->has_host_workgroup_count) {
+    target_workgroup_count = plan->host_workgroup_count;
+  } else if (plan->uses_indirect_parameters) {
+    target_workgroup_count = placeholder_workgroup_count;
+  }
   iree_hal_amdgpu_host_queue_emplace_dispatch_kernargs(
       plan, target_workgroup_count, config.dynamic_workgroup_local_memory,
       constants, binding_ptrs, uses_custom_direct_arguments,
@@ -947,7 +973,8 @@ static iree_status_t iree_hal_amdgpu_host_queue_submit_dispatch_packets(
             iree_hal_amdgpu_host_queue_max_fence_scope(
                 pre_dispatch_acquire_scope, resolution->inline_acquire_scope),
             IREE_HSA_FENCE_SCOPE_NONE));
-  } else if (plan->uses_indirect_parameters) {
+  } else if (plan->uses_indirect_parameters &&
+             !plan->has_host_workgroup_count) {
     iree_hal_amdgpu_device_dispatch_emplace_indirect_params_patch(
         &queue->transfer_context->kernels
              ->iree_hal_amdgpu_device_dispatch_patch_indirect_params,
@@ -1082,7 +1109,7 @@ static iree_status_t iree_hal_amdgpu_host_queue_submit_dispatch_packets(
         iree_hal_amdgpu_aql_packet_control_barrier(IREE_HSA_FENCE_SCOPE_AGENT,
                                                    IREE_HSA_FENCE_SCOPE_AGENT));
   }
-  if (!plan->uses_indirect_parameters) {
+  if (!plan->uses_indirect_parameters || plan->has_host_workgroup_count) {
     iree_hal_amdgpu_aql_ring_commit(dispatch_packet, dispatch_header,
                                     dispatch_setup);
   }
@@ -1157,6 +1184,12 @@ iree_status_t iree_hal_amdgpu_host_queue_submit_dispatch(
     status = iree_hal_amdgpu_host_queue_prepare_dispatch_indirect_parameters(
         queue->base.queue_family, config, operation_resources, resource_index,
         &workgroup_count_ptr);
+    if (iree_status_is_ok(status) && plan.uses_static_indirect_parameters) {
+      status =
+          iree_hal_amdgpu_aql_try_snapshot_host_visible_indirect_parameters(
+              config.workgroup_count_ref, &plan.has_host_workgroup_count,
+              plan.host_workgroup_count);
+    }
   }
 
   if (iree_status_is_ok(status)) {

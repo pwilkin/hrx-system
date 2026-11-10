@@ -48,17 +48,17 @@ typedef uint32_t iree_hal_amdgpu_aql_block_processor_dispatch_profile_flags_t;
 enum iree_hal_amdgpu_aql_block_processor_dispatch_profile_flag_bits_t {
   IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_NONE = 0u,
   // Dispatch has a reserved profiling event and completion signal.
-  IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_DISPATCH_PACKET =
-      1u << 0,
+  IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_DISPATCH_PACKET = 1u
+      << 0,
   // Counter PM4 packets wrap this dispatch event.
-  IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_COUNTER_PACKETS =
-      1u << 1,
+  IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_COUNTER_PACKETS = 1u
+      << 1,
   // ATT trace PM4 packets wrap this dispatch event.
-  IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_TRACE_PACKETS =
-      1u << 2,
+  IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_TRACE_PACKETS = 1u
+      << 2,
   // Dispatch consumes the final recorded packet in the block.
   IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_BLOCK_FINAL = 1u
-                                                                          << 3,
+      << 3,
   // Dispatch is the final replayed payload packet in the block.
   IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_FINAL = 1u << 4,
 };
@@ -217,6 +217,14 @@ static bool iree_hal_amdgpu_aql_block_processor_profile_dispatch_uses_indirect(
       IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_INDIRECT_PARAMETERS);
 }
 
+static bool
+iree_hal_amdgpu_aql_block_processor_profile_dispatch_uses_static_indirect(
+    const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command) {
+  return iree_any_bit_set(
+      dispatch_command->dispatch_flags,
+      IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS);
+}
+
 static bool iree_hal_amdgpu_aql_block_processor_profile_dispatch_is_cooperative(
     const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command) {
   return iree_any_bit_set(
@@ -256,7 +264,8 @@ iree_hal_amdgpu_aql_block_processor_profile_validate_dispatch_encoding(
       IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_QUEUE_SCOPED_KERNEL_OBJECT |
       IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_WORKGROUP_CLUSTER |
       IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_COOPERATIVE |
-      IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_EXACT_WORKITEM_COUNT;
+      IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_EXACT_WORKITEM_COUNT |
+      IREE_HAL_AMDGPU_COMMAND_BUFFER_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS;
   if (IREE_UNLIKELY(iree_any_bit_set(dispatch_command->dispatch_flags,
                                      ~known_dispatch_flags))) {
     return iree_make_status(
@@ -275,6 +284,16 @@ iree_hal_amdgpu_aql_block_processor_profile_validate_dispatch_encoding(
         IREE_STATUS_INVALID_ARGUMENT,
         "profiled AQL command-buffer clustered dispatch flag and shape "
         "disagree");
+  }
+  if (IREE_UNLIKELY(
+          iree_hal_amdgpu_aql_block_processor_profile_dispatch_uses_static_indirect(
+              dispatch_command) &&
+          !iree_hal_amdgpu_aql_block_processor_profile_dispatch_uses_indirect(
+              dispatch_command))) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "profiled AQL command-buffer static indirect flag requires indirect "
+        "parameters");
   }
   if (IREE_UNLIKELY(
           cluster_flag &&
@@ -370,7 +389,8 @@ static iree_status_t
 iree_hal_amdgpu_aql_block_processor_profile_write_dispatch_packet_body(
     const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command,
     uint64_t kernel_object, iree_hal_amdgpu_aql_packet_t* packet,
-    uint8_t* kernarg_data, iree_hsa_signal_t completion_signal,
+    const uint32_t* workgroup_count, uint8_t* kernarg_data,
+    iree_hsa_signal_t completion_signal,
     iree_hal_amdgpu_aql_packet_control_t packet_control, uint16_t* out_header,
     uint16_t* out_setup) {
   iree_hal_amdgpu_aql_dispatch_params_t params = {
@@ -381,9 +401,12 @@ iree_hal_amdgpu_aql_block_processor_profile_write_dispatch_packet_body(
       .packet_control = packet_control,
       .completion_signal = completion_signal,
   };
+  if (!workgroup_count) {
+    workgroup_count = dispatch_command->workgroup_count;
+  }
   for (iree_host_size_t i = 0; i < 3; ++i) {
     params.workgroup_size[i] = dispatch_command->workgroup_size[i];
-    params.workgroup_count[i] = dispatch_command->workgroup_count[i];
+    params.workgroup_count[i] = workgroup_count[i];
     params.workitem_count[i] =
         iree_any_bit_set(
             dispatch_command->dispatch_flags,
@@ -530,52 +553,6 @@ iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_kernargs(
   }
 }
 
-static iree_status_t
-iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_indirect_params_ptr(
-    const iree_hal_amdgpu_aql_block_processor_profile_t* processor,
-    const iree_hal_amdgpu_command_buffer_binding_source_t* binding_source,
-    const uint32_t** out_workgroup_count_ptr) {
-  *out_workgroup_count_ptr = NULL;
-  switch (binding_source->flags) {
-    case IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS:
-      *out_workgroup_count_ptr =
-          (const uint32_t*)(uintptr_t)binding_source->offset_or_pointer;
-      return iree_ok_status();
-    case IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_DYNAMIC |
-        IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS: {
-      iree_hal_buffer_ref_t resolved_ref = {0};
-      IREE_RETURN_IF_ERROR(iree_hal_buffer_binding_table_resolve_ref(
-          processor->bindings.table,
-          iree_hal_make_indirect_buffer_ref(binding_source->slot,
-                                            binding_source->offset_or_pointer,
-                                            sizeof(uint32_t[3])),
-          &resolved_ref));
-      uint8_t* device_ptr = NULL;
-      IREE_RETURN_IF_ERROR(
-          iree_hal_amdgpu_aql_resolve_buffer_ref_device_pointer(
-              resolved_ref, IREE_HAL_BUFFER_USAGE_DISPATCH_INDIRECT_PARAMETERS,
-              IREE_HAL_MEMORY_ACCESS_READ, &device_ptr));
-      *out_workgroup_count_ptr = (const uint32_t*)device_ptr;
-      return iree_ok_status();
-    }
-    case IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_STATIC_BUFFER |
-        IREE_HAL_AMDGPU_COMMAND_BUFFER_BINDING_SOURCE_FLAG_INDIRECT_PARAMETERS: {
-      uint64_t workgroup_count_ptr = 0;
-      IREE_RETURN_IF_ERROR(
-          iree_hal_amdgpu_aql_resolve_static_binding_source_pointer(
-              processor->command_buffer, binding_source, &workgroup_count_ptr));
-      *out_workgroup_count_ptr =
-          (const uint32_t*)(uintptr_t)workgroup_count_ptr;
-      return iree_ok_status();
-    }
-    default:
-      return iree_make_status(
-          IREE_STATUS_INVALID_ARGUMENT,
-          "malformed AQL command-buffer indirect parameter source flags %u",
-          binding_source->flags);
-  }
-}
-
 static iree_amdgpu_kernel_implicit_args_t*
 iree_hal_amdgpu_aql_block_processor_profile_dispatch_implicit_args_ptr(
     const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command,
@@ -594,8 +571,8 @@ static iree_status_t
 iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_packet_body(
     const iree_hal_amdgpu_aql_block_processor_profile_t* processor,
     const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command,
-    iree_hal_amdgpu_aql_packet_t* packet, uint8_t* kernarg_data,
-    iree_amdgpu_grid_sync_info_t* grid_sync_info,
+    iree_hal_amdgpu_aql_packet_t* packet, const uint32_t* workgroup_count,
+    uint8_t* kernarg_data, iree_amdgpu_grid_sync_info_t* grid_sync_info,
     iree_hsa_signal_t completion_signal,
     iree_hal_amdgpu_aql_packet_control_t packet_control, uint16_t* out_header,
     uint16_t* out_setup) {
@@ -616,6 +593,15 @@ iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_packet_body(
         iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_kernargs(
             processor, dispatch_command, kernarg_data));
   }
+  if (workgroup_count) {
+    iree_amdgpu_kernel_implicit_args_t* implicit_args =
+        iree_hal_amdgpu_aql_block_processor_profile_dispatch_implicit_args_ptr(
+            dispatch_command, kernarg_data);
+    if (implicit_args) {
+      memcpy(implicit_args->block_count, workgroup_count,
+             sizeof(implicit_args->block_count));
+    }
+  }
   if (grid_sync_info) {
     iree_amdgpu_kernel_implicit_args_t* implicit_args =
         iree_hal_amdgpu_aql_block_processor_profile_dispatch_implicit_args_ptr(
@@ -633,8 +619,8 @@ iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_packet_body(
       iree_hal_amdgpu_aql_block_processor_profile_resolve_dispatch_kernel_object(
           processor, dispatch_command, &kernel_object));
   return iree_hal_amdgpu_aql_block_processor_profile_write_dispatch_packet_body(
-      dispatch_command, kernel_object, packet, kernarg_data, completion_signal,
-      packet_control, out_header, out_setup);
+      dispatch_command, kernel_object, packet, workgroup_count, kernarg_data,
+      completion_signal, packet_control, out_header, out_setup);
 }
 
 static iree_status_t
@@ -643,29 +629,17 @@ iree_hal_amdgpu_aql_block_processor_profile_replay_indirect_dispatch_packet_bodi
     const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command,
     iree_hal_amdgpu_aql_packet_t* patch_packet,
     iree_hal_amdgpu_aql_packet_t* dispatch_packet, uint8_t* patch_kernarg_data,
-    uint8_t* dispatch_kernarg_data, iree_hsa_signal_t completion_signal,
+    uint8_t* dispatch_kernarg_data, const uint32_t* workgroup_count_ptr,
+    iree_hsa_signal_t completion_signal,
     iree_hal_amdgpu_aql_packet_control_t dispatch_packet_control,
     uint16_t* out_patch_setup, uint16_t* out_dispatch_setup) {
   uint16_t dispatch_header = 0;
   IREE_RETURN_IF_ERROR(
       iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_packet_body(
-          processor, dispatch_command, dispatch_packet, dispatch_kernarg_data,
+          processor, dispatch_command, dispatch_packet,
+          /*workgroup_count=*/NULL, dispatch_kernarg_data,
           /*grid_sync_info=*/NULL, completion_signal, dispatch_packet_control,
           &dispatch_header, out_dispatch_setup));
-
-  const iree_hal_amdgpu_command_buffer_binding_source_t* binding_sources =
-      (const iree_hal_amdgpu_command_buffer_binding_source_t*)((const uint8_t*)
-                                                                   processor
-                                                                       ->block +
-                                                               dispatch_command
-                                                                   ->binding_source_offset);
-  const iree_hal_amdgpu_command_buffer_binding_source_t*
-      indirect_params_source =
-          &binding_sources[dispatch_command->payload.binding_source_count];
-  const uint32_t* workgroup_count_ptr = NULL;
-  IREE_RETURN_IF_ERROR(
-      iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_indirect_params_ptr(
-          processor, indirect_params_source, &workgroup_count_ptr));
 
   iree_amdgpu_kernel_implicit_args_t* implicit_args =
       iree_hal_amdgpu_aql_block_processor_profile_dispatch_implicit_args_ptr(
@@ -677,6 +651,19 @@ iree_hal_amdgpu_aql_block_processor_profile_replay_indirect_dispatch_packet_bodi
       *out_dispatch_setup, implicit_args, &patch_packet->dispatch,
       patch_kernarg_data, out_patch_setup);
   return iree_ok_status();
+}
+
+static const iree_hal_amdgpu_command_buffer_binding_source_t*
+iree_hal_amdgpu_aql_block_processor_profile_indirect_parameter_source(
+    const iree_hal_amdgpu_aql_block_processor_profile_t* processor,
+    const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command) {
+  const iree_hal_amdgpu_command_buffer_binding_source_t* binding_sources =
+      (const iree_hal_amdgpu_command_buffer_binding_source_t*)((const uint8_t*)
+                                                                   processor
+                                                                       ->block +
+                                                               dispatch_command
+                                                                   ->binding_source_offset);
+  return &binding_sources[dispatch_command->payload.binding_source_count];
 }
 
 static iree_status_t
@@ -1212,8 +1199,9 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_direct_dispatch(
           packet_flags);
   iree_status_t status =
       iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_packet_body(
-          processor, dispatch_command, dispatch_packet, kernarg_data,
-          grid_sync_info, completion_signal, packet_control,
+          processor, dispatch_command, dispatch_packet,
+          /*workgroup_count=*/NULL, kernarg_data, grid_sync_info,
+          completion_signal, packet_control,
           &processor->packets.headers[dispatch_packet_index],
           &processor->packets.setups[dispatch_packet_index]);
   if (iree_status_is_ok(status)) {
@@ -1245,6 +1233,23 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_indirect_dispatch(
     const iree_hal_amdgpu_aql_block_processor_profile_t* processor,
     const iree_hal_amdgpu_command_buffer_dispatch_command_t* dispatch_command,
     iree_hal_amdgpu_aql_block_processor_profile_state_t* state) {
+  iree_hal_buffer_ref_t parameter_ref = {0};
+  const uint32_t* device_workgroup_count = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_amdgpu_aql_resolve_indirect_parameter_source(
+      processor->command_buffer, processor->bindings.table,
+      iree_hal_amdgpu_aql_block_processor_profile_indirect_parameter_source(
+          processor, dispatch_command),
+      &parameter_ref, &device_workgroup_count));
+
+  uint32_t host_workgroup_count[3] = {0};
+  bool materialize_on_host = false;
+  if (iree_hal_amdgpu_aql_block_processor_profile_dispatch_uses_static_indirect(
+          dispatch_command)) {
+    IREE_RETURN_IF_ERROR(
+        iree_hal_amdgpu_aql_try_snapshot_host_visible_indirect_parameters(
+            parameter_ref, &materialize_on_host, host_workgroup_count));
+  }
+
   const iree_hal_amdgpu_aql_block_processor_dispatch_profile_t profile =
       iree_hal_amdgpu_aql_block_processor_profile_dispatch_profile(
           processor, state, /*recorded_packet_count=*/2,
@@ -1259,7 +1264,7 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_indirect_dispatch(
   const iree_hal_amdgpu_aql_block_processor_dispatch_profile_flags_t
       profile_flags = profile.flags;
 
-  const uint32_t patch_packet_index = state->packets.emitted++;
+  const uint32_t first_packet_index = state->packets.emitted++;
   if (iree_any_bit_set(
           profile_flags,
           IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_COUNTER_PACKETS)) {
@@ -1279,9 +1284,9 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_indirect_dispatch(
         state);
   }
   const uint32_t dispatch_packet_index = state->packets.emitted;
-  iree_hal_amdgpu_aql_packet_t* patch_packet =
+  iree_hal_amdgpu_aql_packet_t* first_packet =
       iree_hal_amdgpu_aql_block_processor_profile_packet(processor,
-                                                         patch_packet_index);
+                                                         first_packet_index);
   iree_hal_amdgpu_aql_packet_t* dispatch_packet =
       iree_hal_amdgpu_aql_block_processor_profile_packet(processor,
                                                          dispatch_packet_index);
@@ -1292,45 +1297,84 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_indirect_dispatch(
       dispatch_packet_flags =
           iree_hal_amdgpu_aql_block_processor_profile_packet_flags_merge(
               command_packet_flags.final, profile_packet_flags);
-  // The patch kernel publishes both the dispatch packet and implicit counts.
-  // Its header release makes the packet visible to the CP; the target acquire
-  // also makes those device-written parameters visible to every shader engine.
-  const iree_hal_amdgpu_aql_packet_control_t dispatch_packet_control =
-      iree_hal_amdgpu_aql_block_processor_profile_packet_control(
-          processor, dispatch_packet_index, IREE_HSA_FENCE_SCOPE_AGENT,
-          dispatch_packet_flags);
 
-  iree_status_t status =
-      iree_hal_amdgpu_aql_block_processor_profile_replay_indirect_dispatch_packet_bodies(
-          processor, dispatch_command, patch_packet, dispatch_packet,
-          processor->kernargs.blocks[state->kernargs.block].data,
-          processor->kernargs.blocks[state->kernargs.block + 1].data,
-          completion_signal, dispatch_packet_control,
-          &processor->packets.setups[patch_packet_index],
-          &processor->packets.setups[dispatch_packet_index]);
-  if (iree_status_is_ok(status)) {
-    const iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t patch_flags =
-        iree_hal_amdgpu_aql_block_processor_profile_packet_flags_merge(
-            iree_hal_amdgpu_aql_block_processor_profile_execution_barrier_packet_flags(),
-            command_packet_flags.first);
-    const iree_hsa_fence_scope_t patch_acquire_scope =
+  iree_status_t status = iree_ok_status();
+  if (materialize_on_host) {
+    const iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t first_flags =
+        command_packet_flags.first;
+    const iree_hsa_fence_scope_t first_acquire_scope =
         iree_hal_amdgpu_aql_block_processor_profile_payload_acquire_scope(
-            processor, state, patch_packet_index, &dispatch_command->header,
+            processor, state, first_packet_index, &dispatch_command->header,
+            first_flags);
+    processor->packets.headers[first_packet_index] =
+        iree_hal_amdgpu_aql_emit_nop(
+            &first_packet->barrier_and,
+            iree_hal_amdgpu_aql_block_processor_profile_packet_control(
+                processor, first_packet_index, first_acquire_scope,
+                first_flags),
+            iree_hsa_signal_null());
+    processor->packets.setups[first_packet_index] = 0;
+
+    const iree_hsa_fence_scope_t dispatch_acquire_scope =
+        iree_hal_amdgpu_aql_block_processor_profile_payload_acquire_scope(
+            processor, state, dispatch_packet_index, &dispatch_command->header,
+            dispatch_packet_flags);
+    status =
+        iree_hal_amdgpu_aql_block_processor_profile_replay_dispatch_packet_body(
+            processor, dispatch_command, dispatch_packet, host_workgroup_count,
+            processor->kernargs.blocks[state->kernargs.block + 1].data,
+            /*grid_sync_info=*/NULL, completion_signal,
+            iree_hal_amdgpu_aql_block_processor_profile_packet_control(
+                processor, dispatch_packet_index, dispatch_acquire_scope,
+                dispatch_packet_flags),
+            &processor->packets.headers[dispatch_packet_index],
+            &processor->packets.setups[dispatch_packet_index]);
+  } else {
+    // The patch kernel publishes both the dispatch packet and implicit counts.
+    // Its header release makes the packet visible to the CP; the target
+    // acquire makes those device-written parameters visible to every shader
+    // engine.
+    status =
+        iree_hal_amdgpu_aql_block_processor_profile_replay_indirect_dispatch_packet_bodies(
+            processor, dispatch_command, first_packet, dispatch_packet,
+            processor->kernargs.blocks[state->kernargs.block].data,
+            processor->kernargs.blocks[state->kernargs.block + 1].data,
+            device_workgroup_count, completion_signal,
+            iree_hal_amdgpu_aql_block_processor_profile_packet_control(
+                processor, dispatch_packet_index, IREE_HSA_FENCE_SCOPE_AGENT,
+                dispatch_packet_flags),
+            &processor->packets.setups[first_packet_index],
+            &processor->packets.setups[dispatch_packet_index]);
+    if (iree_status_is_ok(status)) {
+      iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t patch_flags =
+          command_packet_flags.first;
+      if (!iree_hal_amdgpu_aql_block_processor_profile_dispatch_uses_static_indirect(
+              dispatch_command)) {
+        patch_flags = iree_hal_amdgpu_aql_block_processor_profile_packet_flags_merge(
+            iree_hal_amdgpu_aql_block_processor_profile_execution_barrier_packet_flags(),
             patch_flags);
+      }
+      const iree_hsa_fence_scope_t patch_acquire_scope =
+          iree_hal_amdgpu_aql_block_processor_profile_payload_acquire_scope(
+              processor, state, first_packet_index, &dispatch_command->header,
+              patch_flags);
+      // The patch dispatch publishes the following dispatch packet header, so
+      // it must retire before the CP observes that slot.
+      processor->packets.headers[first_packet_index] =
+          iree_hal_amdgpu_aql_make_header(
+              IREE_HSA_PACKET_TYPE_KERNEL_DISPATCH,
+              iree_hal_amdgpu_aql_block_processor_profile_packet_control(
+                  processor, first_packet_index, patch_acquire_scope,
+                  patch_flags));
+      // The patch dispatch publishes the target dispatch header after it has
+      // updated dynamic workgroup counts on device.
+      processor->packets.headers[dispatch_packet_index] =
+          IREE_HSA_PACKET_TYPE_INVALID;
+    }
+  }
+  if (iree_status_is_ok(status)) {
     iree_hal_amdgpu_aql_block_processor_profile_emit_source(processor, profile,
                                                             state);
-    // The patch dispatch publishes the following dispatch packet header, so it
-    // must retire before the CP observes that slot.
-    processor->packets.headers[patch_packet_index] =
-        iree_hal_amdgpu_aql_make_header(
-            IREE_HSA_PACKET_TYPE_KERNEL_DISPATCH,
-            iree_hal_amdgpu_aql_block_processor_profile_packet_control(
-                processor, patch_packet_index, patch_acquire_scope,
-                patch_flags));
-    // The patch dispatch publishes the target dispatch header after it has
-    // updated dynamic workgroup counts on device.
-    processor->packets.headers[dispatch_packet_index] =
-        IREE_HSA_PACKET_TYPE_INVALID;
     state->packets.emitted = dispatch_packet_index + /*dispatch packet=*/1;
     state->packets.recorded += 2;
     state->kernargs.block +=
