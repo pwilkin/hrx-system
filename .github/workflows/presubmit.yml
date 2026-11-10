@@ -8,6 +8,12 @@ name: HRX
 
 on:
   workflow_dispatch:
+    inputs:
+      qualification:
+        description: Production workload to exercise on the development pool
+        type: choice
+        options: [cpu, cmake]
+        default: cpu
   merge_group:
     types:
       - checks_requested
@@ -118,7 +124,7 @@ jobs:
         run: python3 build_tools/devtools/ci.py iree-bazel-cpu --keep-going
 
   cpu_qualification:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'cpu'
     name: CPU qualification / ${{ matrix.name }} / ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -333,5 +339,94 @@ jobs:
         with:
           name: qualification-test-results-${{ matrix.command }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/repository-test-results-${{ github.run_id }}-${{ github.run_attempt }}/**/bazel-testlogs/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  cmake_qualification:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'cmake'
+    name: CMake qualification / Linux x86-64 / Clang / Repository Build / az-linux-scale-rocm-medium-dev
+    runs-on: az-linux-scale-rocm-medium-dev
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/rocm/therock_build_manylinux_x86_64@sha256:702a5133851e6d1daf1207d2c9fbb01c2667914a5b6dc5a01faeb3ce66ea6421
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Adjust git config
+        run: |
+          mkdir -p "$HOME"
+          git config --global --add safe.directory "$PWD"
+
+      - name: Inspect runner resources
+        run: |
+          uname -a
+          nproc
+          lscpu
+          free --human
+          df --human-readable --print-type "$GITHUB_WORKSPACE"
+          findmnt --target "$GITHUB_WORKSPACE"
+          grep --extended-regexp 'Cpus_allowed_list|Mems_allowed_list' /proc/self/status
+          cat /proc/self/cgroup
+          for control in cpu.max memory.max cpuset.cpus.effective cpuset.mems.effective; do
+            if [ -r "/sys/fs/cgroup/$control" ]; then
+              printf '%s=' "$control"
+              cat "/sys/fs/cgroup/$control"
+            fi
+          done
+
+      - name: Configure build environment
+        run: |
+          output_dir="${GITHUB_WORKSPACE}/build/iree-cmake"
+          {
+            echo "AR=${output_dir}/rocm-root/lib/llvm/bin/llvm-ar"
+            echo "CC=${output_dir}/rocm-root/lib/llvm/bin/clang"
+            echo "CXX=${output_dir}/rocm-root/lib/llvm/bin/clang++"
+            echo "HRX_ARTIFACT_SET=core"
+            echo "HRX_DOWNLOAD_CACHE_DIR=${output_dir}/downloads"
+            echo "HRX_OUTPUT_DIR=${output_dir}"
+            echo "HRX_PYTHON=${output_dir}/python/bin/python3"
+            echo "HRX_RELEASE_TYPE=nightly"
+            echo "HRX_ROCM_ROOT=${output_dir}/rocm-root"
+            echo "PIP_CACHE_DIR=${output_dir}/caches/pip"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch ROCm toolchain
+        run: bash .github/scripts/fetch_rocm_toolchain.sh
+
+      - name: Install CMake host tools
+        run: |
+          python3 --version
+          python3 dev.py cmake setup --venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check tool versions
+        run: |
+          cmake --version
+          ctest --version
+          ninja --version
+          bash .github/scripts/check_host_toolchain.sh --expect-rocm
+          bash .github/scripts/check_rocm_device_toolchain.sh
+          test -d "${HRX_ROCM_ROOT}/include"
+
+      - name: Run IREE CMake CI
+        id: iree_cmake_ci
+        run: >-
+          python3 build_tools/devtools/ci.py
+          iree-cmake-repository-build --keep-going
+
+      - name: Upload failed test results
+        if: ${{ always() && steps.iree_cmake_ci.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qualification-ctest-results-linux-iree-cmake-repository-build-attempt-${{ github.run_attempt }}
+          path: |
+            build/ci/**/Testing/Temporary/
+            build/ci/**/test_tmpdir/**/test.xml
           if-no-files-found: warn
           retention-days: 7
