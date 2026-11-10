@@ -12,7 +12,7 @@ on:
       qualification:
         description: Runner qualification workload
         type: choice
-        options: [tier, cpu, cmake]
+        options: [tier, repeat, cpu, cmake]
         default: tier
   merge_group:
     types:
@@ -33,12 +33,13 @@ permissions:
 
 jobs:
   presubmit:
-    if: github.event_name != 'workflow_dispatch' || inputs.qualification == 'tier'
-    name: Presubmit / ${{ matrix.runner }}
+    if: github.event_name != 'workflow_dispatch' || inputs.qualification == 'tier' || inputs.qualification == 'repeat'
+    name: Presubmit / ${{ matrix.runner }}${{ matrix.sample }}
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["azure-linux-scale-rocm","az-linux-scale-rocm-small-prod","az-linux-scale-rocm-medium-prod","az-linux-scale-rocm-default-prod"]' || '["azure-linux-scale-rocm"]') }}
+        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.qualification == 'tier' && '["azure-linux-scale-rocm","az-linux-scale-rocm-small-prod","az-linux-scale-rocm-medium-prod","az-linux-scale-rocm-default-prod"]' || github.event_name == 'workflow_dispatch' && inputs.qualification == 'repeat' && '["az-linux-scale-rocm-default-prod"]' || '["azure-linux-scale-rocm"]') }}
+        sample: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.qualification == 'repeat' && '[" / repeat 1"," / repeat 2"," / repeat 3"]' || '[""]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     container:
