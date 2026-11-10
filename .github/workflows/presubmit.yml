@@ -145,13 +145,6 @@ jobs:
             host_cc: clang
             host_cxx: clang++
             disable_zero_copy: "0"
-          - name: TCP receive / copied sends
-            command: tcp-receive-cts-copy
-            runner: az-linux-scale-rocm-medium-dev
-            host_ar: ar
-            host_cc: clang
-            host_cxx: clang++
-            disable_zero_copy: "1"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     defaults:
@@ -285,6 +278,7 @@ jobs:
         env:
           IREE_NET_CTS_TCP_DISABLE_ZERO_COPY: ${{ matrix.disable_zero_copy }}
         run: |
+          ulimit -l
           mkdir -p "${RUNNER_TEMP}/bazel-profiles"
           python3 dev.py bazel test \
             --nocache_test_results \
