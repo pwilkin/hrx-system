@@ -493,6 +493,9 @@ fn a_model_that_dies_leaves_the_launcher_up_and_says_so() {
     let launcher = rig.start_launcher();
     assert_eq!(rig.load(&[]).status.code(), Some(0));
     let model = rig.current()["pid"].as_i64().unwrap();
+    // As a page that has been polling would: from here on a status answers
+    // at once, so it can see the exit before the launcher has handled it.
+    assert_eq!(launcher.status()["launch"]["state"], "serving");
     // SAFETY: kill(2) has no memory-safety preconditions.
     unsafe {
         libc::kill(model as i32, libc::SIGKILL);
