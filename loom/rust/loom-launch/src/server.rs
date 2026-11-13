@@ -26,7 +26,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -363,7 +363,8 @@ struct Inner {
     on_event: Mutex<Option<EventCallback>>,
     started_at: f64,
     exit_code: Mutex<Option<i32>>,
-    shut_down: AtomicBool,
+    /// Finishes the run record; a second caller waits for the first.
+    shut_down: Once,
     /// Set by [`Supervisor::cancel`]: the launch must not become ready.
     cancelled: AtomicBool,
 }
@@ -405,7 +406,7 @@ impl Supervisor {
                 on_event: Mutex::new(None),
                 started_at: now_seconds(),
                 exit_code: Mutex::new(None),
-                shut_down: AtomicBool::new(false),
+                shut_down: Once::new(),
                 cancelled: AtomicBool::new(false),
             }),
         }
@@ -899,7 +900,7 @@ impl Supervisor {
                 self.shutdown();
                 return code;
             }
-            if self.inner.shut_down.load(Ordering::SeqCst) {
+            if self.inner.shut_down.is_completed() {
                 return self.exit_status().unwrap_or(0);
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -957,25 +958,25 @@ impl Supervisor {
         inner.serve_log.lock().unwrap().take();
     }
 
-    /// Finishes the run record once (idempotent).
+    /// Finishes the run record once (idempotent). Every caller returns only
+    /// once it is finished, also while another thread is finishing it.
     pub fn shutdown(&self) {
-        if self.inner.shut_down.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let code = *self.inner.exit_code.lock().unwrap();
-        self.unroute();
-        self.close_streams();
-        self.update_metadata(json!({
-            "state": "stopped",
-            "stopped_at": iso_utc(now_seconds()),
-            "exit_code": code,
-        }));
-        self.record_event(json!({"event": "stopped", "exit_code": code}));
-        if let Some(events) = self.inner.events.lock().unwrap().take() {
-            events.close();
-        }
-        let run_id = self.run().run_id;
-        clear_current_if(&self.inner.state_root, &run_id);
+        self.inner.shut_down.call_once(|| {
+            let code = *self.inner.exit_code.lock().unwrap();
+            self.unroute();
+            self.close_streams();
+            self.update_metadata(json!({
+                "state": "stopped",
+                "stopped_at": iso_utc(now_seconds()),
+                "exit_code": code,
+            }));
+            self.record_event(json!({"event": "stopped", "exit_code": code}));
+            if let Some(events) = self.inner.events.lock().unwrap().take() {
+                events.close();
+            }
+            let run_id = self.run().run_id;
+            clear_current_if(&self.inner.state_root, &run_id);
+        });
     }
 }
 
