@@ -138,16 +138,25 @@ impl Rig {
 
     /// `launcher start --detach` with the shim as loom-serve.
     fn start_launcher(&self) -> Launcher {
+        self.start_launcher_with(&[])
+    }
+
+    /// [`Rig::start_launcher`] with extra environment for the launcher and
+    /// the servers it starts.
+    fn start_launcher_with(&self, environment: &[(&str, &str)]) -> Launcher {
         let port = self.port.to_string();
-        let output = self.run(&[
-            "launcher",
-            "start",
-            "--detach",
-            "--port",
-            &port,
-            "--loom-serve",
-            self.shim.to_str().unwrap(),
-        ]);
+        let output = self.run_with(
+            &[
+                "launcher",
+                "start",
+                "--detach",
+                "--port",
+                &port,
+                "--loom-serve",
+                self.shim.to_str().unwrap(),
+            ],
+            environment,
+        );
         assert_eq!(output.status.code(), Some(0));
         let record = self.launcher_record();
         Launcher {
@@ -546,7 +555,9 @@ fn a_model_that_dies_leaves_the_launcher_up_and_says_so() {
 #[test]
 fn an_unload_cancels_a_model_still_preparing() {
     let rig = Rig::new("launcher-cancel");
-    let launcher = rig.start_launcher();
+    // The launcher starts the server, so it is the one that needs the long
+    // preparation; set on `start`, it would not reach the server.
+    let launcher = rig.start_launcher_with(&[("LOOM_FAKE_SERVE_PREPARE_MS", "60000")]);
     let mut load = rig
         .command(&[
             "start",
@@ -556,7 +567,6 @@ fn an_unload_cancels_a_model_still_preparing() {
             "--wait",
             "120",
         ])
-        .env("LOOM_FAKE_SERVE_PREPARE_MS", "60000")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -772,7 +782,7 @@ fn a_record_from_before_the_split_is_still_stopped() {
 #[test]
 fn a_launcher_killed_outright_leaves_nothing_behind() {
     let rig = Rig::new("launcher-killed");
-    let launcher = rig.start_launcher();
+    let launcher = rig.start_launcher_with(&[("LOOM_FAKE_SERVE_PREPARE_MS", "60000")]);
     let mut load = rig
         .command(&[
             "start",
@@ -782,7 +792,6 @@ fn a_launcher_killed_outright_leaves_nothing_behind() {
             "--wait",
             "120",
         ])
-        .env("LOOM_FAKE_SERVE_PREPARE_MS", "60000")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -791,8 +800,17 @@ fn a_launcher_killed_outright_leaves_nothing_behind() {
     wait_until("the preparing server in launcher.json", 30, || {
         rig.launcher_record()["model"]["pid"].as_i64().is_some()
     });
-    let model = rig.launcher_record()["model"]["pid"].as_i64().unwrap();
+    let record = rig.launcher_record();
+    let model = record["model"]["pid"].as_i64().unwrap();
     assert!(alive(model));
+    // The server writes nothing more while it prepares once its startup
+    // output is read; killed before that, the launcher takes the server's
+    // output pipe with it and the server's next line ends it.
+    let run_id = record["model"]["run_id"].as_str().unwrap();
+    let serve_log = rig.state.join("runs").join(run_id).join("serve.log");
+    wait_until("the server's startup output", 30, || {
+        std::fs::read_to_string(&serve_log).is_ok_and(|log| log.contains("\"event\":\"ready\""))
+    });
     // SAFETY: kill(2) has no memory-safety preconditions.
     unsafe {
         libc::kill(launcher.pid as i32, libc::SIGKILL);
