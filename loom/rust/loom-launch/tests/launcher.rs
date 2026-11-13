@@ -398,8 +398,11 @@ fn models_load_and_unload_under_one_launcher() {
     let output = rig.run(&["--json", "chat", "--prompt", "hello", "--max-tokens", "8"]);
     assert_eq!(output.status.code(), Some(0));
     let run_directory = PathBuf::from(current["run_directory"].as_str().unwrap());
-    let requests = std::fs::read_to_string(run_directory.join("requests.jsonl")).unwrap();
-    assert!(requests.contains("chat_completions"), "{requests}");
+    // The proxy records a request once its response is out (with its duration).
+    wait_until("the chat in the request log", 10, || {
+        std::fs::read_to_string(run_directory.join("requests.jsonl"))
+            .is_ok_and(|requests| requests.contains("chat_completions"))
+    });
 
     // A second load is refused while one serves.
     let output = rig.load(&[]);
@@ -642,8 +645,10 @@ fn interrupting_a_foreground_launcher_unloads_its_model_and_exits() {
         .spawn()
         .unwrap();
     let endpoint = format!("http://127.0.0.1:{proxy_port}");
-    wait_until("the launcher", 30, || {
-        ureq::get(&format!("{endpoint}/healthz")).call().is_ok()
+    // The listener answers before launcher.json is written; clients find a
+    // launcher through the record, so wait for both.
+    wait_until("the launcher and its record", 30, || {
+        ureq::get(&format!("{endpoint}/healthz")).call().is_ok() && !rig.launcher_record().is_null()
     });
     let record = rig.launcher_record();
     assert_eq!(record["pid"], child.id() as i64);

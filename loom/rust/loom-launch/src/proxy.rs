@@ -1230,6 +1230,16 @@ mod tests {
         let result = client.chat(&user("hi"), None, true, &[], &Map::new(), &mut |_| {});
         assert_eq!(result.status, 502);
         assert!(result.error.is_some());
+        // Each request is counted, then logged, after its client has the answer.
+        let logged = || {
+            std::fs::read_to_string(&log_path)
+                .map(|text| text.lines().count())
+                .unwrap_or(0)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while logged() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let snapshot = proxy.metrics().snapshot();
         assert_eq!(snapshot["errors"], 2);
         assert_eq!(snapshot["upstream_up"], false);
