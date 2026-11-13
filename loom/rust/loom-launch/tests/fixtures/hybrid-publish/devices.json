@@ -1,0 +1,29 @@
+{
+  "devices": {
+    "amdgpu": {
+      "uri": "amdgpu://0"
+    },
+    "xdna": {
+      "uri": "xdna://0?columns=8"
+    }
+  },
+  "pools": {
+    "model": {
+      "devices": [
+        "amdgpu"
+      ],
+      "memory_bytes": 52000000000
+    },
+    "exchange": {
+      "devices": [
+        "amdgpu",
+        "xdna"
+      ],
+      "uncached": true,
+      "uncached_devices": [
+        "amdgpu"
+      ],
+      "pool_backing": "fixed"
+    }
+  }
+}

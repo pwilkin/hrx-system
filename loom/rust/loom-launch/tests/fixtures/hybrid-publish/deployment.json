@@ -1,0 +1,12 @@
+{
+  "name": "qwen3.8-27b",
+  "model": {
+    "path": "model.json",
+    "preset": "chat"
+  },
+  "definition": {
+    "kind": "text"
+  },
+  "device": "amdgpu",
+  "pool": "model"
+}

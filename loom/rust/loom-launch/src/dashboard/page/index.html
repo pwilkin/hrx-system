@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>loom-launch</title>
+<link rel="icon" href="data:,">
+<style>/*STYLE*/</style>
+<noscript><style>.needs-js, .tabbar, .panel, .activity, .identity, .chips, .topbar-end { display: none !important; } .shell { grid-template-columns: minmax(0, 1fr); }</style></noscript>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar" id="topbar">
+  <div class="topbar-row">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <h1>loom-launch</h1>
+    </div>
+    <div class="identity" role="group" aria-label="Current launch">
+      <span id="launch-state" class="state-dot" data-state="none" aria-hidden="true"></span>
+      <div class="identity-text">
+        <span id="launch-repo" class="identity-repo">No launch</span>
+        <span class="identity-sub"><code id="launch-endpoint">—</code><button id="copy-endpoint" class="icon-btn small" type="button" aria-label="Copy the endpoint" title="Copy the endpoint" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></span>
+      </div>
+    </div>
+    <ul class="chips" aria-label="Launch facts">
+      <li class="chip"><span class="chip-k">device</span><span id="chip-device" class="chip-v">—</span></li>
+      <li class="chip"><span class="chip-k">context</span><span id="chip-context" class="chip-v">—</span></li>
+      <li class="chip"><span class="chip-k">sessions</span><span id="chip-sessions" class="chip-v">—</span></li>
+      <li class="chip"><span class="chip-k">uptime</span><span id="chip-uptime" class="chip-v">—</span></li>
+    </ul>
+    <div class="topbar-end">
+      <span id="upstream-pill" class="pill" data-tone="neutral" role="status" title="Health of the native listener"><span class="dot" aria-hidden="true"></span><span id="upstream-text">no launch</span></span>
+      <span id="live-pill" class="pill" data-tone="neutral" title="Live updates from /api/events"><span class="dot" aria-hidden="true"></span><span id="live-text">connecting</span></span>
+      <button id="theme-toggle" class="icon-btn" type="button" aria-pressed="false" aria-label="Use light theme" title="Toggle light and dark theme">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.6A8.4 8.4 0 0 1 9.4 3.8a8.4 8.4 0 1 0 10.8 10.8z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="tabbar" aria-label="Dashboard">
+    <div id="tabs" class="tabs" role="tablist" aria-label="Sections">
+      <button id="tab-overview" class="tab" role="tab" type="button" aria-selected="true" aria-controls="overview" data-panel="overview">Overview</button>
+      <button id="tab-models" class="tab" role="tab" type="button" aria-selected="false" aria-controls="models" data-panel="models" tabindex="-1">Models</button>
+      <button id="tab-chat" class="tab" role="tab" type="button" aria-selected="false" aria-controls="chat" data-panel="chat" tabindex="-1">Chat</button>
+      <button id="tab-benchmarks" class="tab" role="tab" type="button" aria-selected="false" aria-controls="benchmarks" data-panel="benchmarks" tabindex="-1">Benchmarks</button>
+      <button id="tab-logs" class="tab" role="tab" type="button" aria-selected="false" aria-controls="logs" data-panel="logs" tabindex="-1">Logs</button>
+    </div>
+    <button id="activity-pulse" class="pulse" type="button" aria-controls="activity" hidden>
+      <span id="pulse-text" class="pulse-text"></span>
+      <span id="pulse-bar" class="progress" data-indeterminate="true" aria-hidden="true"><span class="progress-fill"></span></span>
+    </button>
+  </nav>
+</header>
+
+<form id="token-form" class="token-bar" hidden>
+  <label for="token-input">This launch requires an API key</label>
+  <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Bearer token">
+  <button class="btn primary" type="submit">Use key</button>
+</form>
+<p id="banner" class="banner" role="alert" hidden></p>
+
+<div class="shell">
+  <main id="main" class="main" tabindex="-1">
+    <noscript>
+      <section class="card static-summary" aria-label="Static summary">
+        <!--STATIC-SUMMARY-->
+      </section>
+    </noscript>
+
+    <!-- Overview: what runs now, what it allows, how it is used -->
+    <section id="overview" class="panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="-1">
+      <article id="launcher-card" class="card launcher-card" aria-labelledby="launcher-card-h" hidden>
+        <div class="card-head">
+          <h2 id="launcher-card-h">Launcher</h2>
+          <span id="launcher-badge" class="badge" data-tone="neutral">checking</span>
+          <p class="hint">The endpoint and this page stay up while models are loaded and unloaded under it.</p>
+        </div>
+        <div id="launcher-body" aria-live="polite"></div>
+      </article>
+      <div class="grid two">
+        <article id="launch-card" class="card" aria-labelledby="launch-card-h">
+          <div class="card-head">
+            <h2 id="launch-card-h">Current launch</h2>
+            <span id="launch-badge" class="badge" data-tone="neutral">checking</span>
+          </div>
+          <div id="launch-body" aria-live="polite">
+            <div class="skeleton-stack" aria-hidden="true"><span class="skeleton w60"></span><span class="skeleton w80"></span><span class="skeleton tall"></span></div>
+          </div>
+          <div class="card-actions needs-js">
+            <button id="stop-button" class="btn danger" type="button" hidden>Stop launch</button>
+            <button id="go-chat" class="btn" type="button" hidden>Open chat</button>
+            <button id="go-bench" class="btn ghost" type="button" hidden>Run a benchmark</button>
+            <button id="go-models" class="btn primary" type="button" hidden>Choose a profile</button>
+          </div>
+          <p id="stop-error" class="inline-error" role="alert" hidden></p>
+        </article>
+
+        <article id="policy-card" class="card" aria-labelledby="policy-h">
+          <div class="card-head">
+            <h2 id="policy-h">What this launch allows</h2>
+            <p class="hint">From the package's chat policy (llm_config.json) and how the launcher was started.</p>
+          </div>
+          <dl class="policy">
+            <div><dt>Thinking</dt><dd id="policy-thinking"><span class="skeleton w60"></span></dd></div>
+            <div><dt>Web access</dt><dd id="policy-web"><span class="skeleton w80"></span></dd></div>
+            <div><dt>Served preset</dt><dd id="policy-served"><span class="skeleton w40"></span></dd></div>
+            <div><dt>Drafter</dt><dd id="policy-drafter"><span class="skeleton w60"></span></dd></div>
+          </dl>
+        </article>
+      </div>
+
+      <section id="traffic" class="card" aria-labelledby="traffic-h">
+        <div class="card-head">
+          <h2 id="traffic-h">Traffic</h2>
+          <p id="traffic-hint" class="hint">What clients experienced through the instrumented proxy; sparklines cover the last two minutes.</p>
+        </div>
+        <div class="tiles">
+          <article class="tile" id="tile-requests"><h3 class="tile-label">Requests</h3><p class="tile-value">—</p><p class="tile-sub">per second</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-prompt"><h3 class="tile-label">Prompt tokens</h3><p class="tile-value">—</p><p class="tile-sub">per second</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-completion"><h3 class="tile-label">Completion tokens</h3><p class="tile-value">—</p><p class="tile-sub">per second</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-cached"><h3 class="tile-label">Cached tokens</h3><p class="tile-value">—</p><p class="tile-sub">share of prompt</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-ttft50"><h3 class="tile-label">TTFT p50</h3><p class="tile-value">—</p><p class="tile-sub">time to first token</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-ttft95"><h3 class="tile-label">TTFT p95</h3><p class="tile-value">—</p><p class="tile-sub">slowest 5 %</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-decode"><h3 class="tile-label">Decode mean</h3><p class="tile-value">—</p><p class="tile-sub">tokens per second</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+          <article class="tile" id="tile-inflight"><h3 class="tile-label">In flight</h3><p class="tile-value">—</p><p class="tile-sub">open requests</p><div class="spark"><canvas aria-hidden="true"></canvas><span class="spark-tip" hidden></span></div></article>
+        </div>
+        <p id="last-request" class="last-request">No requests yet.</p>
+      </section>
+    </section>
+
+    <!-- Models: find, install, launch -->
+    <section id="models" class="panel" role="tabpanel" aria-labelledby="tab-models" tabindex="-1" hidden>
+      <div class="grid models">
+        <article class="card" aria-labelledby="search-h">
+          <div class="card-head">
+            <h2 id="search-h">Find a profile</h2>
+            <p class="hint">Published Loom profiles on the hub and package directories on this machine, sorted by fit for it.</p>
+          </div>
+          <fieldset class="needs-js">
+            <legend class="sr-only">Search</legend>
+            <div class="search-row">
+              <label for="model-q" class="sr-only">Search Loom profiles</label>
+              <span class="search-box">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+                <input id="model-q" type="search" placeholder="qwen, coder, loom-fun/" autocomplete="off" spellcheck="false">
+              </span>
+              <label class="check"><input id="model-offline" type="checkbox"> Cached only</label>
+            </div>
+          </fieldset>
+          <p id="model-status" class="status-line" role="status">Listing profiles…</p>
+          <ul id="model-results" class="results" aria-label="Search results" aria-busy="true">
+            <li class="skeleton tall" aria-hidden="true"></li><li class="skeleton tall" aria-hidden="true"></li><li class="skeleton tall" aria-hidden="true"></li>
+          </ul>
+        </article>
+
+        <div class="stack">
+          <article class="card" aria-labelledby="installed-h">
+            <div class="card-head"><h2 id="installed-h">Installed</h2></div>
+            <ul id="installed" class="installed" aria-label="Installed profiles" aria-busy="true">
+              <li class="skeleton tall" aria-hidden="true"></li><li class="skeleton tall" aria-hidden="true"></li>
+            </ul>
+          </article>
+
+          <article class="card" aria-labelledby="launch-h">
+            <div class="card-head">
+              <h2 id="launch-h">Launch</h2>
+              <p class="hint">Blank fields keep the card's own values; a scenario serves exactly as prepared.</p>
+            </div>
+            <form id="launch-form" class="launch-form needs-js" aria-labelledby="launch-h">
+              <label class="field" for="launch-select">Profile
+                <select id="launch-select"><option value="">Install a profile first</option></select>
+              </label>
+              <div class="field-grid">
+                <label class="field" for="launch-context">Context
+                  <input id="launch-context" type="number" min="256" step="256" inputmode="numeric" placeholder="card">
+                </label>
+                <label class="field" for="launch-max-tokens">Max tokens
+                  <input id="launch-max-tokens" type="number" min="1" inputmode="numeric" placeholder="card">
+                </label>
+                <label class="field" for="launch-parallel">Parallel
+                  <input id="launch-parallel" type="number" min="1" max="64" inputmode="numeric" placeholder="card">
+                </label>
+                <label class="field" for="launch-draft">Draft depth
+                  <input id="launch-draft" type="number" min="0" max="16" inputmode="numeric" placeholder="card">
+                </label>
+              </div>
+              <label id="launch-web-field" class="check" for="launch-allow-web" hidden><input id="launch-allow-web" type="checkbox"><span>Allow web access (the chat's <code>web_fetch</code> tool may fetch public pages)</span></label>
+              <div class="form-actions">
+                <button id="launch-button" class="btn primary" type="submit">Launch</button>
+                <span id="launch-note" class="hint"></span>
+              </div>
+              <p id="launch-error" class="inline-error" role="alert" hidden></p>
+            </form>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Chat -->
+    <section id="chat" class="panel" role="tabpanel" aria-labelledby="tab-chat" tabindex="-1" hidden>
+      <article class="card chat-card" aria-labelledby="chat-h">
+        <div class="card-head">
+          <h2 id="chat-h">Chat</h2>
+          <p id="chat-hint" class="hint">Streams from the running launch through the instrumented proxy.</p>
+        </div>
+        <fieldset class="needs-js chat-shell">
+          <legend class="sr-only">Conversation</legend>
+          <details class="chat-settings">
+            <summary>System prompt and sampling</summary>
+            <label class="field" for="chat-system">System prompt
+              <textarea id="chat-system" rows="3" placeholder="The package's default system prompt applies when empty"></textarea>
+            </label>
+            <div class="field-grid">
+              <label class="field" for="chat-max-tokens">Max tokens
+                <input id="chat-max-tokens" type="number" min="1" value="1024" inputmode="numeric">
+              </label>
+              <label class="field" for="chat-temperature">Temperature
+                <input id="chat-temperature" type="number" min="0" max="2" step="0.1" value="0.7" inputmode="decimal">
+              </label>
+            </div>
+          </details>
+          <div id="chat-log" class="chat-log" role="log" aria-label="Conversation" aria-live="polite" tabindex="0">
+            <div class="empty-state small"><strong>Chat opens when a model is serving.</strong><p>Enter sends; Shift+Enter starts a new line.</p></div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <label for="chat-input" class="sr-only">Message</label>
+            <textarea id="chat-input" rows="2" placeholder="Message the model"></textarea>
+            <div class="chat-controls">
+              <label class="switch" for="chat-thinking" id="thinking-switch"><input id="chat-thinking" type="checkbox" role="switch" aria-describedby="thinking-note"><span class="switch-track" aria-hidden="true"></span><span>Thinking</span><span id="thinking-lock" class="lock"></span></label>
+              <label class="switch" for="chat-tool-js" title="Let the model run JavaScript snippets in a sandboxed worker in this page (no DOM, no network, 2 s limit)"><input id="chat-tool-js" type="checkbox" role="switch" checked><span class="switch-track" aria-hidden="true"></span><span>JavaScript</span></label>
+              <label class="switch" for="chat-tool-web" id="web-switch"><input id="chat-tool-web" type="checkbox" role="switch" disabled aria-describedby="web-note"><span class="switch-track" aria-hidden="true"></span><span>Web access</span></label>
+              <span class="grow"></span>
+              <button id="chat-clear" class="btn ghost" type="button">Clear</button>
+              <button id="chat-stop" class="btn" type="button" hidden>Stop</button>
+              <button id="chat-send" class="btn primary" type="submit">Send</button>
+            </div>
+          </form>
+          <div class="chat-notes">
+            <p id="thinking-note" class="note" data-tone="warning" hidden></p>
+            <p id="web-note" class="note" data-tone="warning" hidden><span id="web-note-text"></span><span id="web-command-box" class="command" hidden><code id="web-command"></code><button id="copy-web-command" class="icon-btn small" type="button" aria-label="Copy the command" title="Copy the command"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></span></p>
+          </div>
+        </fieldset>
+      </article>
+    </section>
+
+    <!-- Benchmarks -->
+    <section id="benchmarks" class="panel" role="tabpanel" aria-labelledby="tab-benchmarks" tabindex="-1" hidden>
+      <article class="card" aria-labelledby="bench-h">
+        <div class="card-head">
+          <h2 id="bench-h">Run a suite</h2>
+          <p class="hint">Measures the running launch with the card's own metric vocabulary and compares it with what its publisher recorded.</p>
+        </div>
+        <fieldset class="needs-js">
+          <legend class="sr-only">Run a suite</legend>
+          <div class="suite-row">
+            <div id="suites" class="suites" role="group" aria-label="Benchmark suites">
+              <button class="suite" type="button" data-suite="quick" disabled><strong>Quick</strong><span>decode, prefill 1k, 2k</span></button>
+              <button class="suite" type="button" data-suite="standard" disabled><strong>Standard</strong><span>adds decode 2k, prefill 8k, 4 streams</span></button>
+              <button class="suite" type="button" data-suite="full" disabled><strong>Full</strong><span>every row up to 32k</span></button>
+            </div>
+            <label class="field inline" for="bench-repeats">Repeats
+              <input id="bench-repeats" type="number" min="1" max="9" value="1" inputmode="numeric">
+            </label>
+          </div>
+          <p id="bench-note" class="hint"></p>
+          <p id="bench-error" class="inline-error" role="alert" hidden></p>
+        </fieldset>
+      </article>
+      <div class="bench-grid">
+        <article class="card" aria-labelledby="runs-h">
+          <h2 id="runs-h">Stored runs</h2>
+          <div class="table-wrap runs-wrap">
+            <table class="data runs">
+              <caption class="sr-only">Stored benchmark runs, newest first</caption>
+              <thead><tr><th scope="col">Started</th><th scope="col">Profile</th><th scope="col">Suite</th><th scope="col" class="num">Decode</th><th scope="col">Result</th></tr></thead>
+              <tbody id="runs-body"><tr><td colspan="5"><span class="skeleton w80"></span></td></tr><tr><td colspan="5"><span class="skeleton w60"></span></td></tr></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card" id="bench-detail" aria-labelledby="detail-title">
+          <h2 id="detail-title">Comparison</h2>
+          <ul id="detail-meta" class="meta"></ul>
+          <div class="table-wrap">
+            <table class="data compare">
+              <caption class="sr-only">Measured rows against the published card</caption>
+              <thead><tr><th scope="col">Metric</th><th scope="col" class="num">Measured</th><th scope="col" class="num">Published</th><th scope="col">Ratio</th><th scope="col">Roofline</th></tr></thead>
+              <tbody id="compare-body"><tr><td colspan="5" class="empty">Select a run to compare it with its card.</td></tr></tbody>
+            </table>
+          </div>
+          <ul id="detail-notes" class="notes"></ul>
+        </article>
+      </div>
+    </section>
+
+    <!-- Logs -->
+    <section id="logs" class="panel" role="tabpanel" aria-labelledby="tab-logs" tabindex="-1" hidden>
+      <article class="card" aria-labelledby="logs-h">
+        <div class="card-head">
+          <h2 id="logs-h">Logs</h2>
+          <p id="logs-hint" class="hint">The server's own output and the launcher's event log for the current run.</p>
+        </div>
+        <div class="log-tools needs-js">
+          <div class="seg" role="tablist" aria-label="Log file">
+            <button id="log-tab-serve" role="tab" type="button" aria-selected="true" aria-controls="log-view" data-log="serve">serve.log</button>
+            <button id="log-tab-events" role="tab" type="button" aria-selected="false" aria-controls="log-view" data-log="events" tabindex="-1">events.jsonl</button>
+          </div>
+          <span class="grow"></span>
+          <label class="switch" for="log-follow"><input id="log-follow" type="checkbox" role="switch" checked><span class="switch-track" aria-hidden="true"></span><span>Follow</span></label>
+          <label class="field inline" for="log-lines">Lines
+            <select id="log-lines"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>
+          </label>
+          <button id="log-reload" class="btn ghost small" type="button">Reload</button>
+        </div>
+        <pre id="log-view" class="log" role="tabpanel" aria-labelledby="log-tab-serve" tabindex="0"><span class="skeleton w80"></span></pre>
+      </article>
+    </section>
+  </main>
+
+  <!-- Every action, as the server keeps it -->
+  <aside id="activity" class="activity" aria-labelledby="activity-h" data-collapsed="false">
+    <div class="activity-head">
+      <h2 id="activity-h">Activity</h2>
+      <span id="activity-count" class="badge" data-tone="neutral">0</span>
+      <span class="grow"></span>
+      <button id="activity-more" class="btn ghost small" type="button" aria-expanded="true" hidden>Show only active</button>
+    </div>
+    <div id="activity-empty" class="empty-state small">
+      <strong>No actions yet</strong>
+      <p>Installs, launches, stops, benchmarks and the chat's web fetches appear here with their progress, and stay until you dismiss them.</p>
+    </div>
+    <ol id="activity-list" class="activity-list" aria-label="Actions, newest first"></ol>
+  </aside>
+</div>
+
+<footer class="footer">
+  <p><span id="footer-version">loom-launch</span> <span id="footer-state"></span></p>
+  <p class="routes">JSON: <a href="/api/status">status</a> <a href="/api/jobs">jobs</a> <a href="/api/installs">installs</a> <a href="/api/benchmarks">benchmarks</a> <a href="/api/requests">requests</a> <a href="/api/logs">logs</a> <a href="/api/metrics">metrics</a></p>
+</footer>
+
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+<script>/*SCRIPT*/</script>
+</body>
+</html>

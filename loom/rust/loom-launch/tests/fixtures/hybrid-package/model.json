@@ -1,0 +1,141 @@
+{
+  "schema_version": 2,
+  "model": {
+    "id": "qwen3.8-27b",
+    "name": "Qwen3.8 27B proven native hybrid"
+  },
+  "programs": {
+    "source": {
+      "inputs": [
+        {
+          "path": "program/prepare.loom",
+          "data": [
+            "weights.loom"
+          ]
+        },
+        "program/control.loom",
+        "program/storage.loom",
+        "program/service.loom",
+        "program/vision_prepare.loom",
+        "program/vision_control.loom"
+      ],
+      "libraries": [
+        "program/llm.loom",
+        "program/vision_stages.loom",
+        "program/vision_encoder.loom",
+        "program/resident_ffn.loom"
+      ],
+      "device_placement": {
+        "*": "amdgpu",
+        "resident_lifetime": "xdna"
+      },
+      "exchange_pool": "exchange"
+    }
+  },
+  "services": {
+    "chat": {
+      "kind": "text",
+      "version": 1,
+      "components": {
+        "image": {
+          "version": 1
+        }
+      }
+    }
+  },
+  "variants": {
+    "gguf": {
+      "services": {
+        "chat": {
+          "programs": [
+            "source"
+          ],
+          "config": {
+            "llm.card": true
+          },
+          "parameters": {
+            "model": {
+              "files": [
+                {
+                  "path": "parameter/Qwen3.8-27B-Q4_K_M.gguf",
+                  "format": "gguf"
+                }
+              ]
+            },
+            "draft": {
+              "files": [
+                {
+                  "path": "parameter/Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
+                  "format": "gguf"
+                }
+              ]
+            },
+            "vision": {
+              "files": [
+                {
+                  "path": "parameter/mmproj-Qwen3.8-27B-f16.gguf",
+                  "format": "gguf"
+                }
+              ]
+            },
+            "npu": {
+              "files": [
+                {
+                  "path": "parameter/derived-cache-raw/d01050a53ee45f9bb4e6c56dd600d3bf029d7bb8a5836464ba15346e35c42eb3/colscale_gu.f32",
+                  "format": "raw",
+                  "transform": {
+                    "kind": "i8-panel",
+                    "version": 1,
+                    "source": "parameter/Qwen3.8-27B-Q4_K_M.gguf",
+                    "layout": "v2",
+                    "cache": "parameter/derived-cache-raw",
+                    "output": "colscale",
+                    "kernel_version": "resident-full-k-i8-i32-bf16-column-scale-v1"
+                  }
+                }
+              ]
+            },
+            "resident": {
+              "files": [
+                {
+                  "path": "parameter/derived-cache-raw/d01050a53ee45f9bb4e6c56dd600d3bf029d7bb8a5836464ba15346e35c42eb3/panels_gu.i8",
+                  "format": "raw",
+                  "transform": {
+                    "kind": "i8-panel",
+                    "version": 1,
+                    "source": "parameter/Qwen3.8-27B-Q4_K_M.gguf",
+                    "layout": "v2",
+                    "cache": "parameter/derived-cache-raw",
+                    "output": "resident-halves",
+                    "kernel_version": "resident-full-k-i8-i32-bf16-column-scale-v1"
+                  }
+                }
+              ]
+            }
+          },
+          "tokenizers": {
+            "text": "tokenizer.json"
+          }
+        }
+      }
+    }
+  },
+  "presets": {
+    "chat": {
+      "service": "chat",
+      "variant": "gguf",
+      "programs": "source",
+      "execution": {
+        "rows": 1,
+        "context_capacity": 40960,
+        "prefill_capacity": 1024,
+        "max_tokens": 4096,
+        "draft_depth": 0,
+        "group_mode": "two_bank",
+        "plan_provider": "two_bank_v1",
+        "prefix_cache_capacity": 0,
+        "session_cache_capacity": 0
+      }
+    }
+  }
+}
