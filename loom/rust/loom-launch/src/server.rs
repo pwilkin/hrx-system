@@ -734,6 +734,8 @@ impl Supervisor {
                 return Err(Error::launch(CANCELLED));
             }
             if let Some(code) = self.child_exit_code() {
+                // The readers may still hold the server's last lines.
+                self.join_readers();
                 let tail = self.tail(12).join("\n");
                 let mut message =
                     format!("the server exited before the model became ready (exit code {code})");
@@ -934,15 +936,21 @@ impl Supervisor {
         self.inner.exit_code.lock().unwrap().unwrap_or(0)
     }
 
+    /// Waits until the output readers reach the end of the server's streams,
+    /// so the tail and serve.log hold everything it wrote.
+    fn join_readers(&self) {
+        let readers: Vec<JoinHandle<()>> = self.inner.readers.lock().unwrap().drain(..).collect();
+        for reader in readers {
+            let _ = reader.join();
+        }
+    }
+
     fn close_streams(&self) {
         let inner = &self.inner;
         if let Some(mut proxy) = inner.proxy.lock().unwrap().take() {
             proxy.stop();
         }
-        let readers: Vec<JoinHandle<()>> = inner.readers.lock().unwrap().drain(..).collect();
-        for reader in readers {
-            let _ = reader.join();
-        }
+        self.join_readers();
         if let Some(log) = inner.request_log.lock().unwrap().take() {
             log.close();
         }
