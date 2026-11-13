@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+use common::free_port;
+
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_loom-launch")
 }
@@ -54,11 +57,6 @@ fn card(directory: &Path) -> PathBuf {
     )
     .unwrap();
     card
-}
-
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }
 
 fn port_free(port: u16) -> bool {
