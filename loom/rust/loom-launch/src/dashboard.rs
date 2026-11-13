@@ -427,6 +427,16 @@ impl Context {
             .map(|o| o.supervisor.clone())
     }
 
+    /// Whether the live model is on its way out: being unloaded, or exited
+    /// and not yet released by the thread that ends its run.
+    fn going_away(&self, live: &Live) -> bool {
+        if self.stopping.lock().unwrap().is_some() {
+            return true;
+        }
+        let owned = self.owned.lock().unwrap().clone();
+        live.kind == Kind::Owned && owned.is_some_and(|o| o.supervisor.exited())
+    }
+
     /// Whether a load is still preparing.
     pub fn preparing(&self) -> bool {
         self.preparing.lock().unwrap().is_some()
@@ -515,9 +525,11 @@ impl Context {
                 token: hosted.auth_token.clone(),
             };
         }
+        // A model stays loaded until whoever ends its run releases it, so
+        // "no model" is never reported before its record is cleared, its
+        // route dropped and an exit on its own reported.
         let owned = self.owned.lock().unwrap().clone();
-        if let (Some(owned), Some(front)) = (owned.filter(|o| !o.supervisor.exited()), &self.front)
-        {
+        if let (Some(owned), Some(front)) = (owned, &self.front) {
             let supervisor = &owned.supervisor;
             return Live {
                 kind: Kind::Owned,
@@ -636,11 +648,10 @@ impl Context {
             .running()
             .filter(|(kind, _)| kind == "serve")
             .map(|(_, target)| target);
-        let stopping = self.stopping.lock().unwrap().clone();
         let state = match live.kind {
             Kind::None if preparing.is_some() => "starting",
             Kind::None => "none",
-            _ if stopping.is_some() => "stopping",
+            _ if self.going_away(live) => "stopping",
             _ => "serving",
         };
         let repo = live.repo.clone().or(preparing);
@@ -995,7 +1006,7 @@ impl Context {
         let listener = self.listener.lock().unwrap().clone();
         let endpoint = self.endpoint();
         let model = match live.kind {
-            Kind::Owned | Kind::External if self.stopping.lock().unwrap().is_some() => "stopping",
+            Kind::Owned | Kind::External if self.going_away(live) => "stopping",
             Kind::Owned | Kind::External => "serving",
             _ if self.preparing() || self.jobs.active("serve").is_some() => "starting",
             _ => "none",
@@ -2747,13 +2758,6 @@ fn launch(
         let code = owned.supervisor.wait_exit();
         if let Some(context) = watcher.upgrade() {
             crate::launcher::note_model(&context.state_root, None);
-            {
-                let mut slot = context.owned.lock().unwrap();
-                if slot.as_ref().is_some_and(|o| Arc::ptr_eq(o, &owned)) {
-                    slot.take();
-                }
-            }
-            context.stopping.lock().unwrap().take();
             let requested = owned.unloading.load(Ordering::SeqCst)
                 || owned.supervisor.cancelled()
                 || context.closed()
@@ -2761,6 +2765,14 @@ fn launch(
             if !requested {
                 context.model_exited(&owned.supervisor, code);
             }
+            // Released last: once the page shows no model, the exit is on record.
+            {
+                let mut slot = context.owned.lock().unwrap();
+                if slot.as_ref().is_some_and(|o| Arc::ptr_eq(o, &owned)) {
+                    slot.take();
+                }
+            }
+            context.stopping.lock().unwrap().take();
         }
     });
     {
