@@ -829,7 +829,10 @@ fn install_runs_in_the_background_and_records_the_profile() {
     assert!(busy.body.contains("still running"));
     let jobs = served.context.jobs().clone();
     wait_for("the install", || {
-        jobs.state_of(&job) != Some(JobState::Running)
+        !matches!(
+            jobs.state_of(&job),
+            Some(JobState::Running | JobState::Queued)
+        )
     });
     let described = jobs.describe(50);
     assert_eq!(described["state"], "done", "{described}");
