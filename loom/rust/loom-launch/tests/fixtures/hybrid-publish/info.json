@@ -1,0 +1,490 @@
+{
+ "card": {
+  "features": {
+   "api": {
+    "status": "yes",
+    "value": {
+     "endpoint": "/v1/chat/completions",
+     "style": "openai"
+    }
+   },
+   "audio": {
+    "status": "n/a",
+    "value": null
+   },
+   "concurrency": {
+    "status": "yes",
+    "value": {
+     "pending_requests": null,
+     "rows": 1
+    }
+   },
+   "context": {
+    "status": "yes",
+    "value": {
+     "native": 262144,
+     "tokens": 40960
+    }
+   },
+   "image_input": {
+    "status": "untested",
+    "value": {
+     "note": "vision sources included for layout closure; not hardware-qualified on the hybrid",
+     "projector": "mmproj-Qwen3.8-27B-f16.gguf"
+    }
+   },
+   "max_output_tokens": {
+    "status": "yes",
+    "value": {
+     "max_tokens": 4096
+    }
+   },
+   "npu_offload": {
+    "status": "yes",
+    "value": {
+     "columns": 8,
+     "decode": "GPU only",
+     "device": "xdna",
+     "exchange_pool": "exchange",
+     "group_mode": "two_bank",
+     "npu_columns_by_position": {
+      "0": 8192,
+      "2048": 9216
+     },
+     "operation": "prefill FFN gate/up output columns as unscaled i8 x i8 -> i32 (bqv); GPU applies column scales in the fused merge/SwiGLU, computes the remaining columns and the down projection",
+     "placement": {
+      "*": "amdgpu",
+      "resident_lifetime": "xdna"
+     },
+     "plan_provider": "two_bank_v1",
+     "rows_per_bank": 1024
+    }
+   },
+   "reasoning_effort": {
+    "status": "untested",
+    "value": {
+     "default": "xhigh",
+     "levels": [
+      "low",
+      "medium",
+      "xhigh"
+     ]
+    }
+   },
+   "sampling": {
+    "status": "untested",
+    "value": null
+   },
+   "speculative_decoding": {
+    "status": "opt-in",
+    "value": {
+     "default_depth": 0,
+     "depth": 3,
+     "drafter": "z-lab/Qwen3.8-27B-DFlash2-GGUF",
+     "method": "dflash"
+    }
+   },
+   "thinking": {
+    "status": "untested",
+    "value": {
+     "default": true,
+     "mode": "toggle"
+    }
+   },
+   "tool_calling": {
+    "status": "untested",
+    "value": {
+     "format": "qwen_xml"
+    }
+   }
+  },
+  "license": "apache-2.0",
+  "memory_bytes": 52000000000
+ },
+ "confirmations": [
+  {
+   "date": "2026-11-11",
+   "metric": "prefill_8k",
+   "note": "Single draft-0 PP@8k request with the shipped fast-path loader binary after a warm-fast load; no statistical claim. Kept out of performance.sessions so the six-repetition sessions above remain the comparable rows.",
+   "prompt_tokens": 8167,
+   "runs": 1,
+   "source": "local-fast-path",
+   "value": 606.446
+  }
+ ],
+ "gates": {
+  "derived_cache": {
+   "date": "2026-11-11",
+   "detail": "loader-derived panels_gu.i8 / colscale_gu.f32 sha256 match the lock; cold, warm-fast and LOOM_DERIVE_VERIFY=1 loads; truncation, flipped-byte, touched/replaced source, removed cache and concurrent first-load gates",
+   "level": "full",
+   "programs_sha256": null,
+   "source": "local-fast-path",
+   "status": "pass"
+  },
+  "hybrid_golden": {
+   "date": "2026-11-11",
+   "detail": "192/192 greedy tokens equal to the recorded native S1 continuation (draft 0 vs draft 3 / historical hybrid); not equality with the pure-GPU continuation (first divergence token 38); the reference-side record is no longer on disk",
+   "level": "full",
+   "programs_sha256": null,
+   "source": "local-fast-path",
+   "status": "pass"
+  },
+  "kld_2k_strict": {
+   "date": "2026-11-11",
+   "detail": "absolute gate passes; c509/c765/envelope/tail checks fail (1691 positions). Measured on the pre-package native S1 recipe (same arithmetic); not re-run on this package",
+   "level": "full",
+   "programs_sha256": null,
+   "source": "report-proven-recipe-port",
+   "status": "fail"
+  },
+  "kld_8k_strict": {
+   "date": "2026-11-11",
+   "detail": "mean KL 9.08e-4, p99 9.09e-3, worst full-vocab |dlogit| 3.49 vs pure-GPU controls 6.89/5.29 (misaligned prefill capacities 509/765); 32 prompts, 1451 positions; absolute, c509, c765, envelope and seven tail-rate checks pass. Reported result only: the reduced JSON is no longer on disk (raw logits survive)",
+   "level": "full",
+   "programs_sha256": null,
+   "source": "report-loader-derivation",
+   "status": "pass"
+  },
+  "runtime_tests": {
+   "date": "2026-11-11",
+   "detail": "428 C++ passed (10 skipped), 180 Python passed (CPU)",
+   "level": null,
+   "programs_sha256": null,
+   "source": "local-fast-path",
+   "status": "pass"
+  }
+ },
+ "memory": {
+  "derived_cache_bytes": 6884032512,
+  "host_peak_rss_kib": {
+   "ab-gpu": 3896216,
+   "ab-raw": 23894768,
+   "ab-raw-repeat": 23918648,
+   "ab-safetensors": 1481688
+  },
+  "note": "pool_ceiling_bytes is the devices.json model-pool ceiling, not a measurement. Host peak RSS includes the loader's transient GGUF hashing during cold derivation. No GPU VRAM/GTT or NPU memory figure was recorded.",
+  "pool_ceiling_bytes": 52000000000,
+  "source": "local-binding-ab"
+ },
+ "performance": {
+  "baseline": {
+   "args": "same loom-serve binary, stock pure-GPU program, --device=amdgpu --memory_bytes=52000000000",
+   "name": "Loom pure-GPU",
+   "version": "same campaign as each session"
+  },
+  "baselines": {
+   "S1 safetensors panels": {
+    "session": {
+     "date": "2026-11-11",
+     "metrics": {
+      "prefill_8k": {
+       "baseline": 615.5,
+       "baseline_runs": [
+        616.344,
+        615.778,
+        614.687,
+        615.906,
+        615.483,
+        614.61
+       ]
+      }
+     },
+     "note": "Same programs and payload bytes with the panels shipped as in-package safetensors instead of loader-derived raw files; measured between the two raw loads",
+     "source": "local-binding-ab"
+    }
+   }
+  },
+  "sessions": [
+   {
+    "commands": [
+     "run_shipped.sh s1 fhd-a-s1-tg --mode tg --runs 1 --draft 3 --sizes 8000 --timeout 600",
+     "run_shipped.sh gpu fhd-a-gpu-tg --mode tg --runs 1 --draft 3 --sizes 8000 --timeout 600"
+    ],
+    "date": "2026-11-11",
+    "metrics": {
+     "decode": {
+      "acceptance": 0.49,
+      "baseline": 25.84,
+      "baseline_runs": [
+       25.84
+      ],
+      "loom": 25.87,
+      "loom_runs": [
+       25.87
+      ],
+      "prompt_tokens": 27
+     },
+     "decode_2k": {
+      "acceptance": 0.436,
+      "baseline": 23.78,
+      "baseline_runs": [
+       23.78
+      ],
+      "loom": 22.73,
+      "loom_runs": [
+       22.73
+      ],
+      "prompt_tokens": 2183
+     },
+     "decode_32k": {
+      "acceptance": 0.417,
+      "baseline": 17.51,
+      "baseline_runs": [
+       17.51
+      ],
+      "loom": 17.27,
+      "loom_runs": [
+       17.27
+      ],
+      "prompt_tokens": 33386
+     },
+     "spec_acceptance": {
+      "accepted": 392.0,
+      "baseline": 0.469,
+      "baseline_accepted": 398.0,
+      "baseline_proposed": 849.0,
+      "loom": 0.455,
+      "proposed": 861.0
+     }
+    },
+    "note": "Draft depth 3 (DFlash) decode-stream timing, one request per size. Same programs and NPU payload bytes as this bundle, with the panels then shipped as in-package safetensors (before loader derivation). Baseline = pure-GPU Loom, same campaign. External compiler CPU load was present; the 2k gap normalises to +0.82% per target verification (tg2k-analysis.json).",
+    "programs_sha256": null,
+    "runs": {
+     "decode_prefill": 1,
+     "streams4": null
+    },
+    "source": "local-fhd"
+   },
+   {
+    "commands": [
+     "loom-serve --model=<run>/deployment.json --devices=package/devices.json --listen=127.0.0.1:18447   # raw-format package, as runtime/serve.sh",
+     "run_shipped.sh-equivalent PP client: --mode pp --sizes 8000 --runs 6 --draft 0  # one 1k warm-up excluded",
+     "loom-serve --model=<run>/model.json --device=amdgpu --memory_bytes=52000000000   # pure-GPU control (stock program)"
+    ],
+    "date": "2026-11-11",
+    "metrics": {
+     "prefill_8k": {
+      "baseline": 453.5,
+      "baseline_runs": [
+       453.644,
+       453.288,
+       450.621,
+       452.103,
+       454.167,
+       457.343
+      ],
+      "loom": 619.2,
+      "loom_median": 619.247,
+      "loom_runs": [
+       621.231,
+       620.522,
+       619.493,
+       619.001,
+       617.994,
+       617.205
+      ],
+      "loom_sample_sd": 1.512,
+      "prompt_tokens": 8167
+     }
+    },
+    "note": "Raw-format package (this bundle's card), server load A. Draft 0, client prompt_tokens/TTFT, 8,167-token prompt, caches off.",
+    "programs_sha256": null,
+    "runs": {
+     "decode_prefill": 6,
+     "streams4": null
+    },
+    "source": "local-binding-ab"
+   },
+   {
+    "commands": [
+     "loom-serve --model=<run>/deployment.json --devices=package/devices.json --listen=127.0.0.1:18447   # raw-format package, as runtime/serve.sh",
+     "run_shipped.sh-equivalent PP client: --mode pp --sizes 8000 --runs 6 --draft 0  # one 1k warm-up excluded",
+     "loom-serve --model=<run>/model.json --device=amdgpu --memory_bytes=52000000000   # pure-GPU control (stock program)"
+    ],
+    "date": "2026-11-11",
+    "metrics": {
+     "prefill_8k": {
+      "baseline": 453.5,
+      "baseline_runs": [
+       453.644,
+       453.288,
+       450.621,
+       452.103,
+       454.167,
+       457.343
+      ],
+      "loom": 615.0,
+      "loom_median": 615.201,
+      "loom_runs": [
+       614.642,
+       616.021,
+       615.488,
+       615.609,
+       614.914,
+       613.065
+      ],
+      "loom_sample_sd": 1.051,
+      "prompt_tokens": 8167
+     }
+    },
+    "note": "Raw-format package (this bundle's card), independent server load B. Draft 0, client prompt_tokens/TTFT, 8,167-token prompt, caches off.",
+    "programs_sha256": null,
+    "runs": {
+     "decode_prefill": 6,
+     "streams4": null
+    },
+    "source": "local-binding-ab"
+   }
+  ]
+ },
+ "repo": "ilintar/Qwen3.8-27B-hybrid-loom",
+ "report": "adapted",
+ "roofline": {
+  "checkpoint": "Qwen3.8-27B-Q4_K_M.gguf",
+  "device": {
+   "bandwidth_bytes_per_s": 216000000000.0,
+   "name": "AMD Ryzen AI Max+ 395 \"Strix Halo\" (gfx1151)",
+   "peak_flops": 59000000000000.0
+  },
+  "metrics": {
+   "prefill_8k": {
+    "ceiling": 1154.0
+   }
+  },
+  "scope": "GPU-only roofline copied from the GPU control's info.json (loom-roofline). It counts only the GPU's 59 TFLOP/s and ignores the XDNA bank's compute, so it is not an upper bound for the hybrid's prefill. Decode ceilings are omitted: they depend on per-session acceptance, which the roofline tool was not re-run on.",
+  "tool": {
+   "script": "skills/loom-roofline/roofline.py",
+   "sha256": "17b6663cf346cb5d7e8c678f02ea591274b9558e8186b04ebc2ffeeb212b7bb8",
+   "skills_commit": "b086d863bf3f3c15cff18836539dc850d2afe92d"
+  }
+ },
+ "schema": "loom-card/2",
+ "sources": {
+  "local-binding-ab": {
+   "device": {
+    "basis": "read from the measurement host on 2026-11-12 (/proc/cpuinfo, lspci, /etc/os-release, uname); host identity confirmed by MemTotal 129461956 kB equal to the run records (final-hybrid-delivery/host-*.jsonl). OS/kernel at measurement time were not recorded.",
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "gpu": "AMD Radeon 8060S Graphics (Strix Halo, gfx1151), amdgpu://0",
+    "memory_total_kib": 129461956,
+    "npu": "AMD Strix Halo NPU (XDNA2, PCI 1022:17f0 rev 11), xdna://0?columns=8",
+    "os": "Ubuntu 26.04.1 LTS, Linux 7.0.0-43-generic"
+   },
+   "evidence": [
+    ".synagent/reports/2026-11-11-loader-derivation-binding-ab.json"
+   ],
+   "hrx_loom": {
+    "basis": "binding-ab.json arms.*.command.serve_sha256; binary no longer on disk; git commit not recorded; raw per-request sources referenced by the JSON are no longer on disk",
+    "hrx_system_sha": null,
+    "runtime": "patched native Loom runtime from the HRX checkout",
+    "serve_sha256": "94b36c634c9305871f668c611d8b0bf8db40aa5e72c3696d99dbda930e0880af"
+   },
+   "kind": "local",
+   "run": "ab-raw / ab-safetensors / ab-raw-repeat / ab-gpu",
+   "url": null
+  },
+  "local-fast-path": {
+   "device": {
+    "basis": "read from the measurement host on 2026-11-12 (/proc/cpuinfo, lspci, /etc/os-release, uname); host identity confirmed by MemTotal 129461956 kB equal to the run records (final-hybrid-delivery/host-*.jsonl). OS/kernel at measurement time were not recorded.",
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "gpu": "AMD Radeon 8060S Graphics (Strix Halo, gfx1151), amdgpu://0",
+    "memory_total_kib": 129461956,
+    "npu": "AMD Strix Halo NPU (XDNA2, PCI 1022:17f0 rev 11), xdna://0?columns=8",
+    "os": "Ubuntu 26.04.1 LTS, Linux 7.0.0-43-generic"
+   },
+   "evidence": [
+    ".synagent/artifacts/loom-dual-device-runner/cache-fast-path/results.json",
+    ".synagent/artifacts/loom-dual-device-runner/cache-fast-path/warm-fast-driver.log",
+    ".synagent/artifacts/loom-dual-device-runner/cache-fast-path/cold-server.log",
+    ".synagent/artifacts/loom-dual-device-runner/cache-fast-path/golden-results.json",
+    ".synagent/artifacts/loom-dual-device-runner/cache-fast-path/python-tests-retry.log"
+   ],
+   "hrx_loom": {
+    "basis": "binary sha recorded in cache-fast-path/{cold,warm-fast,warm-verify}.json and equal to the current build; HEAD 524fe5fe plus uncommitted loader/i8-panel changes (cache-fast-path/starting.patch)",
+    "hrx_system_sha": "524fe5fec253be0e1d35ad6c9424bea5a554d731",
+    "runtime": "patched native Loom runtime from the HRX checkout",
+    "serve_sha256": "09bd64645047ef9e725dbec82fe4e8f113d3e462e67ee6b8c48dc5155fd1943f"
+   },
+   "kind": "local",
+   "run": "cache-fast-path",
+   "url": null
+  },
+  "local-fhd": {
+   "device": {
+    "basis": "read from the measurement host on 2026-11-12 (/proc/cpuinfo, lspci, /etc/os-release, uname); host identity confirmed by MemTotal 129461956 kB equal to the run records (final-hybrid-delivery/host-*.jsonl). OS/kernel at measurement time were not recorded.",
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "gpu": "AMD Radeon 8060S Graphics (Strix Halo, gfx1151), amdgpu://0",
+    "memory_total_kib": 129461956,
+    "npu": "AMD Strix Halo NPU (XDNA2, PCI 1022:17f0 rev 11), xdna://0?columns=8",
+    "os": "Ubuntu 26.04.1 LTS, Linux 7.0.0-43-generic"
+   },
+   "evidence": [
+    ".synagent/artifacts/loom-dual-device-runner/final-hybrid-delivery/fhd-a-s1-tg.log",
+    ".synagent/artifacts/loom-dual-device-runner/final-hybrid-delivery/fhd-a-gpu-tg.log",
+    ".synagent/artifacts/loom-dual-device-runner/final-hybrid-delivery/tg2k-analysis.json",
+    ".synagent/artifacts/loom-dual-device-runner/final-hybrid-delivery/runs.jsonl"
+   ],
+   "hrx_loom": {
+    "basis": "binary sha from .synagent/reports/2026-11-11-final-hybrid-delivery.md:40; git commit not recorded",
+    "hrx_system_sha": null,
+    "runtime": "patched native Loom runtime from the HRX checkout",
+    "serve_sha256": "beb5a94d46cdf26a07db356bcb21de44f5d2b0f05fa534357c5cdc33b64d732e"
+   },
+   "kind": "local",
+   "run": "fhd-a-s1-tg / fhd-a-gpu-tg",
+   "url": null
+  },
+  "report-loader-derivation": {
+   "device": {
+    "basis": "read from the measurement host on 2026-11-12 (/proc/cpuinfo, lspci, /etc/os-release, uname); host identity confirmed by MemTotal 129461956 kB equal to the run records (final-hybrid-delivery/host-*.jsonl). OS/kernel at measurement time were not recorded.",
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "gpu": "AMD Radeon 8060S Graphics (Strix Halo, gfx1151), amdgpu://0",
+    "memory_total_kib": 129461956,
+    "npu": "AMD Strix Halo NPU (XDNA2, PCI 1022:17f0 rev 11), xdna://0?columns=8",
+    "os": "Ubuntu 26.04.1 LTS, Linux 7.0.0-43-generic"
+   },
+   "evidence": [
+    ".synagent/reports/2026-11-11-loader-derivation.md:342-362",
+    ".synagent/scratch/loom-dual-device-runner/loader-derivation/qualification/kld/ (raw logits)"
+   ],
+   "kind": "report",
+   "run": "qual-kld-candidate (raw-format package)",
+   "url": null
+  },
+  "report-proven-recipe-port": {
+   "device": {
+    "basis": "read from the measurement host on 2026-11-12 (/proc/cpuinfo, lspci, /etc/os-release, uname); host identity confirmed by MemTotal 129461956 kB equal to the run records (final-hybrid-delivery/host-*.jsonl). OS/kernel at measurement time were not recorded.",
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "gpu": "AMD Radeon 8060S Graphics (Strix Halo, gfx1151), amdgpu://0",
+    "memory_total_kib": 129461956,
+    "npu": "AMD Strix Halo NPU (XDNA2, PCI 1022:17f0 rev 11), xdna://0?columns=8",
+    "os": "Ubuntu 26.04.1 LTS, Linux 7.0.0-43-generic"
+   },
+   "evidence": [
+    ".synagent/reports/2026-11-11-proven-recipe-port.md:135,147,228"
+   ],
+   "kind": "report",
+   "run": "pre-package native S1",
+   "url": null
+  }
+ },
+ "versions": {
+  "card_generator": null,
+  "package": {
+   "hrx_system_head": "524fe5fec253be0e1d35ad6c9424bea5a554d731",
+   "llm_config_generator_skills_commit": "f98493445fd37f8757c7d62a94949aff24d9a711",
+   "program_sha256": {
+    "program/control.loom": "089bd8789bd32e8a3ddc8a908fd6052aa20aa74c5f1023ba47463fa36bced0a9",
+    "program/llm.loom": "b0679eb5b5128971d65783a80f67053cecc89e74c44683783d35711e115737b7",
+    "program/prepare.loom": "21938fe51d5c40aae8e9bde39828df144c3791d3814f0236da31bc1e630af02f",
+    "program/resident_ffn.loom": "ffce0491d98ff07d1d31841e8cfec6de42e91873ee7c5f6c79321d535b602fcf",
+    "program/service.loom": "138531743c99c09b0b77062b201f104a27df67df6c98d72a947e42c14e7211d4",
+    "program/storage.loom": "28764f3eb1da23a6404294eeb209160d2670120f35f28de0f4090e39a30c020f",
+    "program/vision_control.loom": "5e540cb45e46d1252e4243994fcd0fd5816d96d4f9cf128e0ed7ce61ea10e4c1",
+    "program/vision_encoder.loom": "9c92c77f287ca5dd0c9cb6f9e6c5b4c9a50cf91ad7fae69a9beb55965069e6b8",
+    "program/vision_prepare.loom": "35dc9527a04d96427d306f4fc6430b5d7f1b8426e569f11efebf31d67ddf3b7a",
+    "program/vision_stages.loom": "0aa463123aa20128c17c6659f1a4b4539727cca472addaa61825597b2fae7004"
+   },
+   "runtime": "requires the patched native Loom runtime in the HRX checkout (multi-device dispatch, descriptor v4, i8-panel loader transform); hrx-loom 0.1.0 from PyPI rejects model-card v2"
+  }
+ }
+}

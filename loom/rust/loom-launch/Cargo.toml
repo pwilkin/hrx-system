@@ -1,0 +1,31 @@
+[package]
+name = "loom-launch"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+description = "Native launcher for published Loom model profiles: discovery, install, serve, chat and benchmarks behind an instrumented OpenAI-compatible endpoint."
+license = "Apache-2.0 WITH LLVM-exception"
+publish = false
+
+[lib]
+name = "loom_launch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loom-launch"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tiny_http = "0.12"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+# URL parsing for /api/fetch, the same parser ureq uses (already in its dependency tree).
+url = "2"
+# Signal delivery and handling (kill, sigaction, setsid for --detach); std has no API for these.
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
