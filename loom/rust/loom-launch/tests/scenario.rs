@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
+mod common;
+use common::free_port;
+
 const DEAD_HUB: &str = "http://127.0.0.1:9";
 
 fn binary() -> &'static str {
@@ -86,11 +89,6 @@ fn recorded_argv(path: &Path) -> Vec<String> {
         .lines()
         .map(str::to_string)
         .collect()
-}
-
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }
 
 fn launcher(state: &Path, hub: &str, arguments: &[&str]) -> Command {

@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod common;
+use common::free_port;
+
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_loom-launch")
 }
@@ -22,11 +25,6 @@ fn workspace(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     directory
-}
-
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }
 
 /// A state directory whose registry knows one installed card.
